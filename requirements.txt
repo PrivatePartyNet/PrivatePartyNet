@@ -5,7 +5,7 @@ pythonnet==3.2.1
 mss==10.2.0             # screen capture, the fallback path
 dxcam==0.3.0            # screen capture through the graphics card (Windows Desktop Duplication)
 comtypes==1.4.16        # dxcam's COM bridge
-numpy==2.5.3            # dxcam hands frames over as arrays
+numpy==2.5.4            # dxcam hands frames over as arrays
 opencv-python==5.0.0.93 # JPEG encoding that releases Python's lock; opencv-python-headless works too. Optional: Pillow is the fallback.
 Pillow==13.0.0
 cryptography==50.0.2    # the party's self-signed certificate
