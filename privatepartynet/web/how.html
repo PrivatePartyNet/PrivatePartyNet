@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="reviewed-for-version" content="3.0.0">
+<title>How PrivatePartyNet works</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="info.css">
+</head>
+<body>
+<main>
+  <h1>How <span class="appname">PrivatePartyNet</span> works</h1>
+  <p><span class="appname">PrivatePartyNet</span> is a local hangout for PCs on the same network. One person opens a party, others find it and ask to join, and everyone in the party can chat and share screens. There is no server to install and no account to make.</p>
+
+  <h2>Opening a party</h2>
+  <p>Type your name and press Start party. The name is what other people see under Nearby PCs and in the party. Your PC then announces itself on the network (UDP port 8766), and the party listens on the port in the port box (8765 unless you change it). The first time, Windows may ask whether to allow the app through the firewall. Allow it on private networks.</p>
+
+  <h2>Joining a party</h2>
+  <p>Under Nearby PCs, pick a PC that shows "party open" and press Ask to join. The host sees your request and presses Let in. A request that nobody answers within 30 seconds expires. When you are let in, your <span class="appname">PrivatePartyNet</span> opens the party in a window of its own. The link that lets you in works once and expires after two minutes.</p>
+
+  <h2>Inside the party room</h2>
+  <p>The bar at the top has Go Live, with an arrow beside it for Stream settings, then View options, Picture in picture, Fullscreen, a button that hides the side panel, and Leave. The side panel lists the members and the party chat; hide it to give the screens the whole window, and the choice is remembered. Leave closes the party window and any windows you popped out of it. A party has room for up to 16 people.</p>
+  <p>Chat is kept for the whole server. Someone who joins later reads the earlier messages in the channel, and every message is saved, encrypted, on the host's PC. When the host's PC is off, the server cannot be opened. Guests can read the chat but not post.</p>
+
+  <h2>Sharing your screen</h2>
+  <p>Open Stream settings (the arrow beside Go Live), pick a screen (screens are numbered from left to right, and keep their number), and press Go Live. To share another screen as well, pick it and press Go Live again. Each person can share up to four screens at once, and each live screen is listed under Your screens with its own Stop button.</p>
+  <p>PrivatePartyNet captures your screen at the size the people watching need: when everyone has it in a small tile, it captures and sends a smaller picture, which uses far less processor time, and when someone makes it big or goes fullscreen it goes back to full size within a couple of seconds. Quality sets the largest picture you send, and Frame rate sets the speed you aim for. A change here applies to your live screens at once; to change one screen only, use the settings button on its tile.</p>
+  <p>Mouse pointer decides whether your pointer is in the shared picture. It is on by default. The screen capture leaves the pointer out, so <span class="appname">PrivatePartyNet</span> draws it onto each frame, including the text cursor, the hand and the busy ring.</p>
+  <p><span class="appname">PrivatePartyNet</span> captures a screen through the graphics card (Windows Desktop Duplication) when it can. On the PC this was tested on, an ultrawide screen (3440 by 1440) was captured at about 57 frames a second with 60 selected, and 30 selected gave 30. If the graphics card or its driver cannot do that, <span class="appname">PrivatePartyNet</span> falls back to a slower capture of about 30 frames a second. What other PCs receive also depends on the network and on their processors; the bar at the bottom shows the rate each connection reaches. A screen that is not changing sends a picture twice a second.</p>
+
+  <h2>Watching screens</h2>
+  <p>Every live screen is a tile named for its owner and the screen, such as "Alex - Screen 2". Screens start in the grid view, where each tile keeps its own shape, so an ultrawide screen is not squeezed into a box.</p>
+  <p>In the grid view you can drag a tile to move it and drag its edges or corners to resize it. A tile snaps to the edge of the stage, to the middle of the stage, and to the edges and middles of other tiles, and takes the size of a nearby tile when you come close; thin lines show what it is lining up with. Resizing keeps the picture's shape. Hold Shift to resize freely. Reset layout (in View options) hands the arranging back to the grid, and so does changing Receive size.</p>
+  <p>Click a tile to make that screen big. The other screens shrink to previews in a row along the bottom. Click a preview to make it the big one, click the big screen or press Escape to go back to the grid.</p>
+  <p>Right-click any screen, including your own, for a menu. "Don't show this stream" turns it into a black tile that says the stream is hidden and has a link to show it again. For a screen from someone else, hiding also tells them to stop sending it to you, which saves their upload and your download until you show it again. Hiding your own screen only hides your preview. The menu also makes a screen big and pops it out.</p>
+  <p>Point at a screen and three small buttons appear in its top right corner: settings, pop out and fullscreen. Each one affects that screen and no other. On someone else's screen, settings sets the receive size and upscale for that screen alone, over the choices in View options. On your own screen, settings sets that screen's quality, frame rate and mouse pointer. Pop out opens the screen in a window of its own; the window is a second connection to the sender, so it uses their upload again. Fullscreen makes the window cover your whole display with that one screen on it, in the party window and in a popped-out window alike: the bars step aside and the stream fills the display. Press the button again, or Escape, to come back. The Fullscreen button in the top bar does the same for the whole room. A popped-out window has its own settings and fullscreen buttons, and it closes when the person who opened it leaves.</p>
+  <p>Receive size (in View options) sets how big each picture is. Fit my window fills the stage and follows your window. The 100%, 75%, 50% and 25% choices show the picture at that share of the sender's own size. The sender is asked for a picture of that size too, which saves their upload.</p>
+  <p>Upscale, when on, draws each received picture smoothly at the size of its tile. This uses your processor, and the figure in View options shows what it costs right now. Previews in the strip are not upscaled.</p>
+
+  <h2>The bar at the bottom</h2>
+  <p>It starts with a CPU chip: the share of this PC's whole processor used by <span class="appname">PrivatePartyNet</span> and its browser engine, updated every second. After it comes one chip for each person you are connected to. A colored dot shows the state of the connection, and the chip shows only the numbers that apply: a green down arrow with what you receive, an amber up arrow with what you send, a purple frame icon with the frames a second, and a blue corner icon with the picture size. A chip for someone who is not sending or receiving anything is just their name.</p>
+  <p>Hover a name for the details: each screen in each direction with its rate, frame rate, size and the share of the PC spent encoding or decoding it (an estimate from the codec's own timing), whether the encoder is being limited by this PC's processor or the network, the round trip time and the packet loss. When there are too many names for the bar, every chip gives up detail first, and the last few names collapse into a "+" count.</p>
+
+  <h2>The menus</h2>
+  <p>In the control panel, Options sets the appearance (Match Windows, Light or Dark), which changes the control panel and every party window at once, and opens the data folder. Info opens this page and the About page.</p>
+
+  <h2>Servers, channels and roles</h2>
+  <p>A party keeps its name, channels, roles and chat between runs. The side panel lists the channels: a hash sign marks a text channel and "Voice" a voice channel. Click a text channel to read it; a number beside a channel is how many messages you have not read. Scroll to the top of a channel to load older messages. The owner and the admins add, rename and delete channels (a deleted channel's messages stay saved). Roles are Owner, Admin, Member and Guest. A guest reads the chat and watches screens but cannot post, talk or share. The owner and admins change roles and remove people from the three dots beside a name; the owner makes admins.</p>
+
+  <h2>Pictures and voice</h2>
+  <p>Use the Picture button, paste, or drop a picture into the chat. It is shrunk to 1600 pixels on its long side first, and PNG, JPEG, GIF and WebP up to 2 MB are accepted. To talk, press Join beside a voice channel (six people at most). You hear only the people in the same voice channel, and they hear only you. The voice bar has Mute, Deafen, Settings (microphone, speakers, push to talk, a volume for each person) and Leave. Push to talk works with the window in front: hold V when it is on.</p>
+
+  <h2>Direct messages</h2>
+  <p>Open messages from the control panel to write to anyone on your network, with no party open. Add a person from Nearby; the first message from a stranger shows them as New. Messages are sealed so only the other person can read them, and your copy stays on your PC. A message to someone who is away waits and goes when they are seen again. Safety number shows twelve groups of digits: if both of you see the same number, nobody is in between.</p>
+
+  <h2>Joining from outside your network</h2>
+  <p>Press Copy invite on the control panel and send the code to your friend; it contains the party's password. They paste it under Join a party from anywhere and press Ask to join, and you see their request in the side panel. Where the router allows it, PrivatePartyNet opens the port by itself. When nothing can reach your PC directly (an internet connection that shares one public address between many customers, such as Starlink, with no IPv6), the invite still works: the two PCs find each other's public address through the BitTorrent network's shared address book (signed records anyone can store and nobody can change), then both send at the same moment, which opens each router for the other. This takes up to a minute the first time. Nothing passes through anyone else's computer. It cannot work when both routers give a new port for every destination; the app then says so, and IPv6 or a forwarded port on either side fixes it.</p>
+
+  <h2>The game network</h2>
+  <p>Each server is also a small private network for games that play over a LAN. Under Game network on the control panel, press Use for games beside a server. Windows asks for permission to add a network adapter named PrivatePartyNet, and this PC gets that server's game address, shown beside the server with a green light. Your address on a server stays the same every time, and the host is always the address ending in .1. Start the game and use that network; a game that looks for other players on the network finds the people in that server. Only one server's game network is in use at a time. Only game traffic for that server goes over it: it is never a way to the internet or into anyone's home network. Turning it off, closing <span class="appname">PrivatePartyNet</span>, or leaving the party removes the adapter.</p>
+
+  <h2>Your saved chats</h2>
+  <p>Chats, pictures and contacts are kept encrypted in the data folder, with a key that Windows protects for your sign-in. Under Saved chats you can add a password (a forgotten password cannot be recovered), and export everything to one file sealed with a passphrase, or import such a file. Importing adds what is missing and changes nothing already here. Include my identity only to move to a new PC: anyone with that file and passphrase can then be you.</p>
+
+  <h2>Where your files are</h2>
+  <p>Settings, the party's certificate, the log and the party windows' saved choices (a webview folder: receive size, pointer, side panel) are in the data folder, <code>%LOCALAPPDATA%\PrivatePartyNet</code>. Open it from the Options menu. Uninstalling asks whether to delete it, and keeps it if you say no. A silent uninstall always keeps it.</p>
+
+  <h2>Limits</h2>
+  <ul>
+    <li>Two PCs that both sit behind routers which give a new port for every destination cannot reach each other without a relay, and the app has none. It says so when that happens.</li>
+    <li>Voice channels hold six people at most, because each person's audio goes straight to every other person.</li>
+    <li>The installer is not signed, so Windows may show an unknown publisher.</li>
+    <li>The party's certificate is made on the host PC. <span class="appname">PrivatePartyNet</span> windows accept it without a warning.</li>
+  </ul>
+
+  <h2>If something does not work</h2>
+  <ul>
+    <li>Nobody shows under Nearby PCs: check that both PCs are on the same network, that neither is on a VPN, and that the firewall allows the app on private networks.</li>
+    <li>Ask to join says there was no answer: the host has to have pressed Start party first.</li>
+    <li>A screen does not appear: stop it and press Go Live again. The log file (see the About page) records what went wrong, and every ten seconds while you share it notes the frame rate your window actually drew.</li>
+    <li>A screen looks black: it may be hidden. Right-click it, or press Show hidden streams in View options.</li>
+  </ul>
+
+  <p class="muted stamp">This page describes version <span class="appversion">3.0.0</span>. It is updated with every version.</p>
+</main>
+<script src="info.js"></script>
+</body>
+</html>

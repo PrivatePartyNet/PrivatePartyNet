@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en" data-theme="{{theme}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrivatePartyNet</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="control.css">
+</head>
+<body>
+<nav id="menubar" aria-label="Menu">
+  <div class="menu">
+    <button class="menubtn" aria-haspopup="true" aria-expanded="false" aria-controls="optionsMenu">Options</button>
+    <div class="dropdown" id="optionsMenu" role="menu" hidden>
+      <div class="group">Appearance</div>
+      <button role="menuitemradio" aria-checked="false" data-choice="system">Match Windows</button>
+      <button role="menuitemradio" aria-checked="false" data-choice="light">Light</button>
+      <button role="menuitemradio" aria-checked="false" data-choice="dark">Dark</button>
+      <hr>
+      <button role="menuitem" id="openFolder">Open data folder</button>
+    </div>
+  </div>
+  <div class="menu">
+    <button class="menubtn" aria-haspopup="true" aria-expanded="false" aria-controls="infoMenu">Info</button>
+    <div class="dropdown" id="infoMenu" role="menu" hidden>
+      <button role="menuitem" id="openHow">How <span class="appname">PrivatePartyNet</span> works</button>
+      <button role="menuitem" id="openAbout">About <span class="appname">PrivatePartyNet</span></button>
+    </div>
+  </div>
+</nav>
+
+<header>
+  <h1 class="appname">PrivatePartyNet</h1>
+  <span id="version" class="muted"></span>
+</header>
+
+<section>
+  <label class="field">Your name in the party and on the network (changes apply at once)
+    <input id="name" maxlength="40" autocomplete="off">
+  </label>
+  <div class="row bottom">
+    <label class="field small">Port (1024 to 65535)
+      <input id="port" inputmode="numeric" maxlength="5" autocomplete="off">
+    </label>
+    <button id="toggle" class="primary">Start party</button>
+  </div>
+  <p id="notice" class="notice" hidden></p>
+</section>
+
+<section id="party" hidden>
+  <h2>Your party</h2>
+  <p class="muted">Your party is open. PCs on this network see you under Nearby PCs and can ask to join. You let each one in.</p>
+  <p id="others" class="muted"></p>
+  <div class="row">
+    <button id="room" class="secondary">Open party room</button>
+  </div>
+  <p class="muted">Server password: <b id="serverPassword"></b>. People on your network do not need it; people joining from outside do, and invites carry it.</p>
+  <details>
+    <summary>Change the password</summary>
+    <p class="muted">Everyone you let in before still comes back by who they are. New people need the new password, so copy a new invite afterwards.</p>
+    <label class="field">New password (6 to 64 characters)
+      <input id="newServerPassword" autocomplete="off" maxlength="64">
+    </label>
+    <div class="row"><button id="saveServerPassword" class="secondary">Change password</button></div>
+  </details>
+  <p id="reach" class="muted"></p>
+  <div class="row">
+    <button id="copyInvite" class="secondary">Copy invite</button>
+    <span id="inviteNote" class="muted"></span>
+  </div>
+</section>
+
+<section id="joinBox">
+  <h2>Join a party from anywhere</h2>
+  <p class="muted">Paste an invite code from the host. They see your request and let you in.</p>
+  <label class="field">Invite code
+    <input id="inviteCode" autocomplete="off" spellcheck="false">
+  </label>
+  <div class="row">
+    <button id="joinInvite" class="secondary">Ask to join</button>
+    <button id="joinCancel" class="secondary" hidden>Cancel</button>
+  </div>
+  <details>
+    <summary>Join with an address and a password</summary>
+    <p class="muted">An invite code also checks that you reach the right host. With only an address, the first certificate seen is trusted and remembered.</p>
+    <div class="row bottom">
+      <label class="field">Address
+        <input id="joinAddress" autocomplete="off" spellcheck="false" placeholder="203.0.113.5">
+      </label>
+      <label class="field small">Port
+        <input id="joinPort" inputmode="numeric" maxlength="5" value="8765" autocomplete="off">
+      </label>
+    </div>
+    <label class="field">Party password
+      <input id="joinPassword" type="password" autocomplete="off">
+    </label>
+    <div class="row"><button id="joinAddressBtn" class="secondary">Ask to join</button></div>
+  </details>
+  <p id="joinStatus" class="notice" hidden></p>
+  <ul id="joined" class="requests"></ul>
+</section>
+
+<section>
+  <h2>Nearby PCs running <span class="appname">PrivatePartyNet</span></h2>
+  <table id="peers">
+    <thead><tr><th>Name</th><th>Address</th><th>State</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p id="nobody" class="muted">Nobody else is visible on this network yet.</p>
+  <div class="row">
+    <button id="ask" class="secondary" disabled>Ask to join</button>
+    <span id="askNote" class="muted"></span>
+  </div>
+</section>
+
+<section id="gameBox">
+  <h2>Game network</h2>
+  <p class="muted">Each server is also a private network for games that play over a LAN. Pick the one to play on: this PC gets that server's game address, shown with a green light, and games see it as an ordinary network card. Windows asks for permission once each time it is turned on.</p>
+  <ul id="gameList" class="requests"></ul>
+  <p id="gameNone" class="muted">Start your party or join one to use its game network.</p>
+  <p id="gameStatus" class="muted"></p>
+  <div class="row"><button id="gameOff" class="secondary" hidden>Turn the game network off</button></div>
+</section>
+
+<section id="messagesBox">
+  <h2>Direct messages</h2>
+  <p class="muted">Write to anyone on your network, with no party open. Messages are sealed to the other person's key and kept on both PCs.</p>
+  <div class="row"><button id="openMessages" class="secondary">Open messages</button> <span id="dmUnread" class="muted"></span></div>
+</section>
+
+<section id="chats">
+  <h2>Saved chats</h2>
+  <p class="muted">Your chats are kept on this PC, encrypted, in your own PrivatePartyNet folder.</p>
+  <div id="unlockBox" hidden>
+    <label class="field">This PC's chats are locked with a password
+      <input id="unlockPassword" type="password" autocomplete="current-password">
+    </label>
+    <div class="row"><button id="unlock" class="primary">Unlock</button></div>
+  </div>
+  <details id="passwordBox">
+    <summary id="passwordSummary">Add a password</summary>
+    <p class="muted">Windows already protects the key for your sign-in. A password adds a second lock. If you forget it your saved chats cannot be recovered; a backup file with its own passphrase is the safety net.</p>
+    <label class="field">Current password (if there is one)
+      <input id="oldPassword" type="password" autocomplete="current-password">
+    </label>
+    <label class="field">New password (leave empty to remove the password)
+      <input id="newPassword" type="password" autocomplete="new-password">
+    </label>
+    <div class="row"><button id="savePassword" class="secondary">Save</button></div>
+  </details>
+  <details id="backupBox">
+    <summary>Back up or move your chats</summary>
+    <p class="muted">One compressed file with every chat and picture, sealed with a passphrase you choose. Importing adds what is missing and never changes what is here.</p>
+    <label class="field">Passphrase for the backup file
+      <input id="backupPassphrase" type="password" autocomplete="off">
+    </label>
+    <label class="check"><input id="withIdentity" type="checkbox"> Include my identity (anyone with the file and passphrase can then be me; use it only to move to a new PC)</label>
+    <div class="row">
+      <button id="exportChats" class="secondary">Export all chats...</button>
+      <button id="importChats" class="secondary">Import chats...</button>
+    </div>
+    <p id="backupNote" class="muted"></p>
+  </details>
+</section>
+
+<section id="requests" hidden>
+  <h2>Asking to join your party</h2>
+  <ul id="requestList" class="requests"></ul>
+</section>
+
+<script src="control.js"></script>
+</body>
+</html>

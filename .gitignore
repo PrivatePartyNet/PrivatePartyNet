@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build output
+build/
+dist/
+*.spec
+
+# Microsoft's installers are fetched by tools/fetch_prereqs.py, not stored here
+installer/prereq/*
+!installer/prereq/README.md
+
+# Keys, local data and logs
+*.pem
+*.key
+.env
+*.log
+settings.json
+
+# Test output
+tests/browser/*.png
+
+# Editors and the OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Private working notes and plans: research, scope drafts, name scans, the work queue, scripts that touch the
+# archive and GitHub, the development log and the project instructions. Not for the public repository.
+\! LLM Files/
+CLAUDE.md
+DEVELOPMENT_LOG.md
+FOLDER_STRUCTURE.md
+_templates/

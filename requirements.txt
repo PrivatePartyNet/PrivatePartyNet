@@ -1,0 +1,16 @@
+# Everything PrivatePartyNet needs to run from source or to build. These are the versions it was built and tested with.
+# The packaged app carries all of them; nothing is installed on the PCs that run it.
+pywebview==6.2.1        # the native window (pythonnet and clr_loader come with it on Windows)
+pythonnet==3.2.1
+mss==10.2.0             # screen capture, the fallback path
+dxcam==0.3.0            # screen capture through the graphics card (Windows Desktop Duplication)
+comtypes==1.4.16        # dxcam's COM bridge
+numpy==2.5.3            # dxcam hands frames over as arrays
+opencv-python==5.0.0.93 # JPEG encoding that releases Python's lock; opencv-python-headless works too. Optional: Pillow is the fallback.
+Pillow==13.0.0
+cryptography==50.0.2    # the party's self-signed certificate
+psutil==7.2.2           # the CPU readout
+aioquic==1.7.1          # QUIC, which carries a party through routers that let nothing in (hole punching); BSD-3-Clause
+
+# Build only
+pyinstaller==6.21.0

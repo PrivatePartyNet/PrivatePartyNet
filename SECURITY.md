@@ -1,0 +1,51 @@
+# Security
+
+## Reporting a problem
+
+Please report a security problem privately, so it can be fixed before it is public. On GitHub, open this repository's Security
+tab and choose "Report a vulnerability". Do not open a public issue for it.
+
+Include the version (Info, About), what you did, and what you saw. A reply should come within a few days. PrivatePartyNet is a
+small project looked after by a few people, so a fix may take longer than that.
+
+## What to know about how PrivatePartyNet is built
+
+PrivatePartyNet is made for groups of friends who trust each other. Read this before using it with people you do not know.
+
+Who can read what:
+
+- A server's chat is stored on the host's PC, which relays it, so the host can read every channel of that server. Direct
+  messages are different: each one is sealed to the other person's key and signed by the sender, and only the two PCs can
+  read it.
+- Chats, pictures, contacts and keys are encrypted on disk. The key is protected by Windows for the signed-in user, and a
+  password can be added on top. This protects the files from other Windows accounts and from a copied disk. It does not
+  protect against malware running as you, which can ask Windows for the same key.
+- A forgotten password cannot be recovered. Backups are sealed with a passphrase chosen at export time, and the same
+  applies to them.
+- Screens and voice go directly between PCs over WebRTC, which encrypts the media (DTLS-SRTP). The host relays only the
+  connection setup.
+
+Who can join:
+
+- Nearby PCs join by asking the host, and the host presses Let in. The link that results works once and expires after two
+  minutes.
+- From outside the network, a person needs an invite code and the server's password, and the owner or an admin still has to
+  approve the request. The invite carries the host's certificate fingerprint, and the joiner checks it.
+- Roles are Owner, Admin, Member and Guest. A removed person can be banned, and a banned person cannot ask again.
+
+What leaves your PC:
+
+- A lookup of your public address through public STUN servers, a request to your router to open a port (UPnP), and signed
+  address records on the public BitTorrent DHT while an invite is active. These records contain your public address and port,
+  signed with the server's key, and anyone watching the DHT can see them.
+- There are no accounts, no relay servers and no update check. The app sends nothing to a company server.
+
+Known limits:
+
+- On a local network, the party's HTTPS certificate is made on the host PC and signed by nobody, and the app's own windows
+  accept it without checking it (Chromium's `--ignore-certificate-errors` is set for them). Anyone who can sit between two
+  PCs on a network could read and change what is sent over a local join, so use local joins only on networks you trust.
+- The game network adds a virtual network adapter, which Windows only allows with administrator permission. A small helper is
+  started with that permission when you turn the game network on, and it ends with the app. It only creates the adapter,
+  moves other adapters' priority while the game network is on, and passes game packets.
+- The installer is not code-signed, so Windows may show an unknown publisher.

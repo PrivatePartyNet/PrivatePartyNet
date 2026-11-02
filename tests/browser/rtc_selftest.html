@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rtc selftest</title>
+</head>
+<body>
+<pre id="result">running</pre>
+<div id="bar"><span id="s-down"></span><span id="s-up"></span><span id="s-rtt"></span><span id="s-lost"></span><span id="s-state"></span></div>
+<script src="../../privatepartynet/web/rtc.js"></script>
+<script>
+// Two peers in one page, connected through the same offer and answer exchange the server relays.
+// The "screen" is a canvas stream. Screen only, so there is no audio.
+(async function () {
+  var out = document.getElementById("result");
+  var lines = [];
+  var failures = [];
+
+  function say(text) {
+    lines.push(text);
+    out.textContent = lines.join("\n");
+  }
+
+  function check(name, ok, detail) {
+    say((ok ? "ok   " : "FAIL ") + name + (detail ? " (" + detail + ")" : ""));
+    if (!ok) failures.push(name);
+  }
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  async function until(test, ms) {
+    var deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (test()) return true;
+      await sleep(100);
+    }
+    return test();
+  }
+
+  var painter = null;
+  var viewer = null;
+  var host = null;
+  try {
+    check("formatRate shows kbps and Mbps", PartyRTC.formatRate(640) === "640 kbps" && PartyRTC.formatRate(2500) === "2.5 Mbps");
+
+    var canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 360;
+    var ctx = canvas.getContext("2d");
+    var frame = 0;
+    painter = setInterval(function () {
+      frame += 1;
+      ctx.fillStyle = "hsl(" + (frame % 360) + ", 80%, 50%)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }, 33);
+    var screen = canvas.captureStream(30).getVideoTracks()[0];
+
+    // Viewer offers. Host answers and sends its screen.
+    viewer = PartyRTC.newPeer();
+    PartyRTC.addSlots(viewer);
+    await viewer.setLocalDescription(await viewer.createOffer());
+    await PartyRTC.gatherComplete(viewer);
+
+    host = PartyRTC.newPeer();
+    await host.setRemoteDescription({ type: "offer", sdp: viewer.localDescription.sdp });
+    PartyRTC.prepareAnswer(host);
+    await PartyRTC.setScreenTrack(host, 0, screen);
+    await host.setLocalDescription(await host.createAnswer());
+    await PartyRTC.gatherComplete(host);
+    await viewer.setRemoteDescription({ type: "answer", sdp: host.localDescription.sdp });
+
+    var connected = await until(function () {
+      return viewer.connectionState === "connected" && host.connectionState === "connected";
+    }, 20000);
+    check("both peers reach connected", connected, "viewer " + viewer.connectionState + ", host " + host.connectionState);
+
+
+    await sleep(1500);
+    var viewerFirst = PartyRTC.readReport(await viewer.getStats());
+    var hostFirst = PartyRTC.readReport(await host.getStats());
+    await sleep(3000);
+    var viewerSecond = PartyRTC.readReport(await viewer.getStats());
+    var hostSecond = PartyRTC.readReport(await host.getStats());
+    var downRates = PartyRTC.rates(viewerSecond, viewerFirst);
+    var upRates = PartyRTC.rates(hostSecond, hostFirst);
+
+    check("viewer receives video", downRates["down-video"] > 0, Math.round(downRates["down-video"]) + " kbps");
+    check("viewer receives video frames", viewerSecond.down && viewerSecond.down.fps > 0,
+      viewerSecond.down ? Math.round(viewerSecond.down.fps) + " fps" : "no stats");
+    check("viewer reports the video size", viewerSecond.down && viewerSecond.down.width === 640,
+      viewerSecond.down ? viewerSecond.down.width + "x" + viewerSecond.down.height : "no stats");
+    check("host sends video to viewer", upRates["up-video"] > 0, Math.round(upRates["up-video"]) + " kbps");
+    check("stats line formats a download with rate, fps and size",
+      PartyRTC.describeLine("Down from Alex", 1200, { fps: 30, width: 1280, height: 720 }) === "Down from Alex: 1.2 Mbps, 30 fps, 1280x720");
+    // Receive resolution. The receiver asks for less, and the sender scales its encoder down. Never upscales.
+    var lastSeen = null;
+    async function waitForWidth(pc, width, ms) {
+      var deadline = Date.now() + ms;
+      while (Date.now() < deadline) {
+        var sample = PartyRTC.readReport(await pc.getStats());
+        lastSeen = sample.down ? sample.down.width : null;
+        if (lastSeen === width) return true;
+        await sleep(300);
+      }
+      return false;
+    }
+
+    var half = await PartyRTC.limitSending(host, 0, screen, PartyRTC.percentQuality(50));
+    check("50% asks the encoder for half the size", half === 2, "scale " + half);
+    check("viewer receives 320 wide at 50%", await waitForWidth(viewer, 320, 12000), "last seen " + lastSeen);
+
+    var full = await PartyRTC.limitSending(host, 0, screen, PartyRTC.percentQuality(100));
+    check("100% sends the sender's own size", full === 1, "scale " + full);
+    await sleep(3000);
+    var senderNow = PartyRTC.readReport(await host.getStats());
+    var senderParams = host.getSenders().find(function (s) { return s.track === screen; }).getParameters();
+    say("diag sender outbound width " + (senderNow.up ? senderNow.up.width : "none") + ", scaleResolutionDownBy " +
+      senderParams.encodings[0].scaleResolutionDownBy + ", track " + JSON.stringify(screen.getSettings()).slice(0, 80));
+    check("viewer receives 640 wide again at 100%", await waitForWidth(viewer, 640, 12000), "last seen " + lastSeen);
+
+    var bigDisplay = await PartyRTC.limitSending(host, 0, screen, { mode: "fit", width: 1920, height: 1080 });
+    check("a larger display never upscales", bigDisplay === 1, "scale " + bigDisplay);
+
+    var smallDisplay = await PartyRTC.limitSending(host, 0, screen, { mode: "fit", width: 320, height: 180 });
+    check("fit to a 320x180 display sends 320 wide", smallDisplay === 2 && (await waitForWidth(viewer, 320, 12000)),
+      "scale " + smallDisplay);
+    await PartyRTC.limitSending(host, 0, screen, PartyRTC.percentQuality(100));
+
+  } catch (err) {
+    check("no exception", false, err && err.message ? err.message : String(err));
+  } finally {
+    if (painter) clearInterval(painter);
+    if (viewer) viewer.close();
+    if (host) host.close();
+    var verdict = failures.length === 0 ? "PASS" : "FAIL " + failures.length;
+    say("RESULT " + verdict);
+    document.title = "RESULT " + verdict;
+  }
+})();
+</script>
+</body>
+</html>

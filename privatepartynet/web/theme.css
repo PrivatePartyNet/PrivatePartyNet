@@ -1,0 +1,100 @@
+/*
+ * Shared colors for every PrivatePartyNet page. The page's <html data-theme> decides which palette applies:
+ * "light", "dark", or "system" (follows Windows' app theme). Pages use these variables and never fixed colors.
+ */
+:root,
+[data-theme="light"] {
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --surface-2: #e5e7eb;
+  --border: #d1d5db;
+  --text: #111827;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --danger: #dc2626;
+  --success: #15803d;
+  --warn: #b45309;
+  --notice-bg: #fff7ed;
+  --notice-text: #9a3412;
+  --selected: #dbeafe;
+  --video-bg: #000000;
+  --stage-bg: #dfe1e5;
+  --c-up: #b45309;
+  --c-down: #15803d;
+  --c-fps: #6d28d9;
+  --c-size: #0369a1;
+}
+
+[data-theme="dark"] {
+  --bg: #313338;
+  --surface: #2b2d31;
+  --surface-2: #383a40;
+  --border: #3f4147;
+  --text: #dbdee1;
+  --muted: #949ba4;
+  --accent: #4f8dff;
+  --accent-text: #ffffff;
+  --danger: #f23f43;
+  --success: #23a55a;
+  --warn: #f0b232;
+  --notice-bg: #3b2212;
+  --notice-text: #fdba74;
+  --selected: #3a4a6e;
+  --video-bg: #000000;
+  --stage-bg: #1e1f22;
+  --c-up: #f5a524;
+  --c-down: #3ddc97;
+  --c-fps: #b39bff;
+  --c-size: #6cc0ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-theme="system"] {
+    --bg: #313338;
+    --surface: #2b2d31;
+    --surface-2: #383a40;
+    --border: #3f4147;
+    --text: #dbdee1;
+    --muted: #949ba4;
+    --accent: #4f8dff;
+    --accent-text: #ffffff;
+    --danger: #f23f43;
+    --success: #23a55a;
+    --warn: #f0b232;
+    --notice-bg: #3b2212;
+    --notice-text: #fdba74;
+    --selected: #3a4a6e;
+    --video-bg: #000000;
+    --stage-bg: #1e1f22;
+  --c-up: #f5a524;
+  --c-down: #3ddc97;
+  --c-fps: #b39bff;
+  --c-size: #6cc0ff;
+  }
+}
+
+@media (prefers-color-scheme: light) {
+  [data-theme="system"] {
+    --bg: #f3f4f6;
+    --surface: #ffffff;
+    --surface-2: #e5e7eb;
+    --border: #d1d5db;
+    --text: #111827;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+    --danger: #dc2626;
+    --success: #15803d;
+    --warn: #b45309;
+    --notice-bg: #fff7ed;
+    --notice-text: #9a3412;
+    --selected: #dbeafe;
+    --video-bg: #000000;
+    --stage-bg: #dfe1e5;
+  --c-up: #b45309;
+  --c-down: #15803d;
+  --c-fps: #6d28d9;
+  --c-size: #0369a1;
+  }
+}
