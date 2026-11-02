@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from privatepartynet.cert import ensure_certificate
-from privatepartynet.server import MAX_VOICE, Forbidden, NotFound, Party
+from privatepartynet.server import MAX_IMAGE, MAX_VOICE, Forbidden, NotFound, Party
 from privatepartynet.store import Store
 from privatepartynet.vault import Vault
 from test_server import JSON_HEADERS, insecure_context, read_until
@@ -523,14 +523,16 @@ class ImageTests(ServerTestCase):
         self.assertEqual(self.upload(party, session, b"MZ" + bytes(100))[0], 415)
         self.assertEqual(self.upload(party, session, b"")[0], 413)
 
-    def test_a_picture_over_two_megabytes_is_refused(self):
+    def test_a_picture_over_the_limit_is_refused_and_a_large_one_under_it_is_kept(self):
         party = self.party()
         _, session = self.member(party, "Alex")
         try:
-            status = self.upload(party, session, PNG + bytes(2 * 1024 * 1024))[0]
+            status = self.upload(party, session, PNG + bytes(MAX_IMAGE))[0]
         except (ssl.SSLError, ConnectionError):
             status = 413  # the server answered and hung up before the whole upload was sent; that is the refusal
         self.assertEqual(status, 413)
+        _, other = self.member(party, "Bo")
+        self.assertEqual(self.upload(party, other, PNG + bytes(8 * 1024 * 1024))[0], 200)
 
     def test_a_guest_cannot_upload_and_a_stranger_cannot_either(self):
         party = self.party()

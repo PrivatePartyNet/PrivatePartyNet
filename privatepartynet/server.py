@@ -63,7 +63,9 @@ MAX_VOICE = 6  # people in one voice channel: a full mesh of audio and video con
 STAFF = ("host", "admin")  # the owner (internally "host") and the admins
 ROLE_CHOICES = ("admin", "member", "guest")  # what the owner can give; "host" is the owner and "viewer" a pop-out window
 REQUEST_SECONDS = 300  # a join request waits this long for the owner or an admin
-MAX_IMAGE = 2 * 1024 * 1024  # an image on the wire, after the sender's page has shrunk it
+MAX_IMAGE = 12 * 1024 * 1024  # an image on the wire: the sender's page saves the full-size picture to fit under this
+MAX_IMAGE_TEXT = f"{MAX_IMAGE // (1024 * 1024)} MB"
+MAX_MEMORY_BLOBS = 96 * 1024 * 1024  # pictures kept in memory when there is no store (tests, a throwaway party)
 IMAGES_PER_MINUTE = 10  # per member
 MAX_CONNECTIONS = 128  # requests served at once; each member holds one open event stream, so this is several per person
 ASK_FAILS_PER_ADDRESS = 5  # wrong passwords from one address before it is shut out for ASK_LOCKOUT_SECONDS
@@ -1055,7 +1057,7 @@ class Party:
                 raise Forbidden("that is a lot of pictures; wait a moment")
             self._image_times[member_id] = recent + [now]
         if not data or len(data) > MAX_IMAGE:
-            raise BadImage("pictures can be up to 2 MB")
+            raise BadImage(f"pictures can be up to {MAX_IMAGE_TEXT}")
         mime = sniff_image(data)
         if mime is None:
             raise BadImage("only PNG, JPEG, GIF and WebP pictures can be sent")
@@ -1064,7 +1066,7 @@ class Party:
             self.store.put_blob(data)
         else:
             self._blobs[digest] = data
-            while len(self._blobs) > 50:
+            while len(self._blobs) > 50 or sum(len(b) for b in self._blobs.values()) > MAX_MEMORY_BLOBS:
                 self._blobs.pop(next(iter(self._blobs)))
         return {"hash": digest, "mime": mime, "size": len(data)}
 
@@ -1397,7 +1399,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         length = self._length()
         if length > MAX_IMAGE or length <= 0:
-            self._send(413, TEXT, b"Pictures can be up to 2 MB.")
+            self._send(413, TEXT, f"Pictures can be up to {MAX_IMAGE_TEXT}.".encode())
             return
         data = self.rfile.read(length)
         try:

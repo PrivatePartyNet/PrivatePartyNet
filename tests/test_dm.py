@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from privatepartynet.cert import ensure_certificate
-from privatepartynet.dm import MAX_IMAGE, PER_MINUTE, DmService, scope_for
+from privatepartynet.dm import MAX_ENVELOPE, MAX_IMAGE, PER_MINUTE, DmService, scope_for
 from privatepartynet.identity import Identity
 from privatepartynet.store import Store
 from privatepartynet.vault import Vault
@@ -214,7 +214,7 @@ class SecurityTests(DmTestCase):
         self.assertEqual(self.post(self.bob, b"not json")[0], 400)
         self.assertEqual(self.post(self.bob, {"v": 1})[0], 400)
         try:
-            status = self.post(self.bob, b"x" * (3 * 1024 * 1024 + 10))[0]
+            status = self.post(self.bob, b"x" * (MAX_ENVELOPE + 10))[0]
         except (ssl.SSLError, ConnectionError):
             status = 413  # the listener answered and hung up before the whole upload was sent: the refusal
         self.assertEqual(status, 413)

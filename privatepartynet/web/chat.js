@@ -6,44 +6,46 @@
   "use strict";
 
   var PAGE_PRELOAD = 200; // the server sends this many when a member connects; fewer back means there is no more
-  var MAX_SIDE = 1600; // a picture is shrunk so its longest side is at most this many pixels
-  var MAX_BYTES = 2 * 1024 * 1024; // the most the server takes; keep in step with MAX_IMAGE in server.py
+  var MAX_BYTES = 12 * 1024 * 1024; // the most the server takes; keep in step with MAX_IMAGE in server.py
   var PICTURE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
+  var QUALITIES = [0.92, 0.85, 0.78, 0.7, 0.6];
 
-  // The size a picture is shrunk to: its own shape, longest side at most `max`. Never enlarges.
-  function fitSize(width, height, max) {
-    if (width <= max && height <= max) return { w: width, h: height };
-    var ratio = max / Math.max(width, height);
-    return { w: Math.max(1, Math.round(width * ratio)), h: Math.max(1, Math.round(height * ratio)) };
+  // The ways a picture can be saved, best first. The pixels and the size never change; only how they are stored does.
+  // A PNG stays a lossless PNG when it fits. When it does not, and for JPEG and WebP, the same pixels are saved
+  // lossy at a high quality, then lower until the file fits.
+  function encodingPlan(type) {
+    var plan = [];
+    if (type === "image/png") plan.push(["image/png", undefined]);
+    var lossy = type === "image/jpeg" ? "image/jpeg" : "image/webp";
+    QUALITIES.forEach(function (q) { plan.push([lossy, q]); });
+    if (type === "image/png") plan.push(["image/jpeg", 0.85]); // last resort if the page cannot save WebP
+    return plan;
   }
 
   function canvasBlob(canvas, type, quality) {
     return new Promise(function (resolve) { canvas.toBlob(resolve, type, quality); });
   }
 
-  // Shrinks and re-encodes a picture in the page. Drawing it onto a canvas and saving it again also drops what the
-  // file carried besides the picture (the camera's position and time among it). A GIF is sent as it is, to stay animated.
+  // Saves a picture again in the page at its own size. Drawing it onto a canvas and saving it also drops what the
+  // file carried besides the picture (the camera's position and time among it) and turns it the way it is meant to be
+  // seen. A GIF is sent as it is, to stay animated.
   async function preparePicture(file) {
     if (!PICTURE_TYPES.test(file.type)) throw new Error("Only PNG, JPEG, GIF and WebP pictures can be sent.");
     var bitmap = await createImageBitmap(file);
     if (file.type === "image/gif") {
-      if (file.size > MAX_BYTES) throw new Error("That GIF is over 2 MB.");
+      if (file.size > MAX_BYTES) throw new Error("That GIF is over 12 MB.");
       return { blob: file, w: bitmap.width, h: bitmap.height };
     }
-    var size = fitSize(bitmap.width, bitmap.height, MAX_SIDE);
     var canvas = document.createElement("canvas");
-    canvas.width = size.w;
-    canvas.height = size.h;
-    canvas.getContext("2d").drawImage(bitmap, 0, 0, size.w, size.h);
-    var quality = 0.82;
-    var blob = await canvasBlob(canvas, "image/webp", quality);
-    if (!blob || blob.type !== "image/webp") blob = await canvasBlob(canvas, "image/jpeg", quality);
-    while (blob && blob.size > MAX_BYTES && quality > 0.4) {
-      quality -= 0.15;
-      blob = await canvasBlob(canvas, blob.type, quality);
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0);
+    var plan = encodingPlan(file.type);
+    for (var i = 0; i < plan.length; i++) {
+      var blob = await canvasBlob(canvas, plan[i][0], plan[i][1]);
+      if (blob && blob.type === plan[i][0] && blob.size <= MAX_BYTES) return { blob: blob, w: bitmap.width, h: bitmap.height };
     }
-    if (!blob || blob.size > MAX_BYTES) throw new Error("That picture is still over 2 MB after shrinking it.");
-    return { blob: blob, w: size.w, h: size.h };
+    throw new Error("That picture does not fit in 12 MB at its full size. Its size is never reduced, so crop it or send a smaller file.");
   }
 
   function create(options) {
@@ -225,7 +227,7 @@
       });
     }
 
-    // Sending a picture: shrink it here, upload it, then post a message that names it.
+    // Sending a picture: save it here at its own size, upload it, then post a message that names it.
     function sendPicture(file) {
       if (state.role === "guest" || !state.current) return Promise.resolve();
       var caption = el.chatText.value.trim();
@@ -486,7 +488,7 @@
     };
   }
 
-  var api = { create: create, fitSize: fitSize, preparePicture: preparePicture, MAX_SIDE: MAX_SIDE, MAX_BYTES: MAX_BYTES };
+  var api = { create: create, encodingPlan: encodingPlan, preparePicture: preparePicture, MAX_BYTES: MAX_BYTES };
   if (typeof window !== "undefined") window.PartyChat = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 })();

@@ -628,7 +628,7 @@ async function main() {
     "document.getElementById('chatTitle').textContent === 'general' && !document.getElementById('messages').textContent.includes('a message in maps') && !!document.querySelector('#channelList .unread')")));
   await sam.evaluate("[...document.querySelectorAll('#channelList .channel.text .channel-row')].find(function (r) { return r.textContent.includes('general'); }).click()");
 
-  // 7c. Pictures: a big picture is shrunk in the page, uploaded, and shows for everyone with the right size.
+  // 7c. Pictures: a big picture is saved again in the page at its own size, uploaded, and shows for everyone at that size.
   await sam.evaluate(`(async function () {
     var canvas = document.createElement('canvas');
     canvas.width = 3200; canvas.height = 1800;
@@ -641,8 +641,8 @@ async function main() {
     input.files = data.files;
     input.dispatchEvent(new Event('change'));
   })()`);
-  check("a picture sent by a member reaches the host, shrunk to 1600 wide", await waitFor(() => host.evaluate(
-    "(function () { var i = document.querySelector('#messages img.chat-image'); return !!i && i.complete && i.naturalWidth === 1600 && i.naturalHeight === 900; })()")));
+  check("a picture sent by a member reaches the host at its full 3200 by 1800", await waitFor(() => host.evaluate(
+    "(function () { var i = document.querySelector('#messages img.chat-image'); return !!i && i.complete && i.naturalWidth === 3200 && i.naturalHeight === 1800; })()")));
   check("and shows for the sender too", await waitFor(() => sam.evaluate("!!document.querySelector('#messages img.chat-image')")));
   await host.evaluate("document.querySelector('#messages img.chat-image').click()");
   check("clicking a picture opens it large", await host.evaluate("!document.getElementById('lightbox').hidden"));

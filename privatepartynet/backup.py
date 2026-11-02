@@ -30,7 +30,7 @@ CHUNK = 1024 * 1024
 HEADER_SIZE = 8 + 1 + 16 + 1 + 1 + 1 + 4 + 4
 MAX_LOG2_N = 18  # refuse a header that asks for more memory than this (a damaged or hostile file)
 DEFAULT_LOG2_N = 15
-MAX_ENTRY = 64 * 1024 * 1024  # one unpacked entry; a picture is at most 2 MB and a scope's messages are far below this
+MAX_ENTRY = 64 * 1024 * 1024  # one unpacked entry; a picture is at most 12 MB and a scope's messages are far below this
 MAX_TOTAL = 16 * 1024 * 1024 * 1024
 EXTENSION = ".ppnbak"
 

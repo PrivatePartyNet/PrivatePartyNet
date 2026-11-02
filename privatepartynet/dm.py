@@ -28,9 +28,10 @@ from privatepartynet.vault import VaultError
 
 log = logging.getLogger("privatepartynet.dm")
 
-MAX_ENVELOPE = 3 * 1024 * 1024  # a 2 MB picture as text, and the rest of the envelope
+MAX_IMAGE = 12 * 1024 * 1024
+MAX_IMAGE_TEXT = f"{MAX_IMAGE // (1024 * 1024)} MB"
+MAX_ENVELOPE = MAX_IMAGE * 4 // 3 + 256 * 1024  # the largest picture as base64 text, and the rest of the envelope
 MAX_TEXT = 4000
-MAX_IMAGE = 2 * 1024 * 1024
 PER_MINUTE = 30  # messages accepted from one sender per minute
 PER_ADDRESS_MINUTE = 60  # messages accepted from one network address per minute, whoever they claim to be
 NEW_PER_HOUR = 20  # strangers (new contacts) accepted per hour from everywhere: a new identity costs nothing to make
@@ -110,7 +111,7 @@ class DmService:
 
     def send(self, peer_id, text="", image=None):
         """Write a message to a contact. It is saved on this PC at once and delivered as soon as they can be reached.
-        `image` is the bytes of a picture (PNG, JPEG, GIF or WebP, at most 2 MB) or None. Returns the message id."""
+        `image` is the bytes of a picture (PNG, JPEG, GIF or WebP, at most 12 MB) or None. Returns the message id."""
         contact = self.store.contact(peer_id)
         if contact is None:
             raise KeyError("That person is not in your contacts.")
@@ -118,7 +119,7 @@ class DmService:
         picture = None
         if image is not None:
             if len(image) > MAX_IMAGE or sniff_image(image) is None:
-                raise ValueError("Only PNG, JPEG, GIF and WebP pictures up to 2 MB can be sent.")
+                raise ValueError(f"Only PNG, JPEG, GIF and WebP pictures up to {MAX_IMAGE_TEXT} can be sent.")
             picture = image
         if not text and picture is None:
             raise ValueError("There is nothing to send.")
