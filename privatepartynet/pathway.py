@@ -242,10 +242,11 @@ class UdpTransport:
 class _Route:
     """One way to a member: a direct address, or a channel on one relay."""
 
-    __slots__ = ("kind", "address", "relay", "last_reply", "rtt", "next_probe", "nonces", "replies")
+    __slots__ = ("kind", "address", "relay", "last_reply", "rtt", "next_probe", "nonces", "replies", "kind_hint")
 
-    def __init__(self, kind, address=None, relay=None):
+    def __init__(self, kind, address=None, relay=None, kind_hint=None):
         self.kind, self.address, self.relay = kind, address, relay
+        self.kind_hint = kind_hint  # for a punch address: "easy" or "hard", as the other member's STUN check said
         self.last_reply = None
         self.rtt = 1.0
         self.next_probe = 0.0
@@ -325,8 +326,8 @@ class _Peer:
 class PathManager:
     """Every path from this PC to the other members, on one UDP socket.
 
-    `settings` is the app's settings: "path_port" (0 for any), "friend_relay" (False to never forward for others) and
-    "friend_relay_mbps" (the most it forwards for others, all together). `relay_config` is what the owner's PC hands
+    `settings` is the app's settings: "path_port" (0 for any), "friend_relay" (True to forward for others, which is
+    off unless the person turned it on) and "friend_relay_mbps" (the most it forwards for others, all together). `relay_config` is what the owner's PC hands
     each member (see set_relay_config). The keyword arguments stand in for the network in tests: a `transport`, the
     `addresses` [(kind, address)] to offer, the `stun_servers`; `probe_network` False means no router or STUN calls."""
 
@@ -475,13 +476,43 @@ class PathManager:
         self._refresh_candidates()
 
     def state(self):
-        """For the app's screens: each member's way in use, and this PC's own."""
+        """For the app's screens: each member's way in use, this PC's own, and whom it is relaying for now."""
         with self._lock:
             return {"public": self.public, "port": self.port, "friend_relay": self._core is not None,
                     "relayed": dict(self._core.stats) if self._core else None,
+                    "through": sorted({u for ends in self._core.channels.values() for u in ends}) if self._core else [],
                     "peers": {pid: {"kind": p.path.kind, "rtt": round(p.active.rtt * 1000) if p.active else None,
                                     "ways": sorted({r.kind for r in p.routes.values() if r.alive(self._clock())})}
                               for pid, p in self._peers.items()}}
+
+    def problems(self):
+        """Members this PC has found no way to after trying for FAST_SECONDS, each with the reason in plain words and
+        what would help: [{"peer", "why"}]."""
+        now = self._clock()
+        found = []
+        with self._lock:
+            mine = self.public[2] if self.public else "unknown"
+            relays = bool(self._relays)
+            for peer_id, peer in self._peers.items():
+                if peer.path.kind or now - peer.updated < FAST_SECONDS:
+                    continue
+                if peer.key is None:
+                    found.append({"peer": peer_id, "why": "Their PC has not sent its addresses yet."})
+                    continue
+                theirs = next((r.kind_hint for r in peer.routes.values() if getattr(r, "kind_hint", None)), "unknown")
+                if mine == "hard" and theirs == "hard":
+                    why = "Both of your routers give a new port for every connection, so no direct way can open."
+                elif "hard" in (mine, theirs):
+                    why = "One of your routers gives a new port for every connection and the other lets nothing in."
+                else:
+                    why = "Neither PC can be reached from the other's network."
+                if relays:
+                    why += " The relays did not answer either."
+                else:
+                    why += (" A member whose PC others can reach can turn on relaying for others in the control panel, "
+                            "or the owner can add a relay server.")
+                found.append({"peer": peer_id, "why": why})
+        return found
 
     # --- relays --------------------------------------------------------------------------------------------------
 
@@ -506,7 +537,7 @@ class PathManager:
             client.close()
 
     def _set_core_locked(self):
-        allowed = self.settings.get("friend_relay", True) is not False and self._owner is not None
+        allowed = self.settings.get("friend_relay") is True and self._owner is not None
         if not allowed:
             self._core = None
             return
@@ -567,8 +598,11 @@ class PathManager:
                 continue
             if kind in DIRECT:
                 route = peer.routes.get(("direct", (address, port)))
+                hint = item[3] if kind == "punch" and len(item) > 3 and item[3] in ("easy", "hard", "unknown") else None
                 if route is None:
-                    peer.routes[("direct", (address, port))] = _Route(kind, address=(address, port))
+                    peer.routes[("direct", (address, port))] = _Route(kind, address=(address, port), kind_hint=hint)
+                elif hint:
+                    route.kind_hint = hint
             elif kind == "friend":
                 offers.add((address, port))
         for key in [("relay", (a, p)) for a, p in peer.friend_offers - offers]:
@@ -621,7 +655,7 @@ class PathManager:
             if classify_public_ip(upnp["external_ip"]) == "public":
                 found.append(["upnp", upnp["external_ip"], upnp["external_port"]])
         if self.public is not None:
-            found.append(["punch", self.public[0], self.public[1]])
+            found.append(["punch", self.public[0], self.public[1], self.public[2]])  # the router's kind, for problems()
         with self._lock:
             if self._core is not None:
                 # Offer to relay where others can reach this PC: IPv6, an open port, and a router that keeps one public
@@ -776,10 +810,10 @@ class PathManager:
             if kind == PROBE:
                 head = bytes([REPLY]) + bytes.fromhex(self.identity.user_id) + nonce
                 answer = head + _hmac(peer.key, head)
-                if relay is None:
-                    self._by_address[source] = sender
-                    if ("direct", source) not in peer.routes:  # it reached us from an address we did not know of
-                        peer.routes[("direct", source)] = _Route(kind_of(source[0]), address=source)
+                if relay is None and ("direct", source) not in peer.routes:
+                    # It reached us from an address we did not know of: probe it back. Only a reply to our own probe
+                    # lets DATA in from there, since a probe could be a copy someone sent again from elsewhere.
+                    peer.routes[("direct", source)] = _Route(kind_of(source[0]), address=source)
                 route = None
             else:
                 key = ("relay", relay.key) if relay is not None else ("direct", source)
@@ -951,8 +985,11 @@ class LoopbackPathManager:
     def port(self):
         return 0
 
+    def problems(self):
+        return []
+
     def state(self):
-        return {"public": None, "port": 0, "friend_relay": False, "relayed": None,
+        return {"public": None, "port": 0, "friend_relay": False, "relayed": None, "through": [],
                 "peers": {pid: {"kind": p.kind, "rtt": 0, "ways": [p.kind]} for pid, p in self.paths.items()}}
 
     def switch(self, kind, peer_id=None):

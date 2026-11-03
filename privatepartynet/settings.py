@@ -7,9 +7,9 @@ from privatepartynet.paths import data_dir
 
 THEMES = ("system", "light", "dark")
 DEFAULTS = {"port": 8765, "name": None, "theme": "system", "server_id": None, "game_server": None}  # name None means: use this PC's name; server_id is made on the first party
-# Forwarding for other members who cannot reach each other (a friend relay, pathway.py): on unless the person turns it
-# off, and never more than this many megabits a second for everyone together.
-DEFAULTS.update({"friend_relay": True, "friend_relay_mbps": 8})
+# Forwarding for other members who cannot reach each other (a friend relay, pathway.py): off until the person turns it
+# on, since it uses their upload, and then never more than this many megabits a second for everyone together.
+DEFAULTS.update({"friend_relay": False, "friend_relay_mbps": 8})
 MAX_FRIEND_MBPS = 1000
 SETTINGS_FILE = "settings.json"
 MAX_SAVED_NAME = 200  # the window trims names properly; this only stops a damaged file from growing huge

@@ -138,10 +138,12 @@
   <p id="gameNone" class="muted">Start your party or join one to use its game network.</p>
   <p id="gameStatus" class="muted"></p>
   <div class="row"><button id="gameOff" class="secondary" hidden>Turn the game network off</button></div>
-  <label class="check"><input id="friendRelay" type="checkbox"> Relay for members who cannot reach each other, when others can reach this PC. Only encrypted traffic passes through.</label>
-  <label class="field small">Most to relay for others (Mbit/s)
+  <p id="pathProblems" class="muted" hidden></p>
+  <label class="check"><input id="friendRelay" type="checkbox"> Let party members who can't reach each other go through this PC (encrypted; uses your upload)</label>
+  <label class="field small">At most (Mbit/s)
     <input id="friendRelayMbps" inputmode="numeric" maxlength="4" autocomplete="off">
   </label>
+  <p id="friendRelayNow" class="muted" hidden></p>
 </section>
 
 <section id="messagesBox">

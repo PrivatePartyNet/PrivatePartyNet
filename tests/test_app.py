@@ -538,15 +538,36 @@ class ReviewControllerTests(unittest.TestCase):
         self.assertTrue(self.one.clear_relay()["ok"])
         self.assertIsNone(self.one.state()["relay"])
 
-    def test_relaying_for_others_can_be_turned_off_and_limited(self):
-        self.assertEqual(self.one.state()["friend_relay"], {"on": True, "mbps": 8})
+    def test_relaying_for_others_is_off_until_turned_on_and_can_be_limited(self):
+        self.assertEqual(self.one.state()["friend_relay"], {"on": False, "mbps": 8, "through": [], "problems": []})
         self.assertFalse(self.one.set_friend_relay(True, "lots")["ok"])
-        self.assertTrue(self.one.set_friend_relay(False, 20)["ok"])
-        self.assertEqual(self.one.state()["friend_relay"], {"on": False, "mbps": 20})
-        self.assertEqual(self.one.path_settings(), {"friend_relay": False, "friend_relay_mbps": 20})
+        self.assertTrue(self.one.set_friend_relay(True, 20)["ok"])
+        self.assertEqual(self.one.state()["friend_relay"]["on"], True)
+        self.assertEqual(self.one.path_settings(), {"friend_relay": True, "friend_relay_mbps": 20})
         again = Controller(data_folder=self.folder + "/one", discovery_port=0, grabber=FakeGrabber())
         self.addCleanup(again.shutdown)
-        self.assertEqual(again.state()["friend_relay"], {"on": False, "mbps": 20}, "kept in the settings")
+        self.assertEqual(again.state()["friend_relay"]["mbps"], 20, "kept in the settings")
+
+    def test_the_panel_shows_who_goes_through_this_pc_and_who_cannot_be_reached(self):
+        class Paths:
+            names = {"aa" * 16: "Alex", "bb" * 16: "Sam"}
+            changed = None
+
+            def state(self):
+                return {"through": ["aa" * 16]}
+
+            def problems(self):
+                return [{"peer": "bb" * 16, "why": "Both of your routers give a new port for every connection."}]
+
+            def set_friend_relay(self, on, mbps=None):
+                self.changed = (on, mbps)
+
+        paths = self.one.path_manager = Paths()
+        view = self.one.state()["friend_relay"]
+        self.assertEqual(view["through"], ["Alex"])
+        self.assertEqual(view["problems"], ["Sam: Both of your routers give a new port for every connection."])
+        self.one.set_friend_relay(True, 4)
+        self.assertEqual(paths.changed, (True, 4), "a running game network follows the setting at once")
 
     def test_relay_addresses_are_read_with_or_without_a_port(self):
         from privatepartynet.app import _split_address

@@ -35,6 +35,8 @@
     clearRelay: document.getElementById("clearRelay"),
     friendRelay: document.getElementById("friendRelay"),
     friendRelayMbps: document.getElementById("friendRelayMbps"),
+    friendRelayNow: document.getElementById("friendRelayNow"),
+    pathProblems: document.getElementById("pathProblems"),
     copyInvite: document.getElementById("copyInvite"),
     inviteNote: document.getElementById("inviteNote"),
     inviteCode: document.getElementById("inviteCode"),
@@ -462,11 +464,18 @@
       el.relayNow.textContent = "No relay server is set.";
     }
     el.clearRelay.hidden = !relay;
-    if (friend && document.activeElement !== el.friendRelay && document.activeElement !== el.friendRelayMbps) {
+    if (!friend) return;
+    if (document.activeElement !== el.friendRelay && document.activeElement !== el.friendRelayMbps) {
       el.friendRelay.checked = friend.on;
       el.friendRelayMbps.value = friend.mbps;
       el.friendRelayMbps.disabled = !friend.on;
     }
+    var through = friend.through || [];
+    el.friendRelayNow.textContent = through.length ? "Going through this PC now: " + through.join(", ") + "." : "";
+    el.friendRelayNow.hidden = !through.length;
+    var problems = friend.problems || [];
+    el.pathProblems.textContent = problems.length ? "Cannot reach " + problems.join(" ") : "";
+    el.pathProblems.hidden = !problems.length;
   }
 
   el.saveRelay.addEventListener("click", function () {

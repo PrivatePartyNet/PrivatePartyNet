@@ -119,11 +119,11 @@ class LadderTests(Base):
         self.assertTrue(wait_for(lambda: a.paths[b.id].kind == "punch" and b.paths[a.id].kind == "punch", 15))
         self.exchange(a, b)
 
-    def test_two_hard_routers_meet_through_a_friend(self):
+    def test_two_hard_routers_meet_through_a_friend_who_turned_relaying_on(self):
         stun = self.stuns()
         a = Member(self, behind="hard", stun=stun, relay_config=friend_config)
         b = Member(self, behind="hard", stun=stun, relay_config=friend_config)
-        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=friend_config)
+        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=friend_config, friend_relay=True)
         mesh(a, b, friend)
         self.assertTrue(wait_for(lambda: a.manager.public and a.manager.public[2] == "hard"))
         self.assertTrue(wait_for(lambda: a.paths[b.id].kind == "friend" and b.paths[a.id].kind == "friend", 15),
@@ -134,6 +134,8 @@ class LadderTests(Base):
         self.assertGreater(friend.manager.state()["relayed"]["forwarded"], 0)
         # The friend forwarded only what the pair sent; nothing it handled could be read as theirs.
         self.assertNotIn(b"wireguard ciphertext from a", friend.got)
+        self.assertEqual(friend.manager.state()["through"], sorted([a.id, b.id]), "the friend can see whom it carries")
+        self.assertEqual(a.manager.problems(), [])
 
     def test_two_hard_routers_meet_through_the_groups_relay_server(self):
         stun = self.stuns()
@@ -151,25 +153,38 @@ class LadderTests(Base):
         self.assertTrue(wait_for(lambda: big in b.got, 5))
         self.assertGreater(relay.server.core.stats["forwarded"], 0)
 
-    def test_two_hard_routers_with_no_relay_find_no_way(self):
+    def test_two_hard_routers_with_no_relay_find_no_way_and_say_why(self):
+        from unittest import mock
+
+        from privatepartynet import pathway
+
         stun = self.stuns()
-        a, b = Member(self, behind="hard", stun=stun), Member(self, behind="hard", stun=stun)
-        mesh(a, b)
-        time.sleep(3)
+        with mock.patch.object(pathway, "FAST_SECONDS", 2.0):
+            a, b = Member(self, behind="hard", stun=stun), Member(self, behind="hard", stun=stun)
+            mesh(a, b)
+            self.assertTrue(wait_for(lambda: a.manager.problems(), 10))
+            (problem,) = a.manager.problems()
         self.assertEqual(a.paths[b.id].kind, "")
         a.paths[b.id].send(b"nowhere to go")
         self.assertEqual(a.paths[b.id].stats["dropped"], 1)
+        self.assertEqual(problem["peer"], b.id)
+        self.assertIn("new port for every connection", problem["why"])
+        self.assertIn("relaying for others", problem["why"])
+        self.assertIn("relay server", problem["why"])
 
-    def test_a_friend_who_says_no_relays_for_nobody(self):
+    def test_relaying_for_others_is_off_unless_turned_on(self):
         stun = self.stuns()
         a = Member(self, behind="hard", stun=stun, relay_config=friend_config)
         b = Member(self, behind="hard", stun=stun, relay_config=friend_config)
-        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=friend_config, friend_relay=False)
+        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=friend_config)  # no setting given
         self.assertFalse([c for c in friend.manager.local_candidates() if c[0] == "friend"])
+        self.assertFalse(friend.manager.state()["friend_relay"])
         mesh(a, b, friend)
         time.sleep(3)
         self.assertEqual(a.paths[b.id].kind, "")
         self.assertTrue(wait_for(lambda: a.paths[friend.id].kind == "upnp"))
+        friend.manager.set_friend_relay(True)  # the friend turns it on: the pair gets through
+        self.assertTrue(wait_for(lambda: a.paths[b.id].kind == "friend", 20), a.manager.state())
 
     def test_a_relayed_path_moves_to_a_direct_one_when_it_answers(self):
         relay = self.relay_server()
@@ -220,7 +235,7 @@ class FriendPassTests(Base):
 
         a = Member(self, behind="hard", stun=stun, relay_config=self_made)
         b = Member(self, behind="hard", stun=stun, relay_config=friend_config)
-        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=friend_config)
+        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=friend_config, friend_relay=True)
         mesh(a, b, friend)
         self.assertTrue(wait_for(lambda: a.paths[friend.id].kind == "upnp"))
         time.sleep(3)

@@ -323,6 +323,9 @@ class Controller:
         self._game_launch = None  # tests replace how the elevated helper is started
         self._game_note = ""
         self._host_punch = None  # while the party is open: reachable through the routers by invite (punch.py)
+        # The game network's PathManager (pathway.py) while it runs, set by whoever starts it; with .names, a dict of
+        # user id -> name, when it knows them. The control panel shows its relaying and its problems from it.
+        self.path_manager = None
         self._tunnels = {}  # joined server key -> the punch-through tunnel it is reached by
 
     # --- the key, the identity and the chat store ----------------------------------------------------------
@@ -935,8 +938,8 @@ class Controller:
             "reach": self._reach_view(),
             "game": self.game_state(),
             "relay": party.relay_view() if party else None,
-            "friend_relay": {"on": self._settings.get("friend_relay", True) is not False,
-                             "mbps": self._settings.get("friend_relay_mbps", 8)},
+            "friend_relay": {"on": self._settings.get("friend_relay") is True,
+                             "mbps": self._settings.get("friend_relay_mbps", 8), **self._paths_view()},
         }
 
     def _all_requests(self):
@@ -1089,12 +1092,36 @@ class Controller:
                 return {"ok": False, "message": "The limit is a whole number of megabits a second, from 1 to 1000."}
             changes["friend_relay_mbps"] = mbps
         self._save(**changes)
+        manager = self.path_manager
+        if manager is not None:
+            manager.set_friend_relay(changes["friend_relay"], changes.get("friend_relay_mbps"))
         return {"ok": True, "message": "Saved." if on else "This PC will not relay for others."}
 
     def path_settings(self):
         """What a PathManager (pathway.py) on this PC is given as its settings."""
-        return {"friend_relay": self._settings.get("friend_relay", True) is not False,
+        return {"friend_relay": self._settings.get("friend_relay") is True,
                 "friend_relay_mbps": self._settings.get("friend_relay_mbps", 8)}
+
+    def _name_of(self, user_id):
+        party = self._party
+        for member in (party.roster() if party is not None else []):
+            if member.get("user") == user_id:
+                return member["name"]
+        names = getattr(self.path_manager, "names", None) or {}
+        return names.get(user_id) or "a member"
+
+    def _paths_view(self):
+        """Who is going through this PC now, and whom this PC cannot reach and why (from the game network's paths)."""
+        manager = self.path_manager
+        if manager is None:
+            return {"through": [], "problems": []}
+        try:
+            state, problems = manager.state(), manager.problems()
+        except Exception:
+            log.exception("Reading the paths failed")
+            return {"through": [], "problems": []}
+        return {"through": [self._name_of(u) for u in state.get("through") or []],
+                "problems": [f"{self._name_of(p['peer'])}: {p['why']}" for p in problems]}
 
     def rename(self, name):
         name = clean_name(name)
