@@ -79,6 +79,26 @@ class TunnelTests(Base):
             thread.join(10)
         self.assertEqual(results, [200] * 6)
 
+    def test_connections_opened_at_the_same_moment_each_get_a_stream_of_their_own(self):
+        """Two connections that opened before either sent anything used to share one QUIC stream, and their TLS broke."""
+        _, client = self.tunnel()
+        start = threading.Barrier(16)
+        results = []
+
+        def ask():
+            start.wait(5)
+            try:
+                results.append(self.through(client.port, "GET", "/ask?ticket=none")[0])
+            except Exception as exc:  # a broken TLS connection is the failure this test is about
+                results.append(repr(exc))
+
+        threads = [threading.Thread(target=ask) for _ in range(16)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(20)
+        self.assertEqual(results, [200] * 16)
+
     def test_a_joiner_through_the_tunnel_is_outside_the_network_and_needs_the_password(self):
         _, client = self.tunnel()
         status, body = self.through(client.port, "POST", "/ask", {"name": "Far", "password": ""})

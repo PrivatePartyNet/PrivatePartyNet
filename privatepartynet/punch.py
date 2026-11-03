@@ -164,8 +164,8 @@ async def _pipe(reader, writer):
     finally:
         try:
             writer.close()
-        except (ConnectionError, OSError, RuntimeError):
-            pass
+        except (ConnectionError, OSError, RuntimeError, ValueError):
+            pass  # ValueError: aioquic's way of saying the stream had already finished both ways
 
 
 class _Prober(asyncio.DatagramProtocol):
@@ -276,6 +276,10 @@ class TunnelClient:
 
             async def carry(local_reader, local_writer):
                 reader, writer = await protocol.create_stream()
+                # aioquic picks the next stream id not yet used, and a stream is used only once something is sent on
+                # it: claim it now, or a connection opened before this one sends would get the same stream (seen as
+                # TLS errors when several connections open at once).
+                writer.write(b"")
                 await asyncio.gather(_pipe(local_reader, writer), _pipe(reader, local_writer))
 
             listener = await asyncio.start_server(carry, "127.0.0.1", 0)
