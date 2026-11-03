@@ -18,6 +18,7 @@ import hashlib
 import logging
 import os
 import signal
+import socket
 import ssl
 import struct
 import sys
@@ -43,7 +44,7 @@ STATS_SECONDS = 300
 class RelayServer:
     """The relay on one asyncio loop. start() opens the ports; close() ends it."""
 
-    def __init__(self, secrets_, host="0.0.0.0", udp_port=rp.DEFAULT_UDP_PORT, tls_port=None, certfile=None,
+    def __init__(self, secrets_, host="::", udp_port=rp.DEFAULT_UDP_PORT, tls_port=None, certfile=None,
                  keyfile=None, rate=rp.DEFAULT_RATE, burst=rp.DEFAULT_BURST, user_rate=rp.DEFAULT_USER_RATE,
                  total_rate=rp.DEFAULT_TOTAL_RATE, max_channels=rp.MAX_CHANNELS, handshake_seconds=HANDSHAKE_SECONDS,
                  max_per_address=MAX_TCP_PER_ADDRESS):
@@ -53,6 +54,7 @@ class RelayServer:
         self.certfile, self.keyfile = certfile, keyfile
         self.handshake_seconds, self.max_per_address = handshake_seconds, max_per_address
         self._udp = None
+        self._udp_v6 = False
         self._tls = None
         self._context = None
         self._tcp = {}  # connection number -> writer
@@ -74,24 +76,34 @@ class RelayServer:
             def error_received(self, exc):
                 pass  # a member's router said no to one datagram; the next BIND sorts it out
 
-        self._udp, _ = await loop.create_datagram_endpoint(Udp, local_addr=(self.host, self.udp_port))
+        dual = self.host in ("::", "")
+        sock = _dual_stack_udp(self.udp_port) if dual else None
+        if sock is not None:
+            self._udp, _ = await loop.create_datagram_endpoint(Udp, sock=sock)
+        else:
+            self._udp, _ = await loop.create_datagram_endpoint(
+                Udp, local_addr=("0.0.0.0" if dual else self.host, self.udp_port))
         self.udp_port = self._udp.get_extra_info("sockname")[1]
+        self._udp_v6 = len(self._udp.get_extra_info("sockname")) == 4
+        tcp_host = None if dual else self.host  # None: every address of both families
         if self.tls_port is not None and self.certfile:
             self._context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             self._context.load_cert_chain(self.certfile, self.keyfile)
             if hasattr(asyncio.StreamWriter, "start_tls"):
                 # Python 3.11 and later: TLS starts inside the handler, so every connection counts from the moment it is
                 # accepted, the handshake included.
-                self._tls = await asyncio.start_server(self._serve_tcp, self.host, self.tls_port)
+                self._tls = await asyncio.start_server(self._serve_tcp, tcp_host, self.tls_port)
             else:
-                self._tls = await asyncio.start_server(self._serve_tcp, self.host, self.tls_port, ssl=self._context,
+                self._tls = await asyncio.start_server(self._serve_tcp, tcp_host, self.tls_port, ssl=self._context,
                                                        ssl_handshake_timeout=self.handshake_seconds)
             self.tls_port = self._tls.sockets[0].getsockname()[1]
 
     def _handle(self, data, end):
         for (kind, where), message in self.core.handle(data, end, routable=end[0] == "tcp"):
             if kind == "udp":
-                self._udp.sendto(message, where)
+                # An IPv6 socket wants the address in full (Windows refuses two parts); an IPv4 member on it shows as
+                # ::ffff:a.b.c.d.
+                self._udp.sendto(message, (*where, 0, 0) if self._udp_v6 else where)
                 continue
             writer = self._tcp.get(where)
             if writer is not None and writer.transport.get_write_buffer_size() < TCP_BUFFER:
@@ -155,6 +167,22 @@ class RelayServer:
             writer.close()
 
 
+def _dual_stack_udp(port):
+    """One UDP socket for IPv6 and IPv4 together, so a member on either reaches the same relay (and two members on
+    different families meet through it). None where the system has no IPv6; then IPv4 alone."""
+    try:
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    except OSError:
+        return None
+    try:
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        sock.bind(("::", port))
+    except OSError:
+        sock.close()
+        return None
+    return sock
+
+
 class ThreadedRelay:
     """A RelayServer on a thread of its own, for tests and for running beside something else."""
 
@@ -206,7 +234,8 @@ def read_secrets(arguments):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="PrivatePartyNet relay server")
     parser.add_argument("--secret-file", help="file with the relay secret (one per line; the first is current)")
-    parser.add_argument("--host", default="0.0.0.0", help="address to listen on (:: for IPv6 too)")
+    parser.add_argument("--host", default="::", help="address to listen on (the default, ::, is every address of IPv6 "
+                                                      "and IPv4)")
     parser.add_argument("--udp-port", type=int, default=rp.DEFAULT_UDP_PORT)
     parser.add_argument("--tls-port", type=int, default=rp.DEFAULT_TLS_PORT, help="0 turns the TLS fallback off")
     parser.add_argument("--cert", help="TLS certificate (PEM) for the fallback")

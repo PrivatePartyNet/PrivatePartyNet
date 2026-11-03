@@ -8,7 +8,9 @@
 # /etc/ppn-relay (kept if they are already there), opens the firewall if ufw is on, and starts both services. Running
 # it again updates the relay and keeps the secret. At the end it prints what to type into PrivatePartyNet.
 #
-# Set PUBLIC_IP first if the VPS's public address is not on its own network card (some providers use 1:1 NAT).
+# Set PUBLIC_IP first if the VPS's public address is not on its own network card (some providers use 1:1 NAT). The
+# relay and coturn listen on IPv6 as well when the VPS has it (PUBLIC_IP6, found by itself), so members with only IPv6
+# and members with only IPv4 meet through it.
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -59,6 +61,9 @@ if [ -z "$PUBLIC_IP" ]; then
     echo "Could not tell the VPS's public address. Run again with PUBLIC_IP=x.x.x.x" >&2
     exit 1
 fi
+if [ -z "${PUBLIC_IP6:-}" ]; then
+    PUBLIC_IP6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null | sed -n 's/.* src \([0-9a-fA-F:]*\).*/\1/p')
+fi
 
 echo "Configuring coturn..."
 if [ -f /etc/turnserver.conf ] && ! grep -q "coturn for PrivatePartyNet" /etc/turnserver.conf \
@@ -72,6 +77,9 @@ umask 027
     echo "static-auth-secret=$SECRET"
     echo "external-ip=$PUBLIC_IP"
     echo "allowed-peer-ip=$PUBLIC_IP"
+    if [ -n "$PUBLIC_IP6" ]; then
+        echo "allowed-peer-ip=$PUBLIC_IP6"
+    fi
 } > /etc/turnserver.conf
 umask 022
 chown root:turnserver /etc/turnserver.conf 2>/dev/null || true
@@ -102,7 +110,7 @@ cat <<EOF
 
 The relay is running. In PrivatePartyNet, as the owner: Server settings, Relay server, then enter
 
-    Address:     $PUBLIC_IP
+    Address:     $PUBLIC_IP${PUBLIC_IP6:+, $PUBLIC_IP6}
     Secret:      $SECRET
     Certificate: $PIN
 

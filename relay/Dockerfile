@@ -15,4 +15,5 @@ RUN chmod 755 /app/docker-entrypoint.sh
 USER ppn-relay
 VOLUME /data
 EXPOSE 3479/udp 443/tcp
+# docker-compose.yml runs it on the host's network, IPv6 and IPv4.
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

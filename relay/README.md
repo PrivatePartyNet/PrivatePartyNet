@@ -39,8 +39,10 @@ most of the group, since every relayed datagram goes there and back.
        cd privatepartynet/relay
        sudo sh setup-ubuntu.sh
 
-3. The script prints an address, a secret and a certificate fingerprint. In PrivatePartyNet, as the owner, open the
-   control panel, Relay server, and enter them. The setting is kept with the server; members receive it (signed by your
+3. The script prints an address (the server's IPv4 and IPv6 addresses when it has both), a secret and a certificate
+   fingerprint. In PrivatePartyNet, as the owner, open the control panel, Relay server, and enter them. Give both
+   addresses, with the comma, or a name that has both: members whose network has only IPv6 (some mobile networks) or
+   only IPv4 then reach it, and meet each other through it. The setting is kept with the server; members receive it (signed by your
    PC) the next time they connect.
 4. If your provider has a firewall of its own (a "security group"), allow UDP 3479, TCP 443, UDP and TCP 3478, and UDP
    49160-49400. The script opens them in ufw when ufw is on.

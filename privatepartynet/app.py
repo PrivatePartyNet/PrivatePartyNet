@@ -1064,11 +1064,14 @@ class Controller:
 
     def set_relay(self, address, secret, pin=""):
         """The owner sets the group's relay server (relay/README.md): its address (a name or numbers, with :port when it
-        is not 3479), the secret the setup script printed, and its certificate fingerprint. Kept with the server; the
+        is not 3479; or its IPv4 and IPv6 addresses with a comma between), the secret the setup script printed, and its
+        certificate fingerprint. Kept with the server; the
         secret never leaves this PC. Returns {ok, message}."""
         if self._party is None:
             return {"ok": False, "message": "Start the party first."}
-        host, port = _split_address(address)
+        parts = [_split_address(part) for part in str(address or "").split(",") if part.strip()] or [("", None)]
+        host = ", ".join(h for h, _ in parts)
+        port = next((p for _, p in parts if p), None)
         try:
             self._party.set_relay(self._party.host_id, {"host": host, "port": port, "secret": secret, "pin": pin})
         except (Forbidden, NotFound) as exc:

@@ -39,6 +39,14 @@ class RelayFileTests(unittest.TestCase):
         self.assertIn("file: ./secret", compose)
         self.assertIn("secret", self.read(".gitignore").split())
 
+    def test_the_relay_and_coturn_serve_ipv6_too(self):
+        setup, compose = self.read("setup-ubuntu.sh"), self.read("docker-compose.yml")
+        self.assertIn("PUBLIC_IP6", setup)
+        self.assertIn("allowed-peer-ip=$PUBLIC_IP6", setup)
+        self.assertIn("PUBLIC_IP6", compose)
+        self.assertNotIn("ports:", compose, "host networking, so members keep their real IPv6 addresses")
+        self.assertNotIn("--host", self.read("systemd/ppn-relay.service"), "the server's own default: both families")
+
     def test_coturn_does_not_relay_to_private_networks(self):
         text = self.read("turnserver.conf")
         for start in ("10.0.0.0", "127.0.0.0", "169.254.0.0", "172.16.0.0", "192.168.0.0", "100.64.0.0", "192.0.0.0",

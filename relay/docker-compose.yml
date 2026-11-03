@@ -4,6 +4,8 @@
 #   docker compose up -d --build
 # The relay listens on UDP 3479 and TCP 443; coturn on UDP and TCP 3478, with relayed media on UDP 49160-49400.
 # The secret reaches both as a file, not as an environment variable, which docker inspect would show.
+# Both use the VPS's own network (host networking): members keep their real addresses, IPv6 included, which Docker's
+# port publishing would hide behind its own.
 secrets:
   relay_secret:
     file: ./secret
@@ -18,9 +20,7 @@ services:
       - relay_secret
     environment:
       PPN_RELAY_RATE_KBPS: ${PPN_RELAY_RATE_KBPS:-8000}
-    ports:
-      - "3479:3479/udp"
-      - "443:443/tcp"
+    network_mode: host  # listens on UDP 3479 and TCP 443, IPv6 and IPv4
     volumes:
       - ppn-relay-data:/data
     cap_add:
@@ -37,6 +37,7 @@ services:
       - relay_secret
     environment:
       PUBLIC_IP: ${PUBLIC_IP:?set PUBLIC_IP in .env}
+      PUBLIC_IP6: ${PUBLIC_IP6:-}
     volumes:
       - ./turnserver.conf:/etc/coturn/ppn-turnserver.conf:ro
     tmpfs:
@@ -50,7 +51,8 @@ services:
         { cat /etc/coturn/ppn-turnserver.conf
           echo "static-auth-secret=$$(head -n 1 /run/secrets/relay_secret)"
           echo "external-ip=$$PUBLIC_IP"
-          echo "allowed-peer-ip=$$PUBLIC_IP"; } > /tmp/turnserver.conf
+          echo "allowed-peer-ip=$$PUBLIC_IP"
+          if [ -n "$$PUBLIC_IP6" ]; then echo "allowed-peer-ip=$$PUBLIC_IP6"; fi; } > /tmp/turnserver.conf
         exec turnserver -c /tmp/turnserver.conf
 
 volumes:

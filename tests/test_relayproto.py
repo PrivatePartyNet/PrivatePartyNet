@@ -396,6 +396,31 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(self.closed(extra, 3))
         self.assertTrue(self.closed(held[0], 4), "a connection that never finishes its handshake is closed too")
 
+    def test_a_member_on_ipv6_and_one_on_ipv4_meet_through_a_dual_stack_relay(self):
+        if not socket.has_ipv6:
+            self.skipTest("no IPv6 on this PC")
+        relay = ThreadedRelay(["new secret"], udp_port=0)  # the default host: both families
+        self.addCleanup(relay.close)
+        v6 = {"host": "::1", "port": relay.udp_port, "credential": rp.HmacCredential(rp.member_credential("new secret", ALICE))}
+        v4 = {"host": "127.0.0.1", "port": relay.udp_port,
+              "credential": rp.HmacCredential(rp.member_credential("new secret", BOB))}
+        self.through(*self.pair(v6, v4)[:3])
+
+    def test_a_relay_name_with_both_families_is_reached_on_the_one_that_answers(self):
+        from privatepartynet import relayclient
+
+        dead = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        dead.bind(("127.0.0.1", 0))
+        self.addCleanup(dead.close)  # an address that takes BINDs and never answers, like a blocked family
+        resolver = lambda host, port: [("127.0.0.1", dead.getsockname()[1]), ("127.0.0.1", self.relay.udp_port)]  # noqa
+        config = self.config(ALICE)
+        config["host"] = "relay.example"
+        bridge = relayclient.RelayBridge(config, resolver=resolver)
+        self.addCleanup(bridge.close)
+        bridge.add(CHANNEL)
+        self.assertTrue(bridge.wait_bound(CHANNEL, 5))
+        self.assertEqual(bridge.client.address, ("127.0.0.1", self.relay.udp_port))
+
     def test_the_command_line_makes_a_secret(self):
         import contextlib
         import io

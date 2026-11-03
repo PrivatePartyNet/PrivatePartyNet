@@ -535,6 +535,9 @@ class ReviewControllerTests(unittest.TestCase):
         (carried,) = connect.decode_invite(code)["relays"]
         self.assertEqual((carried["kind"], carried["host"], carried["port"]), ("vps", "relay.example.net", 4000))
         self.assertNotIn(b"a-long-enough-relay-secret", repr(connect.decode_invite(code)).encode())
+        self.assertTrue(self.one.set_relay("198.51.100.9, [2001:db8::5]:4000", "a-long-enough-relay-secret")["ok"])
+        self.assertEqual((self.one.state()["relay"]["host"], self.one.state()["relay"]["port"]),
+                         ("198.51.100.9, 2001:db8::5", 4000))
         self.assertTrue(self.one.clear_relay()["ok"])
         self.assertIsNone(self.one.state()["relay"])
 

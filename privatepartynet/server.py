@@ -224,9 +224,11 @@ def clean_relay(config):
     ValueError, in words, for anything that cannot be right."""
     if not isinstance(config, dict):
         raise ValueError("The relay settings were not understood.")
-    host = str(config.get("host") or "").strip().strip("[]")
-    if not host or len(host) > 253 or any(c.isspace() or c in "/@?#" for c in host):
-        raise ValueError("Enter the relay server's address (a name like relay.example.net, or numbers).")
+    hosts = [h.strip().strip("[]") for h in str(config.get("host") or "").split(",")]
+    if not 1 <= len(hosts) <= 2 or any(not h or len(h) > 253 or any(c.isspace() or c in "/@?#" for c in h) for h in hosts):
+        raise ValueError("Enter the relay server's address (a name like relay.example.net, or numbers; its IPv4 and "
+                         "IPv6 addresses may both be given, with a comma between them).")
+    host = ", ".join(hosts)
     try:
         port = int(config.get("port") if config.get("port") not in (None, "") else relayproto.DEFAULT_UDP_PORT)
         tls_port = int(config.get("tls_port") if config.get("tls_port") not in (None, "") else relayproto.DEFAULT_TLS_PORT)
@@ -242,6 +244,11 @@ def clean_relay(config):
         raise ValueError("The certificate fingerprint is 64 letters and digits (the setup script prints it), or empty.")
     return {"host": host, "port": port, "tls_port": tls_port, "pin": pin, "secret": secret,
             "turn": config.get("turn", True) is not False}
+
+
+def relay_hosts(relay):
+    """The relay server's addresses: one name, or its IPv4 and IPv6 addresses when the owner gave both."""
+    return [h.strip() for h in relay["host"].split(",") if h.strip()]
 
 
 def certificate_fingerprint_file(certfile):
@@ -886,9 +893,10 @@ class Party:
             relay = self._relay
         config = {"vps": [], "expires": int(now + relayproto.TOKEN_SECONDS)}
         if relay is not None:
-            config["vps"].append({"host": relay["host"], "port": relay["port"], "tls_port": relay["tls_port"],
-                                  "pin": relay["pin"],
-                                  "credential": relayproto.member_credential(relay["secret"], user_id, now=now).hex()})
+            credential = relayproto.member_credential(relay["secret"], user_id, now=now).hex()
+            for host in relay_hosts(relay):
+                config["vps"].append({"host": host, "port": relay["port"], "tls_port": relay["tls_port"],
+                                      "pin": relay["pin"], "credential": credential})
         if self.owner is None:
             return {"relay": config, "sig": ""}
         from privatepartynet.pathway import make_pass, sign_relay_config
@@ -921,8 +929,9 @@ class Party:
 
         _, public, joiner = invite_key(secret)
         if relay is not None:
-            found.append(["vps", relay["host"], relay["port"], relay["tls_port"], relay["pin"],
-                          relayproto.member_credential(relay["secret"], joiner, lifetime, now).hex()])
+            credential = relayproto.member_credential(relay["secret"], joiner, lifetime, now).hex()
+            for host in relay_hosts(relay):
+                found.append(["vps", host, relay["port"], relay["tls_port"], relay["pin"], credential])
         if self.owner is not None:
             friend_pass = make_pass(self.owner.sign, joiner, public, lifetime, now).hex()
             for address, port in list(self.friend_relays())[:3]:
@@ -939,8 +948,9 @@ class Party:
         found = []
         if relay is not None:
             credential = relayproto.HmacCredential(relayproto.member_credential(relay["secret"], me, now=now))
-            found.append({"host": relay["host"], "port": relay["port"], "tls_port": relay["tls_port"], "pin": relay["pin"],
-                          "credential": credential})
+            for host in relay_hosts(relay):
+                found.append({"host": host, "port": relay["port"], "tls_port": relay["tls_port"], "pin": relay["pin"],
+                              "credential": credential})
         if self.owner is not None:
             from privatepartynet.pathway import PassCredential, make_pass
 
@@ -955,11 +965,13 @@ class Party:
         relay = self._relay
         if relay is None or not relay.get("turn"):
             return []
-        host = f"[{relay['host']}]" if ":" in relay["host"] else relay["host"]
         username, credential = relayproto.turn_credentials(relay["secret"], member.get("user") or member["id"],
                                                            TURN_SECONDS)
-        return [{"urls": [f"turn:{host}:{TURN_PORT}?transport=udp", f"turn:{host}:{TURN_PORT}?transport=tcp"],
-                 "username": username, "credential": credential}]
+        urls = []
+        for host in relay_hosts(relay):
+            host = f"[{host}]" if ":" in host else host
+            urls += [f"turn:{host}:{TURN_PORT}?transport=udp", f"turn:{host}:{TURN_PORT}?transport=tcp"]
+        return [{"urls": urls, "username": username, "credential": credential}]
 
     def _broadcast_ice_locked(self):
         """Tell every open page how its connections may cross routers: STUN, and TURN with its own credentials."""

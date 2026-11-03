@@ -131,6 +131,19 @@ class TurnTests(ServerTestCase):
         _, session = self.member(party, "Sam")
         self.assertEqual(read_until(self.stream(party, session), "hello")["turn"], [])
 
+    def test_a_relay_given_at_both_its_addresses_reaches_members_on_either(self):
+        party = self.party()
+        party.set_relay(party.host_id, {**RELAY, "host": "198.51.100.9, 2001:db8::5"})
+        self.assertEqual([v["host"] for v in party.path_relay_for(MEMBER)["relay"]["vps"]], ["198.51.100.9", "2001:db8::5"])
+        self.assertEqual([r[1] for r in party.invite_relays(bytes(16))], ["198.51.100.9", "2001:db8::5"])
+        self.assertEqual([r["host"] for r in party.host_relays()], ["198.51.100.9", "2001:db8::5"])
+        _, session = self.member(party, "Sam")
+        urls = read_until(self.stream(party, session), "hello")["turn"][0]["urls"]
+        self.assertEqual(urls[0], "turn:198.51.100.9:3478?transport=udp")
+        self.assertEqual(urls[2], "turn:[2001:db8::5]:3478?transport=udp")
+        with self.assertRaisesRegex(ValueError, "comma"):
+            clean_relay({**RELAY, "host": "a, b, c"})
+
     def test_an_ipv6_relay_address_is_bracketed(self):
         party = self.party()
         party.set_relay(party.host_id, {**RELAY, "host": "2001:db8::5"})
