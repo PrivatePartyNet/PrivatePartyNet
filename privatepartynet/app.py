@@ -320,6 +320,7 @@ class Controller:
         self._joiner = None
         self._joiner_opened = False
         self._game = None  # the game network in use: {key, session, link, mesh, paths, stop, public}
+        self.path_manager = None  # the game network's paths (pathway.PathManager) while it is on
         self._game_launch = None  # tests replace how the elevated helper is started
         self._game_helper = {}  # tests: where the helper is and its in-memory adapter (GameSession's keywords)
         self._game_paths = None  # tests: make(identity) -> a path manager in place of pathway.PathManager
@@ -802,6 +803,7 @@ class Controller:
         game = {"key": key, "session": None, "link": None, "mesh": None, "paths": paths, "stop": stop,
                 "private": private, "public": public}
         self._game = game
+        self.path_manager = paths
         if key == "own":
             party = self._party
             try:
@@ -885,6 +887,7 @@ class Controller:
         game, self._game = self._game, None
         if game is None:
             return {"ok": True, "message": ""}
+        self.path_manager = None
         game["stop"].set()
         if game.get("link") is not None:
             game["link"].stop()

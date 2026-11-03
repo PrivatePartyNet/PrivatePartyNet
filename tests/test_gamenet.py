@@ -150,6 +150,11 @@ class DirectoryTests(unittest.TestCase):
         self.assertTrue(self.directory.leave("u-alex"))
         self.assertEqual(self.directory.peers(), [])
 
+    def test_the_list_can_be_sent_again_without_a_change(self):
+        version = self.directory.version
+        self.directory.touch()
+        self.assertEqual(self.directory.wait(version, 1), version + 1)
+
     def test_a_late_leave_from_an_old_link_does_not_remove_the_new_one(self):
         self.directory.join("u-alex", self.keys["alex"])
         newer = public_key(new_private_key())

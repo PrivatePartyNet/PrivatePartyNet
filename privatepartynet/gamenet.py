@@ -286,6 +286,11 @@ class Directory:
             return [dict(entry, candidates=[list(c) for c in entry["candidates"]])
                     for entry in sorted(self._on.values(), key=lambda e: ipaddress.ip_address(e["address"]))]
 
+    def touch(self):
+        """Send everyone the list again now (each member's link adds their own fresh relay settings to it)."""
+        with self._changed:
+            self._bump_locked()
+
     def wait(self, version, timeout):
         """Wait until the list is newer than `version`, for at most `timeout` seconds. Returns the current version."""
         with self._changed:

@@ -709,6 +709,9 @@ class GameNetworkThroughTheControllerTests(unittest.TestCase):
         host_session.put_packet(make_packet(host_state["address"], "255.255.255.255", b"game on port 5000"))
         self.assertTrue(self.got(self.guest_tun, b"game on port 5000"))
         self.assertEqual([m["address"] for m in self.host.game_state()["members"]], [guest_state["address"]])
+        self.assertIs(self.host.path_manager, self.host._game["paths"], "the paths are there for the relay controls")
+        self.host.game_off()
+        self.assertIsNone(self.host.path_manager)
 
     def test_windows_services_are_closed_to_members_until_this_pc_opens_them_live(self):
         import struct
