@@ -1,4 +1,4 @@
-"""Offline guarantees: the pages load nothing from the internet, and the call uses no STUN or TURN server."""
+"""Offline guarantees: the pages load nothing from the internet, and on one network the call uses no STUN or TURN server."""
 
 import re
 import unittest
@@ -21,16 +21,17 @@ class OfflineTests(unittest.TestCase):
                     offenders.append(f"{path.name}: {match.group(0)}")
         self.assertEqual(offenders, [])
 
-    def test_the_call_uses_no_relay_and_stun_only_once_someone_joined_from_outside(self):
+    def test_the_call_uses_stun_and_turn_only_once_someone_joined_from_outside(self):
         """On one network nothing outside it is asked. STUN (which only tells a PC its public address) is switched on
-        by the party once someone joins from outside the network, and there is never a TURN server: nothing relays."""
+        by the party once someone joins from outside the network. The pages name no TURN server of their own: TURN is
+        used only when the party hands out one, the group's own relay server, which the owner set up."""
         source = (web_dir() / "rtc.js").read_text(encoding="utf-8")
         self.assertIn("var CONFIG = { iceServers: [] };", source, "the default is no ICE server at all")
         self.assertNotIn("turn:", source)
         self.assertNotIn("turns:", source)
         room = (web_dir() / "room.js").read_text(encoding="utf-8")
-        self.assertEqual(sorted(set(re.findall(r"RTC\.setStun\(([^)]*)\)", room))), ["!!msg.stun"],
-                         "STUN follows only what the party says")
+        self.assertEqual(sorted(set(re.findall(r"RTC\.setStun\(([^)]*)\)", room))), ["!!msg.stun, msg.turn"],
+                         "STUN and TURN follow only what the party says")
 
     def test_the_pages_the_app_needs_are_bundled(self):
         for name in ("login.html", "room.html", "rtc.js", "room.js", "style.css"):

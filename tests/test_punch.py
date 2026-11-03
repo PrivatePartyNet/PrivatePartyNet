@@ -354,7 +354,7 @@ class RelayJoinTests(Base):
         from privatepartynet.pathway import PathManager
 
         self.party.owner = Identity.create()  # friend relays take passes the owner signs
-        friend = PathManager(Identity.create(), {}, self.party.path_relay_for("22" * 16)["relay"],
+        friend = PathManager(Identity.create(), {"friend_relay": True}, self.party.path_relay_for("22" * 16)["relay"],
                              addresses=[("upnp", "127.0.0.1")], probe_network=False)
         self.addCleanup(friend.stop)
         self.party.set_relay(self.party.host_id, None)
