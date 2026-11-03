@@ -267,6 +267,15 @@ class SafetyTests(Base):
         time.sleep(0.5)
         self.assertNotIn(b"forged", a.got)
 
+    def test_the_full_size_probe_is_what_the_game_network_sends_over_the_worst_path(self):
+        from privatepartynet import pathway
+
+        self.assertEqual(pathway.FULL_SIZE, pathway.GAME_MAX_DATAGRAM + 1, "the largest WireGuard datagram and its marker")
+        self.assertEqual(pathway.FULL_SIZE + rp.HEADER + 40 + 8, 1400, "relayed over IPv6: the 1400-byte budget, exactly")
+        self.assertLessEqual(pathway.FULL_SIZE + rp.HEADER, rp.MAX_PAYLOAD + rp.HEADER, "a relay carries it")
+        a = Member(self, addresses=[("lan", "127.0.0.1")], max_datagram=1200)
+        self.assertEqual(a.manager._full_size, 1201, "the game network may say another size")
+
     def test_too_big_a_datagram_is_dropped_not_cut(self):
         a, b = Member(self, addresses=[("lan", "127.0.0.1")]), Member(self, addresses=[("lan", "127.0.0.1")])
         mesh(a, b)

@@ -59,7 +59,10 @@ DIRECT = ("lan", "ipv6", "upnp", "punch")
 PROBE, REPLY, DATA = 0x30, 0x31, 0x32
 PROBE_SIZE = 41
 MAX_DATAGRAM = 1400  # what every path carries, the relays included; WireGuard's MTU is set to fit
-FULL_SIZE = 1 + MAX_DATAGRAM  # a probe padded to the size of the largest DATA, to show the way carries that too
+# The largest datagram the game network sends: WireGuard's adapter MTU (1270) + its 32 bytes + 32 of broadcast fan-out.
+# With the 1-byte DATA marker and a relay's 17-byte header, a relayed one over IPv6 is 1400 bytes on the wire.
+GAME_MAX_DATAGRAM = 1334
+FULL_SIZE = 1 + GAME_MAX_DATAGRAM  # a probe padded to the size of the largest DATA, to show the way carries that too
 FULL_EVERY = 6  # every so many probes of a way that answers is full size
 FULL_SECONDS = 45.0  # a way whose last full-size answer is older than this is not used
 PROBE_FAST = 0.5  # seconds between probes of a way not proven yet, for FAST_SECONDS after the candidates arrive
@@ -352,6 +355,8 @@ class PathManager:
                  probe_network=True, clock=time.monotonic):
         self.identity = identity
         self.settings = dict(settings or {})
+        # How large a way must be shown to carry before it is used: the game network's largest datagram, unless told.
+        self._full_size = 1 + min(MAX_DATAGRAM, int(self.settings.get("max_datagram") or GAME_MAX_DATAGRAM))
         self._clock = clock
         self._transport = transport or UdpTransport(int(self.settings.get("path_port") or 0))
         self._addresses = addresses
@@ -823,7 +828,7 @@ class PathManager:
             if peer is not None:
                 peer.path._deliver(data[1:])
             return
-        if kind not in (PROBE, REPLY) or len(data) not in (PROBE_SIZE, FULL_SIZE):
+        if kind not in (PROBE, REPLY) or not PROBE_SIZE <= len(data) <= 1 + MAX_DATAGRAM:
             return
         sender, nonce = data[1:17].hex(), data[17:25]
         with self._lock:
@@ -850,7 +855,7 @@ class PathManager:
                 route.last_reply = now
                 route.rtt = (now - sent) if route.replies == 0 else route.rtt * 0.75 + (now - sent) * 0.25
                 route.replies += 1
-                if len(data) == FULL_SIZE:
+                if len(data) >= self._full_size:
                     route.full = now
                 elif route.full is None:
                     route.next_probe = now  # it answers: check at once that it carries full-size datagrams too
@@ -873,7 +878,7 @@ class PathManager:
         probe = head + _hmac(peer.key, head)
         # Small until the way answers at all, then full size until it has answered at full size, then now and then.
         if route.replies and (route.full is None or route.probes % FULL_EVERY == 0):
-            probe += bytes(FULL_SIZE - len(probe))
+            probe += bytes(self._full_size - len(probe))
         route.probes += 1
         self._send_on(route, peer, probe)
 
