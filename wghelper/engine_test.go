@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
@@ -414,5 +415,74 @@ func TestTheLargestDatagramFitsEveryPathOverIPv6(t *testing.T) {
 	}
 	if largest != MTU+fanoutExtra+WireGuardOv {
 		t.Fatalf("the largest WireGuard datagram is %d, not the %d the arithmetic says", largest, MTU+fanoutExtra+WireGuardOv)
+	}
+}
+
+// withOptions gives a packet an IP header of 24 bytes (one word of options), so the ports move 4 bytes on.
+func withOptions(packet []byte) []byte {
+	out := append(append(append([]byte(nil), packet[:ipHeader]...), 1, 1, 1, 0), packet[ipHeader:]...) // NOPs, end
+	out[0] = 0x46
+	binary.BigEndian.PutUint16(out[2:4], uint16(len(out)))
+	binary.BigEndian.PutUint16(out[10:12], 0)
+	binary.BigEndian.PutUint16(out[10:12], checksum(out[:24]))
+	return out
+}
+
+func TestTheServicesFilterHasNoWayRoundIt(t *testing.T) {
+	closed := closedRules(nil)
+	to := func(protocol byte, port uint16) []byte {
+		return toPort(udpPacket("10.77.12.1", "10.77.12.2", []byte("payload")), protocol, port)
+	}
+	first := to(tcp, 445)
+	binary.BigEndian.PutUint16(first[6:8], 0x2000) // more fragments follow, offset 0: the first piece
+	later := to(tcp, 445)
+	binary.BigEndian.PutUint16(later[6:8], 0x2001) // offset 8 bytes: past the ports, which only the first piece has
+	short := to(tcp, 445)[:ipHeader+3]
+	binary.BigEndian.PutUint16(short[2:4], ipHeader+3)
+	cases := []struct {
+		name   string
+		packet []byte
+		closed bool
+	}{
+		{"the first fragment to 445", first, true},
+		{"an IP header with options, to 445", withOptions(to(tcp, 445)), true},
+		{"an IP header with options, to a game", withOptions(to(tcp, 27015)), false},
+		{"a first piece too short for its ports", short, true},
+		{"a later fragment (Windows never rebuilds the datagram without the first)", later, false},
+	}
+	for _, edge := range []struct {
+		protocol byte
+		port     uint16
+		closed   bool
+	}{
+		{tcp, 134, false}, {tcp, 135, true}, {tcp, 136, false},
+		{udp, 136, false}, {udp, 137, true}, {udp, 139, true}, {udp, 140, false},
+		{tcp, 3388, false}, {tcp, 3389, true}, {tcp, 3390, false},
+		{tcp, 5984, false}, {tcp, 5985, true}, {tcp, 5986, true}, {tcp, 5987, false},
+		{udp, 445, false}, // file sharing is TCP 445 only
+	} {
+		cases = append(cases, struct {
+			name   string
+			packet []byte
+			closed bool
+		}{fmt.Sprintf("port %d/%d", edge.port, edge.protocol), to(edge.protocol, edge.port), edge.closed})
+	}
+	for _, c := range cases {
+		if got := ToClosedService(c.packet, closed); got != c.closed {
+			t.Errorf("%s: closed %v, want %v", c.name, got, c.closed)
+		}
+	}
+	if ToClosedService(short, closedRules([]string{"sharing", "remote_desktop", "remote_management", "discovery"})) {
+		t.Error("with everything opened, nothing should be judged closed")
+	}
+}
+
+func TestAWrappedMulticastToAClosedServiceIsDropped(t *testing.T) {
+	_, ms := startMesh(t, "10.77.12.1", "10.77.12.2")
+	llmnr := toPort(udpPacket("10.77.12.1", "224.0.0.252", []byte("service")), udp, 5355)
+	ms[0].tun.Outbound <- llmnr
+	ms[0].tun.Outbound <- udpPacket("10.77.12.1", "10.77.12.2", []byte("marker"))
+	if got := receive(t, ms[1], 5*time.Second); !bytes.HasSuffix(got, []byte("marker")) {
+		t.Fatalf("got %x, want the LLMNR multicast dropped", got)
 	}
 }

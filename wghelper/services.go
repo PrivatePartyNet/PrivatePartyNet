@@ -73,11 +73,16 @@ func checkOpen(open []string) error {
 }
 
 // ToClosedService is true for a TCP or UDP packet to one of the closed ports.
+// A first piece too short to hold the ports is dropped too while anything is closed: it could only be an attempt to
+// slip past this check.
 func ToClosedService(packet []byte, closed []portRule) bool {
 	header := int(packet[0]&0x0F) * 4
 	protocol := packet[9]
-	if (protocol != tcp && protocol != udp) || fragmentOffset(packet) != 0 || len(packet) < header+4 {
+	if (protocol != tcp && protocol != udp) || fragmentOffset(packet) != 0 {
 		return false
+	}
+	if len(packet) < header+4 {
+		return len(closed) > 0
 	}
 	port := binary.BigEndian.Uint16(packet[header+2 : header+4])
 	for _, rule := range closed {
