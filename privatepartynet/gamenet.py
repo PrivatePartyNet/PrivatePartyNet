@@ -40,6 +40,7 @@ AVOID_SECOND_OCTET = {0, 1, 2, 5, 8, 10, 20, 50, 100, 168, 200, 254, 255}  # 10.
 MULTICAST = ipaddress.ip_network("224.0.0.0/4")
 LIMITED_BROADCAST = ipaddress.ip_address("255.255.255.255")
 KEEPALIVE_SECONDS = 15.0  # the host's link to each member sends something at least this often
+RELAY_REFRESH_SECONDS = 1800.0  # the list is sent again this often anyway, with fresh relay settings (they last hours)
 MAX_CANDIDATES = 24  # ways to reach one member, as pathway.py lists them
 MAX_CANDIDATES_BYTES = 4096
 ROSTER_LABEL = b"PrivatePartyNet game roster|"

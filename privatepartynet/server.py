@@ -892,8 +892,10 @@ class Party:
         """Wait for the list to change from `version`; returns the version now."""
         return self.net_directory().wait(version, timeout)
 
-    def net_roster(self, user):
-        """The signed list of who is on, for one member, with the relay settings the path layer gives that member."""
+    def net_roster(self, user, sign_public=None):
+        """The signed list of who is on, for one member, with the relay settings the path layer gives that member (bound
+        to their identity's signing key, `sign_public`). Those settings are that member's own: they are only ever sent
+        on that member's own link."""
         directory = self.net_directory()
         with self._lock:
             version, signed = self._net_signed
@@ -903,7 +905,7 @@ class Party:
                 signed = gamenet.sign_roster(body, self._signer)
                 self._net_signed = (version, signed)
         relay_for = getattr(self, "path_relay_for", None)
-        return {**signed, "relay": relay_for(user) if callable(relay_for) else None}
+        return {**signed, "relay": relay_for(user, sign_public=sign_public) if callable(relay_for) else None}
 
     # --- channels --------------------------------------------------------------------------------------------
 
@@ -1549,13 +1551,20 @@ class _Handler(BaseHTTPRequestHandler):
         threads =[threading.Thread(target=watch, daemon=True), threading.Thread(target=read, daemon=True)]
         for thread in threads:
             thread.start()
-        version = None
+        version, sent = None, 0.0
+        sign_public = body["card"]["sign"]
         try:
             while not both.is_set():
-                current = party.net_wait(version, gamenet.KEEPALIVE_SECONDS)
+                due = gamenet.RELAY_REFRESH_SECONDS - (time.monotonic() - sent)
+                current = party.net_wait(version, max(0.0, min(gamenet.KEEPALIVE_SECONDS, due)))
                 if both.is_set():
                     break
-                line = party.net_roster(user) if current != version else {}
+                # The list again when it changed, and every RELAY_REFRESH_SECONDS anyway: the relay settings in it are
+                # this member's own and run out after a few hours.
+                fresh = current != version or time.monotonic() - sent >= gamenet.RELAY_REFRESH_SECONDS
+                line = party.net_roster(user, sign_public) if fresh else {}
+                if fresh:
+                    sent = time.monotonic()
                 version = current
                 self.wfile.write(json.dumps(line).encode("utf-8") + b"\n")
                 self.wfile.flush()

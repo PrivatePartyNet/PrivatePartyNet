@@ -813,13 +813,14 @@ class Controller:
             self._game_session(game, address, party.net_directory().network)
 
             def follow():
-                version = None
+                version, sent = None, 0.0
                 while not stop.is_set():
                     current = party.net_wait(version, 0.5)
-                    if current == version or stop.is_set():
+                    stale = time.monotonic() - sent >= gamenet.RELAY_REFRESH_SECONDS  # fresh relay settings
+                    if (current == version and not stale) or stop.is_set():
                         continue
-                    version = current
-                    signed = party.net_roster(party.net_host_user)
+                    version, sent = current, time.monotonic()
+                    signed = party.net_roster(party.net_host_user, self._identity.sign_public.hex())
                     self._use_relay(paths, signed.get("relay"), self._identity.sign_public.hex())
                     game["mesh"].apply(gamenet.open_roster(signed))
 

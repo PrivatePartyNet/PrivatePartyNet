@@ -84,6 +84,39 @@ class GameNetworkLinkTests(unittest.TestCase):
         self.assertEqual(by_user[alex.user_id]["candidates"], [["lan", "192.168.1.3", 4001]])
         self.newest(sam_lists, lambda r: self.users(r) == everyone)
 
+    def test_each_member_gets_their_own_relay_settings_on_their_own_link_and_fresh_ones_in_time(self):
+        from privatepartynet import gamenet
+
+        asked = []
+
+        def path_relay_for(user, sign_public=None):
+            asked.append((user, sign_public))
+            return {"for": user, "n": len(asked)}
+
+        self.party.path_relay_for = path_relay_for
+        saved = gamenet.RELAY_REFRESH_SECONDS
+        gamenet.RELAY_REFRESH_SECONDS = 0.5
+        self.addCleanup(setattr, gamenet, "RELAY_REFRESH_SECONDS", saved)
+        alex, _ = self.member("Alex")
+        sam, _ = self.member("Sam")
+        relays = queue.Queue()
+        link = NetLink("127.0.0.1", self.party.port, self.party.fingerprint, alex, public_key(new_private_key()),
+                       lambda roster, relay: relays.put(relay), server_id=self.party.server_id,
+                       host_sign=self.owner.sign_public.hex())
+        link.start()
+        self.addCleanup(link.stop)
+        sam_link, _ = self.link(sam)
+        first = relays.get(timeout=8)
+        self.assertEqual(first["for"], alex.user_id, "only Alex's own settings on Alex's link")
+        self.assertIn((alex.user_id, alex.sign_public.hex()), asked, "bound to Alex's signing key")
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            again = relays.get(timeout=8)
+            if again["n"] != first["n"] and again["for"] == alex.user_id:
+                break
+        else:
+            self.fail("no fresh settings came")
+
     def test_new_ways_to_reach_a_member_reach_everyone(self):
         alex, _ = self.member("Alex")
         sam, _ = self.member("Sam")

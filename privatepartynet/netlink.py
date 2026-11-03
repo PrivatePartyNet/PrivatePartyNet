@@ -137,8 +137,8 @@ class NetLink:
             if not message:
                 continue  # a keep-alive
             roster = gamenet.open_roster(message, self.host_sign, self.server_id, network)
-            if roster["seq"] <= newest:
-                continue  # an older list than one already followed
+            if roster["seq"] < newest:
+                continue  # an older list than one already followed; the same one again brings fresh relay settings
             newest = roster["seq"]
             try:
                 self.on_roster(roster, message.get("relay"))
