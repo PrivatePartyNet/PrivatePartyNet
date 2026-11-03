@@ -191,9 +191,13 @@ class GameNetworkLinkTests(unittest.TestCase):
     def test_a_wrong_certificate_is_never_given_the_signature(self):
         alex, _ = self.member("Alex")
         link, _ = self.link(alex, fingerprint="00" * 32)
-        time.sleep(1.0)
-        self.assertNotEqual(link.status["state"], "connected")
-        self.assertIn("certificate differs", link.status["message"])
+        seen = set()
+        deadline = time.monotonic() + 8  # it keeps trying, so look at each attempt as it ends rather than at one moment
+        while time.monotonic() < deadline and not any("certificate differs" in m for m in seen):
+            seen.add(link.status["message"])
+            self.assertNotEqual(link.status["state"], "connected")
+            time.sleep(0.02)
+        self.assertTrue(any("certificate differs" in m for m in seen), seen)
 
     def test_an_idle_link_stays_up_on_keepalives(self):
         from privatepartynet import gamenet
