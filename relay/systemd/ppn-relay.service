@@ -11,6 +11,7 @@ EnvironmentFile=-/etc/ppn-relay/options
 ExecStart=/usr/bin/python3 /opt/ppn-relay/ppn_relay.py --secret-file /etc/ppn-relay/secret \
     --udp-port ${UDP_PORT} --tls-port ${TLS_PORT} --cert /etc/ppn-relay/relay.crt --key /etc/ppn-relay/relay.key \
     --rate-kbps ${RATE_KBPS}
+ExecReload=/bin/kill -HUP $MAINPID
 Environment=UDP_PORT=3479 TLS_PORT=443 RATE_KBPS=8000
 Restart=on-failure
 RestartSec=3

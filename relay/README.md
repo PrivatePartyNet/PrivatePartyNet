@@ -18,9 +18,12 @@ Everything it forwards is encrypted end to end before it leaves a member's PC (W
 the host's certificate for joining, DTLS-SRTP for voice and screens). The relay cannot read it or change it. It does see
 the public addresses of the members using it, how much they send, and when. It keeps nothing on disk.
 
-Only members can use it. The owner's PC holds the relay secret and gives each member short-lived credentials made from it
-(valid for a day, then renewed while they are in the party); the secret itself never leaves the owner's PC. Each member's
-traffic through one channel is limited (8 Mbit/s by default) and each member can hold at most 64 channels.
+Only members can use it. The owner's PC holds the relay secret and gives each member, over the party's own encrypted
+connection, credentials made from it that last six hours and are renewed while they are in the party; the secret itself
+never leaves the owner's PC. What a member sends to the relay proves they hold their credentials without showing them,
+so someone watching the network cannot use them. Each member's traffic through one channel is limited (8 Mbit/s by
+default), each member's traffic over all their channels too (16 Mbit/s), and the relay's in all (100 Mbit/s). A
+member holds at most 64 channels, and a TLS connection that does not bind a channel within ten seconds is closed.
 
 ## Rent a $5 VPS, run this
 
@@ -59,8 +62,9 @@ Anyone with the secret can use the relay, so change it if it may have got out (a
 1. Make a new one: `python3 /opt/ppn-relay/ppn_relay.py --new-secret`.
 2. Put it on the first line of `/etc/ppn-relay/secret` and leave the old one on the second line, so members keep working
    until they have new credentials. Put it in `/etc/turnserver.conf` too (coturn takes one secret).
-3. `sudo systemctl restart ppn-relay coturn`, then enter the new secret in PrivatePartyNet.
-4. A day later, remove the old line and restart again.
+3. `sudo systemctl reload ppn-relay && sudo systemctl restart coturn`, then enter the new secret in PrivatePartyNet.
+4. Six hours later (when every member's credentials have been renewed), remove the old line and reload again. Members
+   still on the old secret are dropped at that moment.
 
 ## Files
 

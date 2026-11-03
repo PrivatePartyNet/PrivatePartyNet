@@ -8,7 +8,8 @@ end of a channel has its own rate limit.
 
     python3 ppn_relay.py --secret-file /etc/ppn-relay/secret [--udp-port 3479] [--tls-port 443 --cert C --key K]
 
-Standard library only (Python 3.10 or later). The rules live in privatepartynet/relayproto.py, the same file the app uses.
+Standard library only (Python 3.10 or later; 3.11 or later counts TLS connections from the moment they open). The rules
+live in privatepartynet/relayproto.py, the same file the app uses. Send it SIGHUP after changing the secret file.
 """
 
 import argparse
@@ -32,8 +33,10 @@ from privatepartynet import relayproto as rp  # noqa: E402
 
 log = logging.getLogger("ppn-relay")
 LENGTH = struct.Struct("!H")
-TCP_BUFFER = 256 * 1024  # bytes waiting for one TCP member before more for them is dropped
-MAX_TCP = 1024
+TCP_BUFFER = 64 * 1024  # bytes waiting for one TCP member before more for them is dropped
+MAX_TCP = 1024  # TCP connections in all; with TCP_BUFFER that is 64 MB at worst, well inside the service's memory limit
+MAX_TCP_PER_ADDRESS = 8
+HANDSHAKE_SECONDS = 10.0  # for the TLS handshake, for each frame once its length has arrived, and for a first BIND
 STATS_SECONDS = 300
 
 
@@ -41,14 +44,24 @@ class RelayServer:
     """The relay on one asyncio loop. start() opens the ports; close() ends it."""
 
     def __init__(self, secrets_, host="0.0.0.0", udp_port=rp.DEFAULT_UDP_PORT, tls_port=None, certfile=None,
-                 keyfile=None, rate=rp.DEFAULT_RATE, burst=rp.DEFAULT_BURST, max_channels=rp.MAX_CHANNELS):
-        self.core = rp.RelayCore(secrets_, rate=rate, burst=burst, max_channels=max_channels)
+                 keyfile=None, rate=rp.DEFAULT_RATE, burst=rp.DEFAULT_BURST, user_rate=rp.DEFAULT_USER_RATE,
+                 total_rate=rp.DEFAULT_TOTAL_RATE, max_channels=rp.MAX_CHANNELS, handshake_seconds=HANDSHAKE_SECONDS,
+                 max_per_address=MAX_TCP_PER_ADDRESS):
+        self.core = rp.RelayCore([rp.HmacVerifier(secrets_)], rate=rate, burst=burst, user_rate=user_rate,
+                                 total_rate=total_rate, max_channels=max_channels)
         self.host, self.udp_port, self.tls_port = host, udp_port, tls_port
         self.certfile, self.keyfile = certfile, keyfile
+        self.handshake_seconds, self.max_per_address = handshake_seconds, max_per_address
         self._udp = None
         self._tls = None
+        self._context = None
         self._tcp = {}  # connection number -> writer
+        self._addresses = {}  # remote address -> TCP connections open from it
         self._next = 0
+
+    def set_secrets(self, secrets_):
+        """The owner changed the secret: members on an old one that is gone are dropped at once."""
+        self.core.set_verifiers([rp.HmacVerifier(secrets_)])
 
     async def start(self):
         loop = asyncio.get_running_loop()
@@ -64,13 +77,19 @@ class RelayServer:
         self._udp, _ = await loop.create_datagram_endpoint(Udp, local_addr=(self.host, self.udp_port))
         self.udp_port = self._udp.get_extra_info("sockname")[1]
         if self.tls_port is not None and self.certfile:
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            context.load_cert_chain(self.certfile, self.keyfile)
-            self._tls = await asyncio.start_server(self._serve_tcp, self.host, self.tls_port, ssl=context)
+            self._context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            self._context.load_cert_chain(self.certfile, self.keyfile)
+            if hasattr(asyncio.StreamWriter, "start_tls"):
+                # Python 3.11 and later: TLS starts inside the handler, so every connection counts from the moment it is
+                # accepted, the handshake included.
+                self._tls = await asyncio.start_server(self._serve_tcp, self.host, self.tls_port)
+            else:
+                self._tls = await asyncio.start_server(self._serve_tcp, self.host, self.tls_port, ssl=self._context,
+                                                       ssl_handshake_timeout=self.handshake_seconds)
             self.tls_port = self._tls.sockets[0].getsockname()[1]
 
     def _handle(self, data, end):
-        for (kind, where), message in self.core.handle(data, end):
+        for (kind, where), message in self.core.handle(data, end, routable=end[0] == "tcp"):
             if kind == "udp":
                 self._udp.sendto(message, where)
                 continue
@@ -79,22 +98,44 @@ class RelayServer:
                 writer.write(LENGTH.pack(len(message)) + message)
 
     async def _serve_tcp(self, reader, writer):
-        if len(self._tcp) >= MAX_TCP:
+        address = (writer.get_extra_info("peername") or ("?",))[0]
+        if len(self._tcp) >= MAX_TCP or self._addresses.get(address, 0) >= self.max_per_address:
             writer.close()
             return
         self._next += 1
-        number = self._next
+        number, end = self._next, ("tcp", self._next)
         self._tcp[number] = writer
+        self._addresses[address] = self._addresses.get(address, 0) + 1
+        loop = asyncio.get_running_loop()
         try:
+            if writer.get_extra_info("sslcontext") is None:
+                await asyncio.wait_for(writer.start_tls(self._context), self.handshake_seconds)
+            # A connection must bind within a few seconds, and stays only while it holds a channel.
+            unbound_until = loop.time() + self.handshake_seconds
             while True:
-                head = await asyncio.wait_for(reader.readexactly(2), rp.IDLE_SECONDS)
-                body = await reader.readexactly(LENGTH.unpack(head)[0])
-                self._handle(body, ("tcp", number))
+                if self.core.has_end(end):
+                    unbound_until = loop.time() + self.handshake_seconds
+                    wait = rp.IDLE_SECONDS
+                else:
+                    wait = unbound_until - loop.time()
+                    if wait <= 0:
+                        break
+                head = await asyncio.wait_for(reader.readexactly(2), wait)
+                size = LENGTH.unpack(head)[0]
+                if not rp.HEADER <= size <= rp.MAX_MESSAGE:
+                    break
+                body = await asyncio.wait_for(reader.readexactly(size), self.handshake_seconds)
+                self._handle(body, end)
         except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError):
             pass
         finally:
             self._tcp.pop(number, None)
-            self.core.drop_end(("tcp", number))
+            left = self._addresses.get(address, 1) - 1
+            if left:
+                self._addresses[address] = left
+            else:
+                self._addresses.pop(address, None)
+            self.core.drop_end(end)
             writer.close()
 
     async def report(self, every=STATS_SECONDS):
@@ -172,6 +213,10 @@ def main(argv=None):
     parser.add_argument("--key", help="its private key (PEM)")
     parser.add_argument("--rate-kbps", type=int, default=rp.DEFAULT_RATE * 8 // 1000,
                         help="the most each member sends through one channel, in kilobits a second")
+    parser.add_argument("--user-kbps", type=int, default=rp.DEFAULT_USER_RATE * 8 // 1000,
+                        help="the most each member sends through all their channels together")
+    parser.add_argument("--total-mbps", type=int, default=rp.DEFAULT_TOTAL_RATE * 8 // 1_000_000,
+                        help="the most the relay forwards for everyone together, in megabits a second (0: no limit)")
     parser.add_argument("--max-channels", type=int, default=rp.MAX_CHANNELS)
     parser.add_argument("--new-secret", action="store_true", help="print a new random secret and stop")
     arguments = parser.parse_args(argv)
@@ -186,7 +231,8 @@ def main(argv=None):
     rate = max(8, arguments.rate_kbps) * 1000 // 8
     server = RelayServer(secrets_, host=arguments.host, udp_port=arguments.udp_port, tls_port=tls,
                          certfile=arguments.cert, keyfile=arguments.key, rate=rate,
-                         burst=max(rp.DEFAULT_BURST, rate // 4), max_channels=arguments.max_channels)
+                         burst=max(rp.DEFAULT_BURST, rate // 4), user_rate=max(8, arguments.user_kbps) * 1000 // 8,
+                         total_rate=arguments.total_mbps * 125_000 or None, max_channels=arguments.max_channels)
 
     async def run():
         await server.start()
@@ -196,10 +242,18 @@ def main(argv=None):
         else:
             log.info("No TLS fallback (give --cert and --key to have one)")
         stop = asyncio.Event()
-        for name in ("SIGINT", "SIGTERM"):
+
+        def reload():
+            fresh = read_secrets(arguments)
+            if fresh:
+                server.set_secrets(fresh)
+                log.info("Secrets read again: %d in use", len(fresh))
+
+        handlers = {"SIGINT": stop.set, "SIGTERM": stop.set, "SIGHUP": reload}
+        for name, handler in handlers.items():
             if hasattr(signal, name):
                 try:
-                    asyncio.get_running_loop().add_signal_handler(getattr(signal, name), stop.set)
+                    asyncio.get_running_loop().add_signal_handler(getattr(signal, name), handler)
                 except NotImplementedError:
                     pass
         reporter = asyncio.ensure_future(server.report())
