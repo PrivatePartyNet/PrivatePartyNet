@@ -64,6 +64,7 @@ PROBE_SLOW = 5.0  # then this; ways that work but are not in use are checked as 
 PROBE_ACTIVE = 2.0  # the way in use
 DEAD_SECONDS = 7.0  # no answer for this long and a way is not used
 STUN_SECONDS = 60.0
+ADDRESS_SECONDS = 30.0  # how often this PC's own addresses are read again, so paths follow a change of network
 TICK = 0.1
 FRIEND_MBPS = 8  # what a friend relay forwards for others at most, all together, unless its owner says otherwise
 CONFIG_LABEL = b"PrivatePartyNet relay settings|"
@@ -360,6 +361,7 @@ class PathManager:
         self._stun_asked = {}  # transaction -> server address
         self._stun_seen = {}  # server address -> (address, port)
         self._stun_next = 0.0
+        self._addresses_next = 0.0
         self.public = None  # (address, port, nat) as STUN servers see this socket
         self._upnp = None
         self._upnp_result = None
@@ -900,6 +902,10 @@ class PathManager:
         now = self._clock()
         if self._stun_addresses and now >= self._stun_next:
             self._ask_stun(now)
+        if now >= self._addresses_next:
+            # A new IPv6 address (they change often), another network, Wi-Fi to cable: the others hear of it at once.
+            self._addresses_next = now + ADDRESS_SECONDS
+            self._refresh_candidates()
         with self._lock:
             relays = list(self._relays.values())
             peers = list(self._peers.values())

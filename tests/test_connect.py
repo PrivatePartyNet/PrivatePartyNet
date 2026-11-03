@@ -112,10 +112,29 @@ class AddressTests(unittest.TestCase):
 
         def fake(host, port, family):
             return [(family, 0, 0, "", (a, 0, 0, 0)) for a in
-                    ("fe80::1%12", "fd00::5", "::1", "2001:0:14c9:dc04::1", "2002:c000:204::1", "2603:6011:abcd::10", "2603:6011:abcd::10")]
+                    ("fe80::1%12", "fd00::5", "::1", "2001:0:14c9:dc04::1", "2002:808:808::1", "2603:6011:abcd::10", "2603:6011:abcd::10")]
 
-        with mock.patch.object(connect.socket, "getaddrinfo", fake):
-            self.assertEqual(connect.global_ipv6_addresses(), ["2603:6011:abcd::10"])
+        from privatepartynet import netinfo
+
+        with mock.patch.object(connect.socket, "getaddrinfo", fake), mock.patch.object(netinfo, "ipv6_unicast", lambda: None):
+            self.assertEqual(connect.global_ipv6_addresses(), ["2603:6011:abcd::10", "2002:808:808::1"],
+                             "6to4 is kept, but last")
+
+    def test_stable_ipv6_addresses_come_before_temporary_ones(self):
+        entries = [("2603:6011:abcd::7e1", 86400), ("2002:808:808::1", 604800), ("2603:6011:abcd::10", 604800),
+                   ("fe80::1", 604800)]
+        self.assertEqual(connect.global_ipv6_addresses(entries),
+                         ["2603:6011:abcd::10", "2603:6011:abcd::7e1", "2002:808:808::1"])
+        self.assertEqual(connect.global_ipv6_addresses([("2002:c0a8:101::1", 0)]), [], "6to4 of a private IPv4")
+
+    def test_windows_own_address_list_can_be_read(self):
+        from privatepartynet import netinfo
+
+        found = netinfo.ipv6_unicast()
+        if found is None:
+            self.skipTest("not Windows")
+        self.assertTrue(all(isinstance(a, str) and isinstance(t, int) for a, t in found))
+        self.assertIn("::1", [a for a, _ in found], "loopback is always there")
 
 
 class GatherTests(unittest.TestCase):

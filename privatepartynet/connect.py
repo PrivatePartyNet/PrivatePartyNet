@@ -128,24 +128,45 @@ def stun_probe(servers=STUN_SERVERS, timeout=2.0, family=socket.AF_INET, local_p
 # --- addresses of this PC -------------------------------------------------------------------------------------
 
 
-def global_ipv6_addresses():
-    """This PC's IPv6 addresses that other networks can in principle reach. Link-local, unique-local, loopback and the
-    old Teredo and 6to4 tunnel ranges (which are not native connectivity) are left out."""
-    found = []
-    try:
-        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6)
-    except OSError:
-        return found
-    for info in infos:
-        text = info[4][0].split("%")[0]
+TEREDO = ipaddress.ip_network("2001::/32")
+SIX_TO_FOUR = ipaddress.ip_network("2002::/16")
+
+
+def global_ipv6_addresses(entries=None):
+    """This PC's IPv6 addresses that other networks can in principle reach, best first: stable addresses before
+    temporary (privacy) ones, which are kept since they are often all a network leaves, and the old 6to4 tunnel range
+    last, since it rarely works. Link-local, unique-local, loopback and Teredo are left out. Most carrier-grade NAT
+    providers give real IPv6 with no NAT at all, so these are how two members behind CGNAT usually reach each other.
+
+    `entries` is [(address, preferred lifetime)], from Windows' own list when it can be read, else the host name's."""
+    from privatepartynet.netinfo import ipv6_unicast
+
+    if entries is None:
+        entries = ipv6_unicast()
+    if entries is None:
+        try:
+            infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6)
+        except OSError:
+            infos = []
+        entries = [(info[4][0], 0) for info in infos]
+    ranked = []
+    for position, (text, lifetime) in enumerate(entries):
+        text = text.split("%")[0]
         try:
             address = ipaddress.IPv6Address(text)
         except ValueError:
             continue
-        if address.is_link_local or address.is_loopback or address.is_private or address.is_multicast:
+        six_to_four = address in SIX_TO_FOUR
+        if six_to_four:
+            if not address.sixtofour.is_global:  # (Python counts all of 6to4 as private) a 6to4 of a private IPv4
+                continue
+        elif address.is_link_local or address.is_loopback or address.is_private or address.is_multicast:
             continue
-        if address in ipaddress.ip_network("2001::/32") or address in ipaddress.ip_network("2002::/16"):
+        if address in TEREDO or address.ipv4_mapped:
             continue
+        ranked.append((six_to_four, -lifetime, position, text))
+    found = []
+    for *_, text in sorted(ranked):
         if text not in found:
             found.append(text)
     return found

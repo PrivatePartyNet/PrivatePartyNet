@@ -283,6 +283,20 @@ class SafetyTests(Base):
         signed["relay"]["expires"] = 2
         self.assertIsNone(open_relay_config(signed, owner.sign_public.hex()))
 
+    def test_a_new_address_reaches_the_others(self):
+        from unittest import mock
+
+        from privatepartynet import pathway
+
+        addresses = [("ipv6", "2001:db8::5")]
+        seen = []
+        with mock.patch.object(pathway, "ADDRESS_SECONDS", 0.2):
+            a = Member(self, addresses=addresses)
+            a.manager._addresses = addresses
+            a.manager.set_on_candidates(seen.append)
+            addresses[0] = ("ipv6", "2001:db8::6")  # the provider handed out a new prefix
+            self.assertTrue(wait_for(lambda: seen and ["ipv6", "2001:db8::6", a.manager.port] in seen[-1], 5))
+
     def test_candidates_carry_the_keys_and_change_when_stun_answers(self):
         stun = self.stuns()
         seen = []
