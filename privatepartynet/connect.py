@@ -448,7 +448,7 @@ def _read_relays(items):
             host, port, tls_port, pin = str(host), int(port), int(tls_port or 0), str(pin or "")
         except (ValueError, TypeError):
             continue
-        if kind not in ("vps", "friend") or not host or len(host) > 253 or len(token) != 36:
+        if kind not in ("vps", "friend") or not host or len(host) > 253 or len(token) != {"vps": 52, "friend": 116}.get(kind):
             continue
         if not 0 < port < 65536 or not 0 <= tls_port < 65536 or (pin and not re.fullmatch(r"[0-9a-f]{64}", pin)):
             continue

@@ -398,12 +398,12 @@ class HostPunch:
             bridge = self.bridges.get(key)
             if bridge is None:
                 bridge = self.bridges[key] = RelayBridge(relay)
-            bridge.client.relay["token"] = relay["token"]
+            bridge.client.relay["credential"] = relay["credential"]
             for channel in list(bridge.client.channels):
                 if channel not in channels:
                     bridge.remove(channel)
             for channel in channels:
-                bridge.add(channel, token=relay["token"], target=target)
+                bridge.add(channel, credential=relay["credential"], target=target)
 
     def close(self):
         self._stop.set()
@@ -441,14 +441,24 @@ def join_through(host_key, server_id, secret, fingerprint, dht_factory=None, stu
 
 
 def join_relayed(secret, fingerprint, relays, connect_seconds=CONNECT_SECONDS, bind_seconds=8.0):
-    """The QUIC tunnel through the first relay that works, in the order given. Each relay is {"host", "port",
-    "tls_port", "pin", "token": bytes}. The host's certificate is checked exactly as on a direct path."""
+    """The QUIC tunnel through the first relay that works, in the order given. Each relay is as an invite carries it
+    (connect.decode_invite): {"kind", "host", "port", "tls_port", "pin", "token": bytes}. The host's certificate is
+    checked exactly as on a direct path."""
+    from privatepartynet.pathway import PassCredential, invite_key
     from privatepartynet.relayclient import RelayBridge
 
     channel = join_channel(secret)
     why = []
     for relay in relays:
-        bridge = RelayBridge(relay)
+        try:
+            if relay.get("kind") == "friend":
+                credential = PassCredential(relay["token"], invite_key(secret)[0])
+            else:
+                credential = relayproto.HmacCredential(relay["token"])
+        except (KeyError, ValueError):
+            why.append(f"{relay.get('host')}: the invite's credentials for it are damaged")
+            continue
+        bridge = RelayBridge({**relay, "credential": credential})
         try:
             port = bridge.add(channel)
             if not bridge.wait_bound(channel, bind_seconds):

@@ -136,9 +136,10 @@ def _is_ip(text):
 class RelayClient:
     """One relay, seen from this PC: the channels it should keep bound, and the way to it (UDP, else TLS).
 
-    `relay` is {"host", "port", "tls_port"?, "pin"?, "token": bytes}. `udp_send(data, address)` sends from the owner's
-    socket; the owner passes everything that arrives from `address` to feed(). `on_deliver(channel, payload)` gets each
-    datagram from the other end of a channel. Call tick() a few times a second."""
+    `relay` is {"host", "port", "tls_port"?, "pin"?, "credential"}, where the credential makes BINDs
+    (relayproto.HmacCredential for a VPS relay, pathway.PassCredential for a friend relay). `udp_send(data, address)`
+    sends from the owner's socket; the owner passes everything that arrives from `address` to feed().
+    `on_deliver(channel, payload)` gets each datagram from the other end of a channel. Call tick() a few times a second."""
 
     def __init__(self, relay, on_deliver, udp_send, clock=time.monotonic, resolver=resolve):
         self.relay = dict(relay)
@@ -147,7 +148,7 @@ class RelayClient:
         self._clock = clock
         self.address = None
         self.tls = None
-        self.channels = {}  # channel -> {"token", "next", "status", "asked"}
+        self.channels = {}  # channel -> {"credential", "next", "status", "cookie"}
         self._lock = threading.Lock()
         self._first_ask = None
         self._heard = False
@@ -168,14 +169,15 @@ class RelayClient:
         if self.address is None:
             log.info("The relay %s did not resolve", self.relay["host"])
 
-    def want(self, channel, token=None):
-        """Keep `channel` bound on this relay, with `token` (or the relay's own) as the credentials."""
+    def want(self, channel, credential=None):
+        """Keep `channel` bound on this relay, with `credential` (or the relay's own)."""
         with self._lock:
             entry = self.channels.get(channel)
             if entry is None:
-                self.channels[channel] = {"token": token or self.relay["token"], "next": 0.0, "status": None}
-            elif token:
-                entry["token"] = token
+                self.channels[channel] = {"credential": credential or self.relay["credential"], "next": 0.0,
+                                          "status": None, "cookie": b""}
+            elif credential:
+                entry["credential"] = credential
 
     def drop(self, channel):
         with self._lock:
@@ -187,7 +189,7 @@ class RelayClient:
 
     def refused(self, channel):
         entry = self.channels.get(channel)
-        return entry["status"] if entry and entry["status"] not in (None, rp.OK) else None
+        return entry["status"] if entry and entry["status"] not in (None, rp.OK, rp.CHECK) else None
 
     def _out(self, data):
         if self.tls is not None:
@@ -217,10 +219,18 @@ class RelayClient:
             due = [(c, e) for c, e in self.channels.items() if e["next"] <= now]
             for channel, entry in due:
                 retry = rp.REBIND_SECONDS if entry["status"] == rp.OK else 1.0
-                entry["next"] = now + (retry if entry["status"] in (None, rp.OK) else 30.0)
+                entry["next"] = now + (retry if entry["status"] in (None, rp.OK, rp.CHECK) else 30.0)
         for channel, entry in due:
-            if self._out(rp.bind(channel, entry["token"])) and self._first_ask is None:
-                self._first_ask = now
+            self._bind(channel, entry, now)
+
+    def _bind(self, channel, entry, now):
+        try:
+            message = entry["credential"].bind(channel, entry["cookie"])
+        except (ValueError, AttributeError):
+            return
+        entry["cookie"] = b""  # a cookie is good for one address and half a minute; the relay hands out another
+        if self._out(message) and self._first_ask is None:
+            self._first_ask = now
 
     def feed(self, data):
         """A message from the relay."""
@@ -232,10 +242,22 @@ class RelayClient:
         if kind == rp.BOUND:
             with self._lock:
                 entry = self.channels.get(channel)
-                if entry is not None:
+                if entry is None:
+                    return
+                if rest[0] == rp.CHECK and len(rest) == 1 + rp.COOKIE_BYTES:
+                    # The relay wants this address proved: answer at once with its cookie.
+                    if entry["status"] != rp.OK:
+                        entry["status"] = rp.CHECK
+                    entry["cookie"] = rest[1:]
+                    entry["next"] = self._clock() + 1.0
+                    answer = True
+                else:
                     entry["status"] = rest[0]
+                    answer = False
                     if rest[0] != rp.OK:
                         log.info("Relay %s: %s", self.relay["host"], rp.STATUS_TEXT.get(rest[0], "refused"))
+            if answer:
+                self._bind(channel, entry, self._clock())
         elif kind == rp.DELIVER and channel in self.channels:
             self.on_deliver(channel, rest)
 
@@ -270,7 +292,7 @@ class RelayBridge:
         except OSError:
             return False
 
-    def add(self, channel, token=None, target=None):
+    def add(self, channel, credential=None, target=None):
         """Bind `channel`; returns the loopback port that stands for its other end."""
         with self._lock:
             entry = self._locals.get(channel)
@@ -279,7 +301,7 @@ class RelayBridge:
                 local.bind(("127.0.0.1", 0))
                 local.setblocking(False)
                 entry = self._locals[channel] = {"sock": local, "target": target, "peer": None}
-        self.client.want(channel, token)
+        self.client.want(channel, credential)
         return entry["sock"].getsockname()[1]
 
     def remove(self, channel):

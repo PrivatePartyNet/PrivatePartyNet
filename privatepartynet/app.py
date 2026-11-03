@@ -1015,7 +1015,7 @@ class Controller:
             party = Party(passcode, port, certfile, keyfile, party_name=name, host_name=name, grabber=self._grabber,
                           theme=self._settings.get("theme", "system"), store=self._store,
                           server_id=self._settings["server_id"], host_user_id=self._identity.user_id,
-                          signer=self._identity.sign)
+                          owner=self._identity)
         except OSError as exc:
             log.exception("Could not listen on port %s", port)
             return {"ok": False, "message": f"Could not listen on port {port}: {exc}"}

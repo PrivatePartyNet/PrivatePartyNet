@@ -11,14 +11,20 @@ from pathlib import Path
 from privatepartynet import relayproto as rp
 from privatepartynet.identity import Identity
 from privatepartynet.pathway import (DATA, MAX_DATAGRAM, PROBE, LoopbackHub, LoopbackPathManager, PathManager,
-                                     open_relay_config, sign_relay_config)
+                                     make_pass, open_relay_config, sign_relay_config)
 from fakenat import NatTransport
 from test_connect import FakeStun
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "relay"))
 from ppn_relay import ThreadedRelay  # noqa: E402
 
-FRIEND_KEY = os.urandom(32).hex()
+OWNER = Identity.create()  # the party's owner, whose passes friend relays accept
+
+
+def friend_config(identity):
+    """What the owner's PC hands a member for friend relays: the owner's key and a pass for this member."""
+    return {"friend": {"owner": OWNER.sign_public.hex(),
+                       "pass": make_pass(OWNER.sign, identity.user_id, identity.sign_public).hex()}}
 
 
 def wait_for(condition, seconds=10.0):
@@ -35,6 +41,8 @@ class Member:
 
     def __init__(self, test, behind=None, addresses=(), stun=(), relay_config=None, **settings):
         self.identity = Identity.create()
+        if callable(relay_config):
+            relay_config = relay_config(self.identity)
         transport = NatTransport(symmetric=behind == "hard") if behind else None
         self.manager = PathManager(self.identity, settings, relay_config, transport=transport,
                                    addresses=list(addresses), stun_servers=list(stun), probe_network=False)
@@ -84,7 +92,7 @@ class Base(unittest.TestCase):
 
     def vps_config(self, relay, member_id, secret="group secret"):
         return {"vps": [{"host": "127.0.0.1", "port": relay.udp_port, "tls_port": 0, "pin": "",
-                         "token": rp.mint_token(secret, member_id).hex()}], "friend_key": FRIEND_KEY}
+                         "credential": rp.member_credential(secret, member_id).hex()}]}
 
     def exchange(self, a, b, payload=b"wireguard ciphertext"):
         """A datagram each way arrives."""
@@ -113,10 +121,9 @@ class LadderTests(Base):
 
     def test_two_hard_routers_meet_through_a_friend(self):
         stun = self.stuns()
-        config = {"friend_key": FRIEND_KEY}
-        a = Member(self, behind="hard", stun=stun, relay_config=config)
-        b = Member(self, behind="hard", stun=stun, relay_config=config)
-        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=config)
+        a = Member(self, behind="hard", stun=stun, relay_config=friend_config)
+        b = Member(self, behind="hard", stun=stun, relay_config=friend_config)
+        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=friend_config)
         mesh(a, b, friend)
         self.assertTrue(wait_for(lambda: a.manager.public and a.manager.public[2] == "hard"))
         self.assertTrue(wait_for(lambda: a.paths[b.id].kind == "friend" and b.paths[a.id].kind == "friend", 15),
@@ -155,10 +162,9 @@ class LadderTests(Base):
 
     def test_a_friend_who_says_no_relays_for_nobody(self):
         stun = self.stuns()
-        config = {"friend_key": FRIEND_KEY}
-        a = Member(self, behind="hard", stun=stun, relay_config=config)
-        b = Member(self, behind="hard", stun=stun, relay_config=config)
-        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=config, friend_relay=False)
+        a = Member(self, behind="hard", stun=stun, relay_config=friend_config)
+        b = Member(self, behind="hard", stun=stun, relay_config=friend_config)
+        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=friend_config, friend_relay=False)
         self.assertFalse([c for c in friend.manager.local_candidates() if c[0] == "friend"])
         mesh(a, b, friend)
         time.sleep(3)
@@ -203,6 +209,25 @@ class LadderTests(Base):
         self.assertEqual(a.changes[-1], "vps")
 
 
+class FriendPassTests(Base):
+    def test_a_member_with_a_forged_pass_cannot_use_a_friend_relay(self):
+        """H2: friend relays accept only passes the owner signed; a member cannot make one for a made-up id."""
+        stun = self.stuns()
+
+        def self_made(identity):  # signed with the member's own key instead of the owner's
+            return {"friend": {"owner": OWNER.sign_public.hex(),
+                               "pass": make_pass(identity.sign, identity.user_id, identity.sign_public).hex()}}
+
+        a = Member(self, behind="hard", stun=stun, relay_config=self_made)
+        b = Member(self, behind="hard", stun=stun, relay_config=friend_config)
+        friend = Member(self, addresses=[("upnp", "127.0.0.1")], relay_config=friend_config)
+        mesh(a, b, friend)
+        self.assertTrue(wait_for(lambda: a.paths[friend.id].kind == "upnp"))
+        time.sleep(3)
+        self.assertEqual(a.paths[b.id].kind, "", "the friend refused a's self-made pass")
+        self.assertGreater(friend.manager.state()["relayed"]["refused"], 0)
+
+
 class SafetyTests(Base):
     def test_a_member_whose_keys_do_not_match_their_id_gets_no_path(self):
         a, b = Member(self, addresses=[("lan", "127.0.0.1")]), Member(self, addresses=[("lan", "127.0.0.1")])
@@ -235,10 +260,11 @@ class SafetyTests(Base):
 
     def test_relay_settings_are_opened_only_with_the_owners_signature(self):
         owner, someone = Identity.create(), Identity.create()
-        signed = sign_relay_config({"friend_key": FRIEND_KEY}, owner.sign)
-        self.assertEqual(open_relay_config(signed, owner.sign_public.hex()), {"friend_key": FRIEND_KEY})
+        config = {"vps": [], "expires": 1}
+        signed = sign_relay_config(config, owner.sign)
+        self.assertEqual(open_relay_config(signed, owner.sign_public.hex()), config)
         self.assertIsNone(open_relay_config(signed, someone.sign_public.hex()))
-        signed["relay"]["friend_key"] = "00" * 32
+        signed["relay"]["expires"] = 2
         self.assertIsNone(open_relay_config(signed, owner.sign_public.hex()))
 
     def test_candidates_carry_the_keys_and_change_when_stun_answers(self):

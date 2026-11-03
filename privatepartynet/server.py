@@ -281,7 +281,7 @@ class Party:
 
     def __init__(self, passcode, port, certfile, keyfile, party_name, host_name,
                  failed_login_delay=1.0, heartbeat=15.0, grabber=None, theme="system",
-                 store=None, server_id=None, host_user_id=None, trust_local=True, signer=None):
+                 store=None, server_id=None, host_user_id=None, trust_local=True, owner=None):
         self.trust_local = trust_local  # people on this network ask without the password (they still wait for a yes)
         # Addresses that look local but must not be trusted as such: the router, because some routers hand on
         # connections from the internet under their own address once a port is forwarded.
@@ -317,9 +317,9 @@ class Party:
         # The relay server the owner set (relay/README.md), kept with the server in the encrypted store. Its secret stays
         # on this PC: members get tokens and TURN credentials made from it, never the secret.
         self._relay = record.get("relay") if isinstance(record.get("relay"), dict) else None
-        # The key friend relays check members' tokens with (pathway.py): made once, handed to members only.
-        self._relay_key = record.get("relay_key") if isinstance(record.get("relay_key"), str) else secrets.token_hex(32)
-        self.signer = signer  # identity.sign of the owner, which signs the relay settings members receive
+        # The owner's identity (identity.Identity): it signs the relay settings members receive and the passes friend
+        # relays check (pathway.py). None in tests and diagnostic runs, which then hand out no friend passes.
+        self.owner = owner
         self.friend_relays = lambda: []  # (address, port) of members who relay for others, from the app's paths
         self.relay_listeners = []  # called with no arguments when the relay settings change
         self._fails = {}  # address -> times of wrong passwords
@@ -875,26 +875,31 @@ class Party:
         return {"host": relay["host"], "port": relay["port"], "tls_port": relay["tls_port"], "pin": relay["pin"],
                 "turn": relay["turn"]}
 
-    def path_relay_for(self, user_id, now=None):
-        """What member `user_id`'s paths may use (pathway.PathManager.set_relay_config), signed by the owner when the
-        party has a signer: {"relay": {"vps": [...], "friend_key", "expires"}, "sig"}. The VPS token is the member's own
-        and lasts a day; the app asks again before then."""
+    def path_relay_for(self, user_id, sign_public=None, now=None):
+        """What member `user_id`'s paths may use (pathway.PathManager.set_relay_config), signed by the owner:
+        {"relay": {"vps": [...], "friend": {"owner", "pass"}, "expires"}, "sig"}. The VPS credential is the member's
+        own (it holds a key, so it must travel only over the party's TLS connection). The friend-relay pass needs the
+        member's identity key `sign_public` (hex) and is made only then. Both last TOKEN_SECONDS; hand out new settings
+        well before "expires"."""
         now = time.time() if now is None else now
         with self._lock:
-            relay, key = self._relay, self._relay_key
-        config = {"vps": [], "friend_key": key, "expires": int(now + relayproto.TOKEN_SECONDS)}
+            relay = self._relay
+        config = {"vps": [], "expires": int(now + relayproto.TOKEN_SECONDS)}
         if relay is not None:
             config["vps"].append({"host": relay["host"], "port": relay["port"], "tls_port": relay["tls_port"],
                                   "pin": relay["pin"],
-                                  "token": relayproto.mint_token(relay["secret"], user_id, now=now).hex()})
-        if self.signer is None:
+                                  "credential": relayproto.member_credential(relay["secret"], user_id, now=now).hex()})
+        if self.owner is None:
             return {"relay": config, "sig": ""}
-        from privatepartynet.pathway import sign_relay_config
+        from privatepartynet.pathway import make_pass, sign_relay_config
 
-        return sign_relay_config(config, self.signer)
+        config["friend"] = {"owner": self.owner.sign_public.hex(), "pass": ""}
+        if sign_public:
+            config["friend"]["pass"] = make_pass(self.owner.sign, user_id, sign_public, now=now).hex()
+        return sign_relay_config(config, self.owner.sign)
 
     def _relay_user(self):
-        """The 16-byte id the host's own relay tokens carry: the owner's user id, or one made from the server's."""
+        """The 16-byte id the host's own relay credentials carry: the owner's user id, or one made from the server's."""
         try:
             raw = bytes.fromhex(self._host_user_id or "")
         except ValueError:
@@ -905,36 +910,44 @@ class Party:
 
     def invite_relays(self, secret, now=None):
         """The relays an invite carries, so its holder can reach the party through one when no direct way works
-        (punch.py): the group's relay server and up to three members who relay for others, each with a token for the
-        invite's own id. The tokens last as long as the invite."""
+        (punch.py): the group's relay server and up to three members who relay for others, each with credentials for
+        the invite's own id. They last as long as the invite, and whoever holds the invite holds them."""
         now = time.time() if now is None else now
-        joiner = hashlib.sha256(b"PrivatePartyNet invite relay|" + bytes(secret)).digest()[:16]
         lifetime = self.INVITE_DAYS * 86400
         with self._lock:
-            relay, key = self._relay, self._relay_key
+            relay = self._relay
         found = []
+        from privatepartynet.pathway import invite_key, make_pass
+
+        _, public, joiner = invite_key(secret)
         if relay is not None:
             found.append(["vps", relay["host"], relay["port"], relay["tls_port"], relay["pin"],
-                          relayproto.mint_token(relay["secret"], joiner, lifetime, now).hex()])
-        friend_token = relayproto.mint_token(bytes.fromhex(key), joiner, lifetime, now).hex()
-        for address, port in list(self.friend_relays())[:3]:
-            found.append(["friend", address, port, 0, "", friend_token])
+                          relayproto.member_credential(relay["secret"], joiner, lifetime, now).hex()])
+        if self.owner is not None:
+            friend_pass = make_pass(self.owner.sign, joiner, public, lifetime, now).hex()
+            for address, port in list(self.friend_relays())[:3]:
+                found.append(["friend", address, port, 0, "", friend_pass])
         return found
 
     def host_relays(self, now=None):
-        """The relays the host keeps the invites' channels bound on, with the host's own tokens: the same ones
+        """The relays the host keeps the invites' channels bound on, with the host's own credentials: the same ones
         invite_relays hands out, so a joiner and the host meet on each."""
         now = time.time() if now is None else now
         me = self._relay_user()
         with self._lock:
-            relay, key = self._relay, self._relay_key
+            relay = self._relay
         found = []
         if relay is not None:
+            credential = relayproto.HmacCredential(relayproto.member_credential(relay["secret"], me, now=now))
             found.append({"host": relay["host"], "port": relay["port"], "tls_port": relay["tls_port"], "pin": relay["pin"],
-                          "token": relayproto.mint_token(relay["secret"], me, now=now)})
-        for address, port in list(self.friend_relays())[:3]:
-            found.append({"host": address, "port": port, "tls_port": 0, "pin": "",
-                          "token": relayproto.mint_token(bytes.fromhex(key), me, now=now)})
+                          "credential": credential})
+        if self.owner is not None:
+            from privatepartynet.pathway import PassCredential, make_pass
+
+            credential = PassCredential(make_pass(self.owner.sign, me.hex(), self.owner.sign_public, now=now),
+                                        self.owner.sign)
+            for address, port in list(self.friend_relays())[:3]:
+                found.append({"host": address, "port": port, "tls_port": 0, "pin": "", "credential": credential})
         return found
 
     def _turn_locked(self, member):
@@ -1157,7 +1170,7 @@ class Party:
             "name": self.party_name, "channels": self._channels, "roles": self._roles, "banned": sorted(self._banned),
             "known": self._known, "created": self._created, "password": self.passcode,
             "net": self._net_subnet, "vips": self._net.assignments() if self._net else self._net_vips,
-            "invites": self._invite_secrets, "relay": self._relay, "relay_key": self._relay_key})
+            "invites": self._invite_secrets, "relay": self._relay})
 
     def chat(self, member_id, text, channel=None, image=None):
         """Post a chat message in a text channel (the first one when none is named) and save it. Returns the message,

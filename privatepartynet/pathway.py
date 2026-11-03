@@ -62,6 +62,8 @@ STUN_SECONDS = 60.0
 TICK = 0.1
 FRIEND_MBPS = 8  # what a friend relay forwards for others at most, all together, unless its owner says otherwise
 CONFIG_LABEL = b"PrivatePartyNet relay settings|"
+PASS_LABEL = b"PrivatePartyNet relay pass|"
+INVITE_KEY_LABEL = b"PrivatePartyNet invite relay key|"
 
 
 def _hmac(key, data):
@@ -100,6 +102,84 @@ def open_relay_config(signed, host_sign):
     if not host_sign or not verify(host_sign, signed["sig"], config_message(signed["relay"])):
         return None
     return signed["relay"]
+
+
+# --- friend relay passes ------------------------------------------------------------------------------------------------
+#
+# A friend relay accepts a member whose pass the owner signed: expiry (4) + user id (16) + the member's Ed25519 public key
+# (32) + the owner's signature (64). Each BIND_PASS carries the pass and the member's own signature over the channel and
+# the time, so a pass seen on the wire is no use without the member's private key, and no member can make passes.
+
+
+def make_pass(owner_sign, user, member_public, lifetime=rp.TOKEN_SECONDS, now=None):
+    """A pass for `user` (hex) holding `member_public` (hex or bytes), signed with `owner_sign` (identity.sign)."""
+    import struct
+
+    body = struct.pack("!I", int((now if now is not None else time.time()) + lifetime)) + bytes.fromhex(user) + \
+        (bytes.fromhex(member_public) if isinstance(member_public, str) else bytes(member_public))
+    if len(body) != 52:
+        raise ValueError("a pass needs a 16-byte user id and a 32-byte public key")
+    return body + owner_sign(PASS_LABEL + body)
+
+
+def _pass_message(kind, channel, stamp, cookie, pass_):
+    return rp.BIND_LABEL + bytes([kind]) + bytes(channel) + stamp + cookie + pass_
+
+
+class PassCredential:
+    """A member's pass for friend relays, with the private key that goes with it (`sign`, such as identity.sign)."""
+
+    def __init__(self, pass_, sign):
+        self.raw = bytes(pass_)
+        if len(self.raw) != rp.PASS_BYTES:
+            raise ValueError("not a relay pass")
+        self.sign = sign
+        self.expiry = rp.credential_expiry(self.raw)
+
+    def bind(self, channel, cookie=b"", now=None):
+        import struct
+
+        stamp = struct.pack("!I", int(now if now is not None else time.time()))
+        signature = self.sign(_pass_message(rp.BIND_PASS, channel, stamp, cookie, self.raw))
+        return bytes([rp.BIND_PASS]) + bytes(channel) + self.raw + stamp + signature + cookie
+
+
+class PassVerifier:
+    """Checks BIND_PASS for a friend relay: a pass the owner (`owner_public`, hex) signed, and the member's signature."""
+
+    kind = rp.BIND_PASS
+
+    def __init__(self, owner_public):
+        self.owner = bytes.fromhex(owner_public) if isinstance(owner_public, str) else bytes(owner_public)
+
+    def tags(self):
+        return {hashlib.sha256(self.owner).digest()[:8]}
+
+    def check(self, channel, body, now):
+        import struct
+
+        if len(body) not in (rp.PASS_BODY, rp.PASS_BODY + rp.COOKIE_BYTES):
+            return None
+        pass_, stamp, signature, cookie = body[:116], body[116:120], body[120:184], body[184:]
+        expiry, user, member = struct.unpack("!I", pass_[:4])[0], pass_[4:20], pass_[20:52]
+        if expiry < now or abs(struct.unpack("!I", stamp)[0] - now) > rp.FRESH_SECONDS:
+            return None
+        if not verify(self.owner, pass_[52:], PASS_LABEL + pass_[:52]):
+            return None
+        if not verify(member, signature, _pass_message(rp.BIND_PASS, channel, stamp, cookie, pass_)):
+            return None
+        return user.hex(), expiry, hashlib.sha256(self.owner).digest()[:8], cookie
+
+
+def invite_key(secret):
+    """The key pair an invite's holder uses on friend relays, worked out from the invite's secret on both PCs:
+    (sign function, public key bytes, user id hex)."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    seed = hashlib.sha256(INVITE_KEY_LABEL + bytes(secret)).digest()
+    key = Ed25519PrivateKey.from_private_bytes(seed)
+    return key.sign, key.public_key().public_bytes_raw(), hashlib.sha256(b"PrivatePartyNet invite relay|" +
+                                                                         bytes(secret)).digest()[:16].hex()
 
 
 # --- the socket ---------------------------------------------------------------------------------------------------------
@@ -278,7 +358,8 @@ class PathManager:
         self._relay_kinds = {}  # relay key -> "friend" or "vps"
         self._relay_owner = {}  # relay key -> the member whose PC it is (friend relays)
         self._relay_config = {}
-        self._friend_key = None
+        self._pass = None  # this member's PassCredential for friend relays
+        self._owner = None  # the owner's public key, which friend passes are checked against
         self._core = None  # the friend relay: forwarding for others
         self._candidates = []
         self._on_candidates = None
@@ -336,7 +417,8 @@ class PathManager:
 
     def set_relay_config(self, relay_config):
         """The relays this member may use, from the owner's PC (open_relay_config gives it from the signed bundle):
-        {"vps": [{"host", "port", "tls_port", "pin", "token"}], "friend_key": hex}. None or {} is no relays."""
+        {"vps": [{"host", "port", "tls_port", "pin", "credential": hex}], "friend": {"owner": hex, "pass": hex}}. None
+        or {} is no relays. Call it again with the newer settings the owner's PC hands out before these expire."""
         config = relay_config if isinstance(relay_config, dict) else {}
         with self._lock:
             self._relay_config = config
@@ -344,7 +426,8 @@ class PathManager:
             for entry in config.get("vps") or []:
                 try:
                     relay = {"host": str(entry["host"]), "port": int(entry["port"]), "tls_port": int(entry.get("tls_port") or 0),
-                             "pin": str(entry.get("pin") or ""), "token": bytes.fromhex(entry["token"])}
+                             "pin": str(entry.get("pin") or ""),
+                             "credential": rp.HmacCredential(bytes.fromhex(entry["credential"]))}
                 except (KeyError, TypeError, ValueError):
                     continue
                 wanted[(relay["host"], relay["port"])] = relay
@@ -354,20 +437,31 @@ class PathManager:
                 current = self._relays.get(key)
                 if current is not None:
                     current.relay.update(relay)
+                    for channel in list(current.channels):
+                        current.want(channel, relay["credential"])
                     continue
                 self._add_relay_locked(key, relay, "vps")
-            friend_key = config.get("friend_key")
-            self._friend_key = bytes.fromhex(friend_key) if isinstance(friend_key, str) and len(friend_key) == 64 else None
+            friend = config.get("friend") if isinstance(config.get("friend"), dict) else {}
+            try:
+                self._owner = bytes.fromhex(friend["owner"])
+            except (KeyError, TypeError, ValueError):
+                self._owner = None
+            try:
+                self._pass = PassCredential(bytes.fromhex(friend["pass"]), self.identity.sign) if self._owner else None
+            except (KeyError, TypeError, ValueError):
+                self._pass = None  # this member may relay for others, but has no pass to use friend relays itself
             self._set_core_locked()
-            if self._friend_key is not None:
-                token = rp.mint_token(self._friend_key, self.identity.user_id)
-                for key, kind in self._relay_kinds.items():
-                    if kind == "friend":
-                        self._relays[key].relay["token"] = token
-                        for channel in list(self._relays[key].channels):
-                            self._relays[key].want(channel, token)
-                for peer in self._peers.values():
-                    self._friend_relays_locked(peer)
+            for key, kind in list(self._relay_kinds.items()):
+                if kind != "friend":
+                    continue
+                if self._pass is None:
+                    self._drop_relay_locked(key)
+                    continue
+                self._relays[key].relay["credential"] = self._pass
+                for channel in list(self._relays[key].channels):
+                    self._relays[key].want(channel, self._pass)
+            for peer in self._peers.values():
+                self._friend_relays_locked(peer)
             self._bind_all_locked()
         self._refresh_candidates()
 
@@ -412,26 +506,25 @@ class PathManager:
             client.close()
 
     def _set_core_locked(self):
-        allowed = self.settings.get("friend_relay", True) is not False and self._friend_key is not None
+        allowed = self.settings.get("friend_relay", True) is not False and self._owner is not None
         if not allowed:
             self._core = None
             return
         rate = int(max(1, float(self.settings.get("friend_relay_mbps") or FRIEND_MBPS)) * 125_000)
         if self._core is None:
-            self._core = rp.RelayCore([self._friend_key], total_rate=rate, clock=self._clock)
+            self._core = rp.RelayCore([PassVerifier(self._owner)], user_rate=rate, total_rate=rate, clock=self._clock)
         else:
-            self._core.set_keys([self._friend_key])
+            self._core.set_verifiers([PassVerifier(self._owner)])
             self._core.set_total_rate(rate)
 
     def _friend_relays_locked(self, peer):
         """Relays offered by this member, for paths to the others."""
-        if self._friend_key is None:
+        if self._pass is None:
             return
-        token = rp.mint_token(self._friend_key, self.identity.user_id)
         for address, port in peer.friend_offers:
             key = (address, port)
             if key not in self._relays:
-                self._add_relay_locked(key, {"host": address, "port": port, "token": token}, "friend",
+                self._add_relay_locked(key, {"host": address, "port": port, "credential": self._pass}, "friend",
                                        owner=peer.path.peer_id)
 
     def _bind_all_locked(self):
@@ -651,7 +744,7 @@ class PathManager:
                                and tuple(c.address[:2]) == tuple(source)), None)
             if client is not None:
                 client.feed(data)
-        elif first in (rp.BIND, rp.SEND):
+        elif first in (rp.BIND, rp.BIND_PASS, rp.SEND):
             core = self._core
             if core is not None:
                 with self._lock:
@@ -848,6 +941,19 @@ class LoopbackPathManager:
 
     def set_relay_config(self, relay_config):
         self.relay_config = relay_config
+
+    def set_friend_relay(self, allowed, mbps=None):
+        self.settings["friend_relay"] = bool(allowed)
+        if mbps is not None:
+            self.settings["friend_relay_mbps"] = mbps
+
+    @property
+    def port(self):
+        return 0
+
+    def state(self):
+        return {"public": None, "port": 0, "friend_relay": False, "relayed": None,
+                "peers": {pid: {"kind": p.kind, "rtt": 0, "ways": [p.kind]} for pid, p in self.paths.items()}}
 
     def switch(self, kind, peer_id=None):
         """Move every path (or the one to `peer_id`) to `kind`, as a real manager does when a better way answers."""

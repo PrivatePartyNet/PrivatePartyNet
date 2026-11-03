@@ -1,5 +1,5 @@
 """The group's relay server, as the party keeps and hands it out: only the owner sets it, the secret never leaves the
-owner's PC, members get their own tokens (signed settings) and their pages TURN credentials."""
+owner's PC, members get credentials of their own (in settings the owner signs) and their pages TURN credentials."""
 
 import base64
 import hashlib
@@ -8,7 +8,7 @@ import time
 
 from privatepartynet import relayproto as rp
 from privatepartynet.identity import Identity
-from privatepartynet.pathway import open_relay_config
+from privatepartynet.pathway import PassCredential, PassVerifier, invite_key, open_relay_config
 from privatepartynet.server import Forbidden, clean_relay
 from test_server import read_until
 from test_server_servers import ServerTestCase
@@ -50,48 +50,54 @@ class RelaySettingsTests(ServerTestCase):
         second.set_relay(second.host_id, None)
         self.assertIsNone(second.relay_view())
 
-    def test_the_friend_relay_key_is_kept_too(self):
-        first = self.party()
-        key = first.path_relay_for(MEMBER)["relay"]["friend_key"]
-        first.stop()
-        self.assertEqual(self.party().path_relay_for(MEMBER)["relay"]["friend_key"], key)
+
+def check(verifier, message):
+    _, channel, body = rp.parse(message)
+    return verifier.check(channel, body, time.time())
 
 
 class MemberRelayTests(ServerTestCase):
-    def test_a_member_gets_their_own_token_signed_by_the_owner_and_not_the_secret(self):
-        owner = Identity.create()
-        party = self.party(signer=owner.sign)
+    def test_a_member_gets_their_own_credentials_signed_by_the_owner_and_not_the_secret(self):
+        owner, member = Identity.create(), Identity.create()
+        party = self.party(owner=owner)
         party.set_relay(party.host_id, RELAY)
-        signed = party.path_relay_for(MEMBER)
+        signed = party.path_relay_for(member.user_id, member.sign_public.hex())
         self.assertNotIn(SECRET, repr(signed))
         config = open_relay_config(signed, owner.sign_public.hex())
         self.assertIsNotNone(config, "the owner's signature checks out")
         vps = config["vps"][0]
         self.assertEqual((vps["host"], vps["port"], vps["tls_port"], vps["pin"]), ("relay.example.net", 3479, 443, "ab" * 32))
-        self.assertEqual(rp.check_token(SECRET, bytes.fromhex(vps["token"])), MEMBER)
+        bind = rp.HmacCredential(bytes.fromhex(vps["credential"])).bind(rp.channel_for("t", b"k"))
+        self.assertEqual(check(rp.HmacVerifier([SECRET]), bind)[0], member.user_id)
         self.assertGreater(config["expires"], time.time() + 3600)
+        self.assertLessEqual(config["expires"], time.time() + rp.TOKEN_SECONDS + 5, "short-lived")
+        passed = PassCredential(bytes.fromhex(config["friend"]["pass"]), member.sign).bind(rp.channel_for("t", b"k"))
+        self.assertEqual(check(PassVerifier(config["friend"]["owner"]), passed)[0], member.user_id)
 
-    def test_without_a_relay_server_members_still_get_the_friend_key(self):
-        party = self.party()
+    def test_without_the_members_key_there_is_no_pass_and_without_an_owner_no_friend_relays(self):
+        party = self.party(owner=Identity.create())
         config = party.path_relay_for(MEMBER)["relay"]
         self.assertEqual(config["vps"], [])
-        self.assertEqual(len(bytes.fromhex(config["friend_key"])), 32)
+        self.assertEqual(config["friend"]["pass"], "")
+        self.assertNotIn("friend", self.party(server_id="srv2", owner=None).path_relay_for(MEMBER)["relay"])
 
-    def test_an_invite_carries_the_relays_with_tokens_for_its_own_id(self):
-        party = self.party()
+    def test_an_invite_carries_the_relays_with_credentials_for_its_own_id(self):
+        owner = Identity.create()
+        party = self.party(owner=owner)
         party.set_relay(party.host_id, RELAY)
         party.friend_relays = lambda: [("198.51.100.7", 40001)]
         secret = bytes(16)
         relays = party.invite_relays(secret)
         self.assertEqual([r[0] for r in relays], ["vps", "friend"])
-        joiner = hashlib.sha256(b"PrivatePartyNet invite relay|" + secret).digest()[:16].hex()
-        self.assertEqual(rp.check_token(SECRET, bytes.fromhex(relays[0][5])), joiner)
-        friend_key = bytes.fromhex(party.path_relay_for(MEMBER)["relay"]["friend_key"])
-        self.assertEqual(rp.check_token(friend_key, bytes.fromhex(relays[1][5])), joiner)
+        sign, _, joiner = invite_key(secret)
+        channel = rp.channel_for("t", b"k")
+        self.assertEqual(check(rp.HmacVerifier([SECRET]), rp.bind(channel, bytes.fromhex(relays[0][5])))[0], joiner)
+        friend = PassCredential(bytes.fromhex(relays[1][5]), sign).bind(channel)
+        self.assertEqual(check(PassVerifier(owner.sign_public), friend)[0], joiner)
         hosts = party.host_relays()
         self.assertEqual([(h["host"], h["port"]) for h in hosts], [("relay.example.net", 3479), ("198.51.100.7", 40001)])
-        self.assertIsNotNone(rp.check_token(SECRET, hosts[0]["token"]))
-        self.assertIsNotNone(rp.check_token(friend_key, hosts[1]["token"]))
+        self.assertIsNotNone(check(rp.HmacVerifier([SECRET]), hosts[0]["credential"].bind(channel)))
+        self.assertIsNotNone(check(PassVerifier(owner.sign_public), hosts[1]["credential"].bind(channel)))
 
 
 class TurnTests(ServerTestCase):

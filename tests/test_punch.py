@@ -322,7 +322,7 @@ class RelayJoinTests(Base):
 
     def test_a_relay_that_refuses_the_token_is_reported(self):
         (relay,) = self.invite()["relays"]
-        forged = dict(relay, token=rp.mint_token("a guess", "00" * 16))
+        forged = dict(relay, token=rp.member_credential("a guess", "00" * 16))
         with self.assertRaisesRegex(PunchError, "did not accept"):
             punch.join_relayed(self.invite_secret, self.fingerprint, [forged], connect_seconds=5)
 
@@ -333,6 +333,7 @@ class RelayJoinTests(Base):
     def test_a_member_who_relays_for_others_carries_the_join(self):
         from privatepartynet.pathway import PathManager
 
+        self.party.owner = Identity.create()  # friend relays take passes the owner signs
         friend = PathManager(Identity.create(), {}, self.party.path_relay_for("22" * 16)["relay"],
                              addresses=[("upnp", "127.0.0.1")], probe_network=False)
         self.addCleanup(friend.stop)
@@ -370,10 +371,11 @@ class InviteRelayTests(unittest.TestCase):
     def test_relays_round_trip_in_an_invite_and_bad_ones_are_dropped(self):
         from privatepartynet import connect
 
-        token = rp.mint_token("s" * 16, "00" * 16).hex()
-        relays = [["vps", "relay.example.net", 3479, 443, "ab" * 32, token], ["friend", "198.51.100.7", 40001, 0, "", token],
-                  ["friend", "a.name.instead", 1, 0, "", token], ["vps", "x", 0, 0, "", token], ["other", "x", 1, 0, "", token],
-                  ["vps", "x", 1, 0, "", "beef"]]
+        token = rp.member_credential("s" * 16, "00" * 16).hex()
+        friend = (bytes(rp.PASS_BYTES)).hex()
+        relays = [["vps", "relay.example.net", 3479, 443, "ab" * 32, token], ["friend", "198.51.100.7", 40001, 0, "", friend],
+                  ["friend", "a.name.instead", 1, 0, "", friend], ["vps", "x", 0, 0, "", token], ["other", "x", 1, 0, "", token],
+                  ["vps", "x", 1, 0, "", "beef"], ["friend", "198.51.100.8", 1, 0, "", token]]
         invite = connect.decode_invite(connect.encode_invite("P", "pw", [], "cd" * 32, secret="ee" * 16, relays=relays))
         self.assertEqual([(r["kind"], r["host"], r["port"]) for r in invite["relays"]],
                          [("vps", "relay.example.net", 3479), ("friend", "198.51.100.7", 40001)])
