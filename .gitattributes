@@ -1,3 +1,9 @@
 * text=auto
 *.ico binary
 *.png binary
+# The relay runs on Linux: its scripts and configuration keep Unix line endings on every checkout.
+relay/*.sh text eol=lf
+relay/*.conf text eol=lf
+relay/*.yml text eol=lf
+relay/Dockerfile text eol=lf
+relay/systemd/* text eol=lf
