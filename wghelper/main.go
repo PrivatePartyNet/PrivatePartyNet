@@ -39,6 +39,7 @@ import (
 
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
+	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 )
 
 const (
@@ -136,6 +137,24 @@ func firstConfig(link *Link) (Config, error) {
 	return c, err
 }
 
+// notes are the things the app should tell the person: what Windows would not do, in plain words.
+type notes struct {
+	lock  sync.Mutex
+	items []string
+}
+
+func (n *notes) add(text string) {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+	n.items = append(n.items, text)
+}
+
+func (n *notes) list() []string {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+	return append([]string{}, n.items...)
+}
+
 func status(link *Link, state, message string) {
 	link.SendJSON('S', map[string]string{"state": state, "message": message})
 }
@@ -153,26 +172,45 @@ func run(link *Link, o options, alive func(int) bool) string {
 	}
 	var adapter tun.Device
 	var memory *MemoryTun
-	var list []moved
+	var warnings notes
+	on := func() { link.SendJSON('S', map[string]any{"state": "on", "message": "", "warnings": warnings.list()}) }
 	if o.memoryAdapter {
 		memory = NewMemoryTun(link)
 		adapter = memory
 	} else {
-		RestoreLeftovers()
 		tun.WintunTunnelType = AdapterName
 		adapter, err = tun.CreateTUN(AdapterName, MTU)
 		if err != nil {
 			status(link, "failed", "The game network adapter could not be made: "+err.Error())
 			return err.Error()
 		}
-		if err := Configure(AdapterName, checkedConfig.self, checkedConfig.network); err != nil {
+		luid := winipcfg.LUID(adapter.(*tun.NativeTun).LUID())
+		if err := Configure(luid, checkedConfig.self, checkedConfig.network); err != nil {
 			adapter.Close()
 			status(link, "failed", "The game network adapter could not be set up: "+err.Error())
 			return err.Error()
 		}
-		list = TakePriority(AdapterName)
-		defer GiveBack(list)
-		go MakePrivate(AdapterName)
+		list, problems := TakePriority(luid)
+		defer func() {
+			if err := GiveBack(list); err != nil {
+				link.Send('L', []byte(err.Error()))
+			}
+		}()
+		for _, problem := range problems {
+			link.Send('L', []byte(problem))
+		}
+		if len(problems) > 0 {
+			warnings.add("Another network adapter could not be moved behind the game network, so some games may look " +
+				"for players on that one first.")
+		}
+		// Windows makes the network a few seconds after the address is set, so this waits for it on its own.
+		go func() {
+			if err := MakePrivate(luid); err != nil {
+				link.Send('L', []byte("the game network could not be made Private: "+err.Error()))
+				warnings.add("Windows kept this network Public, so games hosted on this PC may be blocked by the firewall.")
+				on()
+			}
+		}()
 	}
 	logger := &device.Logger{
 		Verbosef: device.DiscardLogf,
@@ -188,7 +226,7 @@ func run(link *Link, o options, alive func(int) bool) string {
 		return err.Error()
 	}
 	defer engine.Close()
-	status(link, "on", "")
+	on()
 
 	var once sync.Once
 	why := make(chan string, 3)
