@@ -148,8 +148,8 @@ class RecordTests(unittest.TestCase):
         self.assertNotEqual(one, mailbox_key(b"t" * 16).public_key().public_bytes_raw())
 
 
-class RendezvousTests(Base):
-    """The whole path with a fake DHT on this PC and STUN servers that report each socket's own address (no NAT)."""
+class DhtBase(Base):
+    """A fake DHT on this PC and STUN servers that report each socket's own address (no NAT)."""
 
     def setUp(self):
         super().setUp()
@@ -169,6 +169,10 @@ class RendezvousTests(Base):
 
     def dht(self):
         return Dht(bootstrap=[self.network[0].address], timeout=0.5, deadline=6.0)
+
+
+class RendezvousTests(DhtBase):
+    """The whole path with a fake DHT on this PC and STUN servers that report each socket's own address (no NAT)."""
 
     def test_a_joiner_finds_the_host_punches_and_reaches_the_party(self):
         stun = tuple(fake.address for fake in self.stun)
@@ -267,6 +271,64 @@ class JoinerPunchTests(RendezvousTests):
         joiner.run()
         self.assertEqual(joiner.status["state"], "failed")
         self.assertNotIn("through the routers", joiner.status["message"])
+
+
+@unittest.skipUnless(socket.has_ipv6, "no IPv6 on this PC")
+class Ipv6JoinTests(DhtBase):
+    """The join over IPv6, first where both PCs have it. On one PC that is the loopback address ::1, with no firewall
+    in between; the firewall itself opens the same way as an IPv4 router, by both sending (see test_natsim)."""
+
+    def host(self, stun=None, ipv6=("::1",)):
+        stun = stun or tuple(fake.address for fake in self.stun)
+        host = HostPunch(self.host_identity._sign, "feedfacecafebeef", self.certfile, self.keyfile, self.party.port,
+                         lambda: [self.secret], dht_factory=self.dht, stun_servers=stun, refresh=1.0, poll=0.5,
+                         ipv6=lambda: list(ipv6))
+        self.addCleanup(host.close)
+        time.sleep(2.0)  # the first record is published
+        return host
+
+    def join(self, ipv6=("::1",)):
+        client = join_through(self.host_identity.sign_public.hex(), "feedfacecafebeef", self.secret, self.fingerprint,
+                              dht_factory=self.dht, stun_servers=tuple(fake.address for fake in self.stun),
+                              connect_seconds=20, ipv6=(lambda: list(ipv6)) if ipv6 else None)
+        self.addCleanup(client.close)
+        return client
+
+    def test_records_carry_an_ipv6_address_beside_the_ipv4_one(self):
+        from privatepartynet.dht import bdecode, bencode
+
+        both = bdecode(bencode(record("203.0.113.5", 40000, "hard", v6=("2001:db8::5", 40001))))
+        self.assertEqual(read_record(both), ("203.0.113.5", 40000, "hard"))
+        self.assertEqual(punch.read_record6(both), ("2001:db8::5", 40001))
+        only6 = bdecode(bencode(record(None, 0, "", v6=("2001:db8::5", 40001))))
+        self.assertIsNone(read_record(only6))
+        self.assertEqual(punch.read_record6(only6), ("2001:db8::5", 40001))
+        self.assertIsNone(punch.read_record6(bdecode(bencode(record("203.0.113.5", 40000, "easy")))))
+
+    def test_a_joiner_with_ipv6_reaches_the_host_over_it_first(self):
+        host = self.host()
+        self.assertEqual(host.mapping6[0], "::1")
+        client = self.join()
+        self.assertEqual(client.kind, "ipv6")
+        self.assertEqual(self.through(client.port, "GET", "/ask?challenge=1")[0], 200)
+        ends = time.monotonic() + 20  # the host reads the mailbox a lookup later; on one PC the joiner is in already
+        while time.monotonic() < ends and not any(":" in address for address, _ in host.seen):
+            time.sleep(0.2)
+        self.assertTrue(any(":" in address for address, _ in host.seen), "the host opened its IPv6 side for the joiner")
+
+    def test_a_host_whose_ipv4_lets_nothing_through_is_reached_over_ipv6(self):
+        silent = FakeStun(silent=True)
+        self.addCleanup(silent.close)
+        host = self.host(stun=(silent.address,))
+        self.assertIsNone(host.mapping, "no IPv4 address at all")
+        client = self.join()
+        self.assertEqual((client.kind, self.through(client.port, "GET", "/ask?challenge=1")[0]), ("ipv6", 200))
+
+    def test_a_joiner_without_ipv6_goes_over_ipv4(self):
+        self.host()
+        client = self.join(ipv6=None)
+        self.assertEqual(client.kind, "punch")
+        self.assertEqual(self.through(client.port, "GET", "/ask?challenge=1")[0], 200)
 
 
 class NoDht:

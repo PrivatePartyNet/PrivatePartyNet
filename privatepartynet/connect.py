@@ -601,7 +601,8 @@ class Joiner:
                             "No address answered; trying a direct connection through both routers (this takes up to a minute)...")
         try:
             tunnel = punch.join_through(invite.get("host_sign", ""), invite.get("server_id", ""),
-                                        bytes.fromhex(invite["secret"]), invite["fingerprint"], relays=relays)
+                                        bytes.fromhex(invite["secret"]), invite["fingerprint"], relays=relays,
+                                        ipv6=global_ipv6_addresses)
         except Exception as exc:
             why = "; ".join(sorted(set(tried))[:2])
             self._set("failed", f"Could not reach the party ({why}). The connection through the routers did not work "

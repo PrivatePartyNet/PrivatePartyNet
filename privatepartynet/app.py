@@ -572,7 +572,8 @@ class Controller:
 
             try:
                 host = punch.HostPunch(self._identity._sign, party.server_id, str(certfile), str(keyfile), party.port,
-                                       party.invite_secrets, poll=15.0, relays=party.host_relays)
+                                       party.invite_secrets, poll=15.0, relays=party.host_relays,
+                                       ipv6=connect.global_ipv6_addresses)
             except Exception:
                 log.exception("Could not get ready to be reached through the routers")
                 return
