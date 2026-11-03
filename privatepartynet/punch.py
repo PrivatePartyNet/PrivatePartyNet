@@ -44,6 +44,7 @@ HOST_SALT = b"privatepartynet-host"
 GUEST_SALT = b"privatepartynet-guest"
 TUNNEL_NETWORK = ipaddress.ip_network("127.1.0.0/16")  # where tunnelled connections come from, as the party sees them
 CONNECT_SECONDS = 30.0
+QUICK_SECONDS = 6.0  # how long to try punching from behind a hard router before taking a relay instead
 IDLE_SECONDS = 60.0
 
 
@@ -284,6 +285,10 @@ class TunnelClient:
             self.transport, self.protocol, self._listener = self._loop.run(start(), connect_seconds + 5)
         except Exception:
             self._loop.stop()
+            try:
+                sock.close()  # the transport owned it, but never closed it on the way out
+            except OSError:
+                pass
             raise
         self.port = self._listener.sockets[0].getsockname()[1]
 
@@ -429,7 +434,7 @@ def join_through(host_key, server_id, secret, fingerprint, dht_factory=None, stu
         return join_relayed(secret, fingerprint, relays, connect_seconds)
     try:
         return _join_punched(host_key, server_id, secret, fingerprint, dht_factory, stun_servers, connect_seconds,
-                             find_seconds)
+                             find_seconds, quick=bool(relays))
     except PunchError as exc:
         if not relays:
             raise
@@ -481,7 +486,11 @@ def join_relayed(secret, fingerprint, relays, connect_seconds=CONNECT_SECONDS, b
     raise PunchError("; ".join(why) or "no relay to try")
 
 
-def _join_punched(host_key, server_id, secret, fingerprint, dht_factory, stun_servers, connect_seconds, find_seconds):
+def _join_punched(host_key, server_id, secret, fingerprint, dht_factory, stun_servers, connect_seconds, find_seconds,
+                  quick=False):
+    """`quick` (there is a relay to fall back on) gives up early where punching rarely works: at once when the host's
+    router gives a new port for every destination (the joiner can only aim at the port STUN saw, and the host answers
+    from another), and after QUICK_SECONDS when only the joiner's does."""
     from privatepartynet.dht import Dht
 
     dht = dht_factory() if dht_factory else Dht()
@@ -503,6 +512,10 @@ def _join_punched(host_key, server_id, secret, fingerprint, dht_factory, stun_se
         if host[2] == "hard" and mine[2] == "hard":
             raise PunchError("both routers give a new port for every destination, which no direct connection can "
                              "cross. IPv6, or a forwarded port on either side, would work.")
+        if quick and host[2] == "hard":
+            raise PunchError("the host's router gives a new port for every destination")
+        if quick and mine[2] == "hard":
+            connect_seconds = min(connect_seconds, QUICK_SECONDS)
         dht.put_mutable(mailbox_key(secret), record(*mine), int(time.time()), GUEST_SALT)
     except Exception:
         dht.close()
