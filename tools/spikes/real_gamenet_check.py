@@ -74,8 +74,23 @@ def echo_reply(packet):
 
 
 def powershell(script):
-    return subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=30,
-                          creationflags=NO_WINDOW).stdout
+    result = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=30,
+                            creationflags=NO_WINDOW)
+    return (result.stdout + result.stderr).strip()
+
+
+def adapter_line():
+    """netsh's own line for the adapter: index, metric, packet size, state, name. netsh does not go through WMI."""
+    shown = subprocess.run(["netsh", "interface", "ipv4", "show", "interfaces"], capture_output=True, text=True, timeout=20,
+                           creationflags=NO_WINDOW).stdout
+    return next((line.strip() for line in shown.splitlines() if line.strip().endswith("PrivatePartyNet")), "")
+
+
+# Windows' Network List Manager, which the firewall's profiles come from. Read through COM, not WMI: on some PCs the
+# WMI classes behind Get-NetConnectionProfile are missing ("Invalid class").
+NETWORKS = ("$m = [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'DCB00C01-570F-4A9B-8D69-199FDBA5723B')); "
+            "foreach ($c in $m.GetNetworkConnections()) { $n = $c.GetNetwork(); "
+            "$n.GetName() + ': ' + @('Public', 'Private', 'Domain')[$n.GetCategory()] }")
 
 
 def main():
@@ -149,10 +164,10 @@ def main():
         time.sleep(5)  # Windows takes a moment to bring the adapter up with its address and to make its profile
         print(subprocess.run(["netsh", "interface", "ipv4", "show", "addresses", "PrivatePartyNet"], capture_output=True,
                              text=True, timeout=20, creationflags=NO_WINDOW).stdout.strip())
-        print("profile, metric and packet size:", " ".join(powershell(
-            "Get-NetConnectionProfile -InterfaceAlias PrivatePartyNet | Select-Object NetworkCategory | Format-List; "
-            "Get-NetIPInterface -InterfaceAlias PrivatePartyNet -AddressFamily IPv4 | Select-Object InterfaceMetric, NlMtu "
-            "| Format-List").split()))
+        print("index, metric, packet size, state, name:", adapter_line())
+        print("networks and their profiles:", "; ".join(powershell(NETWORKS).splitlines()))
+        print("through WMI, as the helper asks:", powershell(
+            "(Get-NetConnectionProfile -InterfaceAlias PrivatePartyNet -ErrorAction Stop).NetworkCategory").splitlines()[0])
         result = subprocess.run(["ping", "-n", "20", "-w", "2000", member_address], capture_output=True, text=True,
                                 timeout=60, creationflags=NO_WINDOW)
         print(result.stdout.strip())
@@ -176,14 +191,14 @@ def main():
                 seen.add(packet.split(b"lobby? ")[1].decode())
         print("broadcasts that reached the member:", sorted(seen))
         ok = pinged and len(seen) == 2
-        subprocess.run(["taskkill", "/F", "/IM", gameclient.HELPER], capture_output=True, timeout=20,
-                       creationflags=NO_WINDOW)  # the elevated one may refuse a normal taskkill; then see the note
-        time.sleep(3)
-        killed = subprocess.run(["netsh", "interface", "ipv4", "show", "addresses", "PrivatePartyNet"], capture_output=True,
-                                text=True, timeout=20, creationflags=NO_WINDOW)
-        print("adapter removed after the helper was killed outright:",
-              killed.returncode != 0 or "PrivatePartyNet" not in killed.stdout,
-              "(if False: run taskkill /F from an administrator prompt and look again)")
+        # The helper runs with administrator rights, so killing it takes them too: Windows asks a second time.
+        print("asking Windows for permission to kill the helper outright (UAC)...")
+        problem = gameclient.launch_elevated("taskkill", ["/F", "/IM", gameclient.HELPER], str(folder))
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not problem and adapter_line():
+            time.sleep(0.5)
+        print("adapter removed after the helper was killed outright:", not adapter_line(),
+              f"({problem})" if problem else "")
     stop.set()
     session.stop()
     if "session" in holder:
