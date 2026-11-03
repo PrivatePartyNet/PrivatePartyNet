@@ -86,6 +86,16 @@ class StunTests(unittest.TestCase):
         self.assertEqual(result["answers"], 2)
 
 
+    def test_an_answer_is_read_without_its_socket(self):
+        request, transaction = connect.stun_request()
+        attribute = struct.pack("!HHBBH", 0x0020, 8, 0, 1, 40000 ^ (MAGIC >> 16)) +             struct.pack("!I", struct.unpack("!I", socket.inet_aton("203.0.113.7"))[0] ^ MAGIC)
+        answer = struct.pack("!HHI", 0x0101, len(attribute), MAGIC) + transaction + attribute
+        self.assertEqual(connect.parse_stun(answer, transaction), ("203.0.113.7", 40000))
+        self.assertEqual(connect.parse_stun(answer), ("203.0.113.7", 40000))
+        self.assertIsNone(connect.parse_stun(answer, b"x" * 12))
+        self.assertIsNone(connect.parse_stun(answer[:10]))
+
+
 class AddressTests(unittest.TestCase):
     def test_carrier_grade_nat_addresses_are_recognised(self):
         self.assertEqual(classify_public_ip("100.64.12.3"), "shared")
@@ -159,6 +169,7 @@ DESCRIPTION = """<?xml version="1.0"?>
 class FakeRouter:
     def __init__(self, accept_timed_leases=True, refuse=False, external="9.9.9.9"):
         self.mappings = {}
+        self.protocols = []
         self.calls = []
         self.accept_timed_leases = accept_timed_leases
         self.refuse = refuse
@@ -184,6 +195,7 @@ class FakeRouter:
                 if action == "AddPortMapping":
                     lease = int(body.split("<NewLeaseDuration>")[1].split("<")[0])
                     port = int(body.split("<NewExternalPort>")[1].split("<")[0])
+                    router.protocols.append(body.split("<NewProtocol>")[1].split("<")[0])
                     if router.refuse or (lease and not router.accept_timed_leases):
                         status = 500
                     else:
@@ -246,6 +258,13 @@ class UpnpTests(unittest.TestCase):
         result = self.mapping(router).map()
         self.assertEqual((result["ok"], result["external_ip"], result["external_port"]), (True, "9.9.9.9", 8765))
         self.assertIn(8765, router.mappings)
+
+    def test_a_udp_port_can_be_asked_for_too(self):
+        router = self.router()
+        mapping = UpnpMapping(8766, search_address=router.search_address, timeout=1.0, protocol="UDP")
+        self.addCleanup(mapping.unmap)
+        self.assertTrue(mapping.map()["ok"])
+        self.assertEqual(router.protocols, ["UDP"])
 
     def test_the_router_address_is_known_after_it_answers(self):
         router = self.router()

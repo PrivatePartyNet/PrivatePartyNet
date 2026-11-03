@@ -56,16 +56,22 @@ class ConnectError(Exception):
 # --- STUN: the address the outside world sees -----------------------------------------------------------------
 
 
-def _stun_binding(sock, host, port, family):
-    infos = socket.getaddrinfo(host, port, family, socket.SOCK_DGRAM)
+def stun_request():
+    """(request bytes, transaction id) for one STUN binding request."""
     transaction = os.urandom(12)
-    sock.sendto(struct.pack("!HHI", 0x0001, 0, STUN_MAGIC) + transaction, infos[0][4])
-    data, _ = sock.recvfrom(2048)
-    _, length, _ = struct.unpack("!HHI", data[:8])
-    if data[4:8] != struct.pack("!I", STUN_MAGIC) or data[8:20] != transaction:
+    return struct.pack("!HHI", 0x0001, 0, STUN_MAGIC) + transaction, transaction
+
+
+def parse_stun(data, transaction=None):
+    """(address, port) from a STUN binding answer, or None. With `transaction`, only the answer to that request."""
+    if len(data) < 20 or data[4:8] != struct.pack("!I", STUN_MAGIC):
+        return None
+    if transaction is not None and data[8:20] != transaction:
         return None  # not the answer to our question
+    _, length, _ = struct.unpack("!HHI", data[:8])
+    transaction = data[8:20]
     position = 20
-    while position + 4 <= 20 + length:
+    while position + 4 <= min(20 + length, len(data)):
         kind, size = struct.unpack("!HH", data[position:position + 4])
         body = data[position + 4:position + 4 + size]
         if kind == 0x0020 and len(body) >= 8:
@@ -73,10 +79,20 @@ def _stun_binding(sock, host, port, family):
             if body[1] == 1:
                 address = struct.unpack("!I", body[4:8])[0] ^ STUN_MAGIC
                 return socket.inet_ntoa(struct.pack("!I", address)), port_x
+            if len(body) < 20:
+                return None
             raw = bytes(a ^ b for a, b in zip(body[4:20], struct.pack("!I", STUN_MAGIC) + transaction))
             return socket.inet_ntop(socket.AF_INET6, raw), port_x
         position += 4 + size + (-size % 4)
     return None
+
+
+def _stun_binding(sock, host, port, family):
+    infos = socket.getaddrinfo(host, port, family, socket.SOCK_DGRAM)
+    request, transaction = stun_request()
+    sock.sendto(request, infos[0][4])
+    data, _ = sock.recvfrom(2048)
+    return parse_stun(data, transaction)
 
 
 def stun_probe(servers=STUN_SERVERS, timeout=2.0, family=socket.AF_INET, local_port=0):
@@ -233,13 +249,15 @@ def _local_address_towards(host):
 
 
 class UpnpMapping:
-    """Ask the router to forward one TCP port to this PC, and take the request back when asked.
+    """Ask the router to forward one port (TCP, or UDP for the paths between members) to this PC, and take the request
+    back when asked.
 
     `map()` returns {"ok", "external_ip", "external_port", "reason"}. The mapping has a lease, which a background
     thread renews until `unmap()`; the thread ends with unmap() or after `max_seconds`, whichever comes first."""
 
-    def __init__(self, port, search_address=SSDP_ADDRESS, timeout=2.0, lease=3600, max_seconds=24 * 3600):
+    def __init__(self, port, search_address=SSDP_ADDRESS, timeout=2.0, lease=3600, max_seconds=24 * 3600, protocol="TCP"):
         self.port = port
+        self.protocol = protocol
         self._search = search_address
         self._timeout = timeout
         self._lease = lease
@@ -258,7 +276,7 @@ class UpnpMapping:
     def _add(self, lease):
         url, service = self._gateway[0], self._gateway[1]
         status, _ = _soap(url, service, "AddPortMapping", [
-            ("NewRemoteHost", ""), ("NewExternalPort", self.port), ("NewProtocol", "TCP"),
+            ("NewRemoteHost", ""), ("NewExternalPort", self.port), ("NewProtocol", self.protocol),
             ("NewInternalPort", self.port), ("NewInternalClient", self._internal), ("NewEnabled", 1),
             ("NewPortMappingDescription", "PrivatePartyNet"), ("NewLeaseDuration", lease)], self._timeout)
         return status == 200
@@ -306,7 +324,7 @@ class UpnpMapping:
             return
         try:
             _soap(self._gateway[0], self._gateway[1], "DeletePortMapping",
-                  [("NewRemoteHost", ""), ("NewExternalPort", self.port), ("NewProtocol", "TCP")], self._timeout)
+                  [("NewRemoteHost", ""), ("NewExternalPort", self.port), ("NewProtocol", self.protocol)], self._timeout)
         except (OSError, http.client.HTTPException):
             log.debug("Removing the router port-open failed", exc_info=True)
         self.result = {**self.result, "ok": False, "reason": "closed"}
