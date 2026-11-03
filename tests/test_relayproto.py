@@ -342,6 +342,16 @@ class ServerTests(unittest.TestCase):
         with self.assertRaisesRegex(rp.RelayError, "did not accept"):
             bridge.wait_bound(CHANNEL, 5)
 
+    def test_without_a_certificate_pin_there_is_no_tls_fallback(self):
+        """L4: with nothing to check the relay's certificate against, a man in the middle could stand in for it."""
+        config = self.config(ALICE, tls_only=True)
+        config["pin"] = ""
+        bridge = RelayBridge(config)
+        self.addCleanup(bridge.close)
+        bridge.add(CHANNEL)
+        self.assertFalse(bridge.wait_bound(CHANNEL, 6))
+        self.assertEqual(bridge.client.transport, "udp")
+
     def test_a_wrong_certificate_pin_stops_the_tls_fallback(self):
         config = self.config(ALICE, tls_only=True)
         config["pin"] = "00" * 32

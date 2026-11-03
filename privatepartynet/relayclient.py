@@ -39,8 +39,8 @@ def resolve(host, port):
 class TlsLink:
     """Relay messages over one TLS connection, each preceded by its length. send() never blocks; a full queue drops.
 
-    `pin` (hex SHA-256 of the relay's certificate) is checked when given. The relay's certificate is usually its own,
-    self-made one; the pin is what proves it, and what it carries is end-to-end encrypted either way."""
+    `pin` (hex SHA-256 of the relay's certificate) is checked. The relay's certificate is its own, self-made one; the
+    pin is what proves it. RelayClient never opens one without a pin."""
 
     def __init__(self, host, port, pin, on_message, timeout=5.0):
         self.host, self.port, self.pin = host, port, (pin or "").lower()
@@ -205,8 +205,9 @@ class RelayClient:
         if self.closed:
             return
         now = self._clock() if now is None else now
+        # TLS only with the relay's certificate pinned: without the pin anyone in between could stand in for it.
         if self.tls is None and not self._heard and self._first_ask is not None and self.relay.get("tls_port") \
-                and now - self._first_ask > FALLBACK_SECONDS:
+                and self.relay.get("pin") and now - self._first_ask > FALLBACK_SECONDS:
             log.info("Relay %s answers nothing over UDP; trying TLS on port %s", self.relay["host"], self.relay["tls_port"])
             self.tls = TlsLink(self.relay["host"], int(self.relay["tls_port"]), self.relay.get("pin", ""), self.feed)
             with self._lock:

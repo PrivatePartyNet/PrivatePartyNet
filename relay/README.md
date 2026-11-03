@@ -10,7 +10,7 @@ It is two programs on one small Linux server:
 
 - `ppn_relay.py` carries the game network and the join tunnel: UDP port 3479, and TCP port 443 (TLS) for networks that
   let no UDP out.
-- coturn carries voice and screens (TURN): UDP and TCP port 3478, with media on UDP 49160-49200.
+- coturn carries voice and screens (TURN): UDP and TCP port 3478, with media on UDP 49160-49400.
 
 ## What the relay can and cannot see
 
@@ -43,17 +43,21 @@ most of the group, since every relayed datagram goes there and back.
    control panel, Relay server, and enter them. The setting is kept with the server; members receive it (signed by your
    PC) the next time they connect.
 4. If your provider has a firewall of its own (a "security group"), allow UDP 3479, TCP 443, UDP and TCP 3478, and UDP
-   49160-49200. The script opens them in ufw when ufw is on.
+   49160-49400. The script opens them in ufw when ufw is on.
 
 Run the script again after updating the repository; it keeps the secret and the certificate.
 
 ### With Docker instead
 
     cd privatepartynet/relay
-    cp env.example .env        # put the secret and the server's public address in .env
+    cp env.example .env        # put the server's public address in .env
+    docker run --rm python:3.12-slim python -c "import secrets; print(secrets.token_urlsafe(24))" > secret
+    chmod 644 secret           # the containers' own users read it; keep the checkout in root's home, which only root opens
     docker compose up -d --build
 
-`docker compose logs ppn-relay` shows the certificate fingerprint on its first lines.
+`docker compose logs ppn-relay` shows the certificate fingerprint on its first lines, and `cat secret` the secret.
+Without the fingerprint in the app, members never use the TLS fallback, since nothing would prove they reached your
+relay.
 
 ## Changing the secret
 

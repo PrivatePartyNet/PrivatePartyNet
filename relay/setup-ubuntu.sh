@@ -61,6 +61,11 @@ if [ -z "$PUBLIC_IP" ]; then
 fi
 
 echo "Configuring coturn..."
+if [ -f /etc/turnserver.conf ] && ! grep -q "coturn for PrivatePartyNet" /etc/turnserver.conf \
+        && [ ! -f /etc/turnserver.conf.before-ppn ]; then
+    cp -p /etc/turnserver.conf /etc/turnserver.conf.before-ppn
+    echo "Kept the previous coturn configuration as /etc/turnserver.conf.before-ppn"
+fi
 umask 027
 {
     cat "$HERE/turnserver.conf"
@@ -83,7 +88,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
     ufw allow "$UDP_PORT/udp" comment "PrivatePartyNet relay"
     ufw allow "$TLS_PORT/tcp" comment "PrivatePartyNet relay over TLS"
     ufw allow 3478 comment "coturn"
-    ufw allow 49160:49200/udp comment "coturn media"
+    ufw allow 49160:49400/udp comment "coturn media"
 fi
 
 systemctl daemon-reload
@@ -101,7 +106,8 @@ The relay is running. In PrivatePartyNet, as the owner: Server settings, Relay s
     Secret:      $SECRET
     Certificate: $PIN
 
-The secret stays on your PC; members get short-lived credentials from it. Keep it private.
+The secret stays on your PC; members get short-lived credentials from it. Keep it private, and clear this
+terminal's scrollback once you have copied it (or read it again later with: sudo head -n 1 /etc/ppn-relay/secret).
 Check on it with: systemctl status ppn-relay coturn   and   journalctl -u ppn-relay
-Your provider's own firewall (if it has one) must allow UDP $UDP_PORT, TCP $TLS_PORT, UDP and TCP 3478, UDP 49160-49200.
+Your provider's own firewall (if it has one) must allow UDP $UDP_PORT, TCP $TLS_PORT, UDP and TCP 3478, UDP 49160-49400.
 EOF

@@ -7,3 +7,4 @@ relay/*.conf text eol=lf
 relay/*.yml text eol=lf
 relay/Dockerfile text eol=lf
 relay/systemd/* text eol=lf
+relay/env.example text eol=lf

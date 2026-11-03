@@ -1,15 +1,22 @@
 # The relay and coturn on one VPS. From this folder:
-#   cp env.example .env      then put your secret and the VPS's public address in .env
+#   cp env.example .env      then put the VPS's public address in .env
+#   put the relay secret alone in a file named "secret" here (README.md says how to make one)
 #   docker compose up -d --build
-# The relay listens on UDP 3479 and TCP 443; coturn on UDP and TCP 3478, with relayed media on UDP 49160-49200.
+# The relay listens on UDP 3479 and TCP 443; coturn on UDP and TCP 3478, with relayed media on UDP 49160-49400.
+# The secret reaches both as a file, not as an environment variable, which docker inspect would show.
+secrets:
+  relay_secret:
+    file: ./secret
+
 services:
   ppn-relay:
     build:
       context: ..
       dockerfile: relay/Dockerfile
     restart: unless-stopped
+    secrets:
+      - relay_secret
     environment:
-      PPN_RELAY_SECRET: ${PPN_RELAY_SECRET:?set PPN_RELAY_SECRET in .env}
       PPN_RELAY_RATE_KBPS: ${PPN_RELAY_RATE_KBPS:-8000}
     ports:
       - "3479:3479/udp"
@@ -26,8 +33,9 @@ services:
     image: coturn/coturn:4.6
     restart: unless-stopped
     network_mode: host  # TURN hands out relay ports from a range; host networking avoids publishing each one
+    secrets:
+      - relay_secret
     environment:
-      PPN_RELAY_SECRET: ${PPN_RELAY_SECRET:?set PPN_RELAY_SECRET in .env}
       PUBLIC_IP: ${PUBLIC_IP:?set PUBLIC_IP in .env}
     volumes:
       - ./turnserver.conf:/etc/coturn/ppn-turnserver.conf:ro
@@ -38,8 +46,9 @@ services:
       - /bin/sh
       - -c
       - |
+        umask 077
         { cat /etc/coturn/ppn-turnserver.conf
-          echo "static-auth-secret=$$PPN_RELAY_SECRET"
+          echo "static-auth-secret=$$(head -n 1 /run/secrets/relay_secret)"
           echo "external-ip=$$PUBLIC_IP"
           echo "allowed-peer-ip=$$PUBLIC_IP"; } > /tmp/turnserver.conf
         exec turnserver -c /tmp/turnserver.conf

@@ -70,7 +70,7 @@ DEFAULT_BURST = 256 * 1024
 DEFAULT_USER_RATE = 2_000_000  # bytes a second for one user over all their channels
 DEFAULT_TOTAL_RATE = 12_500_000  # bytes a second for the whole relay (100 Mbit/s)
 MAX_CHANNELS = 4096
-MAX_CHANNELS_PER_USER = 64
+MAX_CHANNELS_PER_USER = 32  # a party has 16 people: one channel to each of the others, and room for joins
 DEFAULT_UDP_PORT = 3479  # coturn keeps 3478
 DEFAULT_TLS_PORT = 443
 

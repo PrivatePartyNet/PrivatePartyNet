@@ -28,9 +28,21 @@ class RelayFileTests(unittest.TestCase):
         for name in ("setup-ubuntu.sh", "docker-compose.yml"):
             self.assertIn("static-auth-secret=$", self.read(name), name)
 
+    def test_coturn_does_not_relay_over_tcp_or_answer_strangers_questions(self):
+        text = self.read("turnserver.conf")
+        for flag in ("no-tcp-relay", "no-rfc5780", "no-stun-backward-compatibility", "no-software-attribute"):
+            self.assertRegex(text, rf"(?m)^{flag}$")
+
+    def test_docker_keeps_the_secret_in_a_file_not_the_environment(self):
+        compose = self.read("docker-compose.yml")
+        self.assertNotIn("PPN_RELAY_SECRET", compose)
+        self.assertIn("file: ./secret", compose)
+        self.assertIn("secret", self.read(".gitignore").split())
+
     def test_coturn_does_not_relay_to_private_networks(self):
         text = self.read("turnserver.conf")
-        for start in ("10.0.0.0", "127.0.0.0", "169.254.0.0", "172.16.0.0", "192.168.0.0", "100.64.0.0"):
+        for start in ("10.0.0.0", "127.0.0.0", "169.254.0.0", "172.16.0.0", "192.168.0.0", "100.64.0.0", "192.0.0.0",
+                      "198.18.0.0", "224.0.0.0", "::ffff:0.0.0.0", "64:ff9b::"):
             self.assertIn(f"denied-peer-ip={start}-", text)
 
     def test_the_media_ports_agree_everywhere(self):
