@@ -91,6 +91,13 @@ def metrics():
     return found
 
 
+def automatic(name):
+    """netsh's "Use Automatic Metric" for one adapter: whether Windows chooses its metric."""
+    shown = subprocess.run(["netsh", "interface", "ipv4", "show", "interface", name], capture_output=True, text=True,
+                           timeout=20, creationflags=NO_WINDOW).stdout
+    return next((line.split(":", 1)[1].strip() for line in shown.splitlines() if "Automatic Metric" in line), "?")
+
+
 def adapter_line():
     """netsh's own line for the adapter: index, metric, packet size, state, name. netsh does not go through WMI."""
     shown = subprocess.run(["netsh", "interface", "ipv4", "show", "interfaces"], capture_output=True, text=True, timeout=20,
@@ -167,7 +174,8 @@ def main():
     threading.Thread(target=follow, daemon=True).start()
     before = metrics()
     first = {name: m for name, (m, state) in before.items() if state == "connected" and m <= 1}
-    print("other connected adapters at metric 1 before:", first or "none")
+    flags = {name: automatic(name) for name in first}
+    print("other connected adapters at metric 1 before:", first or "none", "automatic metric:", flags)
     session.start()
     print("asking Windows for permission (UAC)...")
     while session.status["state"] not in ("on", "failed", "declined") and time.monotonic() - started < DEADLINE:
@@ -236,7 +244,8 @@ def main():
     print("adapter removed after the check:", gone.returncode != 0 or "PrivatePartyNet" not in gone.stdout)
     after = metrics()
     print("those adapters after:", {name: after.get(name, ("gone",))[0] for name in first},
-          "(the same as before, after the kill and --restore)")
+          "automatic metric:", {name: automatic(name) for name in first}, "(the same as before, after the kill and --restore)")
+    ok = ok and all(automatic(name) == flag for name, flag in flags.items())
     ok = ok and all(after.get(name, (None,))[0] == m for name, m in first.items())
     print("RESULT", "PASS" if ok else "FAIL")
     return 0 if ok else 1
