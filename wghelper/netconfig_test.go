@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
@@ -53,13 +54,30 @@ func TestANetworksProfileIsReadThroughTheNetworkListManager(t *testing.T) {
 	}
 }
 
-func TestOnlyARecordThatCouldHaveComeFromTakePriorityIsReplayed(t *testing.T) {
-	for _, entry := range []moved{{LUID: 0, Metric: 1}, {LUID: 5, Metric: -1}, {LUID: 5, Metric: 10000}} {
-		if entry.sane() {
-			t.Errorf("%+v was taken as sane", entry)
+func TestTheGameNetworksConnectionIsFoundByItsAdapterAndTheRestLetGo(t *testing.T) {
+	ours := windows.GUID{Data1: 0xA, Data4: [8]byte{1, 2, 3}}
+	handles := []byte{1, 2, 3}
+	ids := []windows.GUID{{Data1: 0xB}, {}, ours}
+	var dropped []unsafe.Pointer
+	walk := func(list []windows.GUID) func() (windows.GUID, unsafe.Pointer, bool) {
+		i := 0
+		return func() (windows.GUID, unsafe.Pointer, bool) {
+			if i == len(list) {
+				return windows.GUID{}, nil, false
+			}
+			i++
+			return list[i-1], unsafe.Pointer(&handles[i-1]), true
 		}
 	}
-	if !(moved{LUID: 5, Metric: 1}).sane() {
-		t.Error("a real entry was refused")
+	found := pickConnection(ours, walk(ids), func(p unsafe.Pointer) { dropped = append(dropped, p) })
+	if found != unsafe.Pointer(&handles[2]) || len(dropped) != 2 {
+		t.Fatalf("found %v, let go of %d", found, len(dropped))
+	}
+	dropped = nil
+	if pickConnection(ours, walk(ids[:2]), func(p unsafe.Pointer) { dropped = append(dropped, p) }) != nil || len(dropped) != 2 {
+		t.Fatal("a network that is not there yet was found, or a handle was kept")
+	}
+	if pickConnection(windows.GUID{}, walk(ids), func(unsafe.Pointer) {}) != nil {
+		t.Fatal("an unknown adapter (all zero) matched a connection whose id could not be read")
 	}
 }

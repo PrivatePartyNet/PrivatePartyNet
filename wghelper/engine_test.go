@@ -320,6 +320,8 @@ func reaches(t *testing.T, from, to *member, protocol byte, port uint16, destina
 	}
 }
 
+// The filter is in the helper's own packet path and knows nothing of the network's profile, so it holds whether
+// Windows keeps the game network Public or makes it Private. This runs on the in-memory adapter, which has no profile.
 func TestWindowsServicesAreClosedToMembersUntilTheOwnerOpensThem(t *testing.T) {
 	_, ms := startMesh(t, "10.77.12.1", "10.77.12.2")
 	for group, ports := range samples {

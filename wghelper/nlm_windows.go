@@ -103,17 +103,38 @@ func connectionFor(manager unsafe.Pointer, adapter windows.GUID) (unsafe.Pointer
 		return nil, fmt.Errorf("the network connections could not be listed (0x%08X)", hr)
 	}
 	defer call(connections, release)
-	for {
+	next := func() (windows.GUID, unsafe.Pointer, bool) {
 		var connection unsafe.Pointer
 		var fetched uint32
 		hr := call(connections, enumNext, 1, uintptr(unsafe.Pointer(&connection)), uintptr(unsafe.Pointer(&fetched)))
 		if int32(hr) < 0 || fetched == 0 || connection == nil {
-			return nil, errors.New("Windows has no network for the adapter yet")
+			return windows.GUID{}, nil, false
 		}
 		var id windows.GUID
-		if hr := call(connection, connectionGetAdapterID, uintptr(unsafe.Pointer(&id))); int32(hr) >= 0 && id == adapter {
-			return connection, nil
+		call(connection, connectionGetAdapterID, uintptr(unsafe.Pointer(&id))) // on failure id stays all zero: no match
+		return id, connection, true
+	}
+	if found := pickConnection(adapter, next, func(c unsafe.Pointer) { call(c, release) }); found != nil {
+		return found, nil
+	}
+	return nil, errors.New("Windows has no network for the adapter yet")
+}
+
+// pickConnection walks the connections `next` gives (each one's adapter id and handle, until ok is false) and returns
+// the one on `adapter`, or nil. Every other handle is given to `drop`.
+func pickConnection(adapter windows.GUID, next func() (windows.GUID, unsafe.Pointer, bool),
+	drop func(unsafe.Pointer)) unsafe.Pointer {
+	if adapter == (windows.GUID{}) {
+		return nil
+	}
+	for {
+		id, connection, ok := next()
+		if !ok {
+			return nil
 		}
-		call(connection, release)
+		if id == adapter {
+			return connection
+		}
+		drop(connection)
 	}
 }

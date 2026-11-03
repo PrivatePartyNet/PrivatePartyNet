@@ -138,6 +138,15 @@ func firstConfig(link *Link) (Config, error) {
 	return c, err
 }
 
+// What the control panel says when Windows would not do something, with what the person can do about it.
+const (
+	WarningPublic = "Windows kept the game network Public, so games hosted on this PC may be blocked by Windows " +
+		"Firewall. To fix it, open Settings, Network & internet, choose the PrivatePartyNet network and set it to Private, " +
+		"or let the game through when Windows Firewall asks."
+	WarningPriority = "Another network adapter could not be moved behind the game network, so some games may look " +
+		"for players on that one first. Turning that adapter off while you play fixes it."
+)
+
 // notes are the things the app should tell the person: what Windows would not do, in plain words.
 type notes struct {
 	lock  sync.Mutex
@@ -201,14 +210,13 @@ func run(link *Link, o options, alive func(int) bool) string {
 			link.Send('L', []byte(problem))
 		}
 		if len(problems) > 0 {
-			warnings.add("Another network adapter could not be moved behind the game network, so some games may look " +
-				"for players on that one first.")
+			warnings.add(WarningPriority)
 		}
 		// Windows makes the network a few seconds after the address is set, so this waits for it on its own.
 		go func() {
 			if err := MakePrivate(luid); err != nil {
 				link.Send('L', []byte("the game network could not be made Private: "+err.Error()))
-				warnings.add("Windows kept this network Public, so games hosted on this PC may be blocked by the firewall.")
+				warnings.add(WarningPublic)
 				on()
 			}
 		}()

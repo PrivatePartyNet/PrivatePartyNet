@@ -37,15 +37,7 @@ func Configure(luid winipcfg.LUID, address netip.Addr, network netip.Prefix) err
 	return nil
 }
 
-type moved struct {
-	LUID      uint64 `json:"luid"`
-	Index     int    `json:"index"`
-	Alias     string `json:"alias"`
-	Metric    int    `json:"metric"`
-	Automatic bool   `json:"automatic"`
-}
-
-// The record of what TakePriority moved lives in the registry under HKEY_LOCAL_MACHINE, which only administrators can
+// The record of what takePriority moved lives in the registry under HKEY_LOCAL_MACHINE, which only administrators can
 // write, and not in a file in the user's folder: a file there could be swapped for a link by any program the user runs,
 // and the helper, with administrator rights, would then write or replay whatever it points to.
 const (
@@ -53,7 +45,9 @@ const (
 	recordValue = "GameNetworkMovedMetrics"
 )
 
-func saveRecord(list []moved) error {
+type registryRecord struct{}
+
+func (registryRecord) save(list []moved) error {
 	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, recordKey, registry.SET_VALUE)
 	if err != nil {
 		return err
@@ -63,7 +57,7 @@ func saveRecord(list []moved) error {
 	return key.SetStringValue(recordValue, string(data))
 }
 
-func loadRecord() []moved {
+func (registryRecord) load() []moved {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, recordKey, registry.QUERY_VALUE)
 	if err != nil {
 		return nil
@@ -78,7 +72,7 @@ func loadRecord() []moved {
 	return list
 }
 
-func forgetRecord() {
+func (registryRecord) forget() {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, recordKey, registry.SET_VALUE)
 	if err != nil {
 		return
@@ -87,52 +81,31 @@ func forgetRecord() {
 	key.DeleteValue(recordValue)
 }
 
-// sane is true for an entry that could have come from TakePriority: an adapter and a metric Windows allows.
-func (m moved) sane() bool {
-	return m.LUID != 0 && m.Metric >= 0 && m.Metric <= 9999
-}
+// ipHelper is Windows' adapter table through the IP Helper API.
+type ipHelper struct{}
 
-// TakePriority moves every other connected adapter at metric 1 (Radmin VPN, for one) to 2 while the game network is
-// on, so the game network's 1 wins. What each one had, including whether Windows chose its metric automatically, is
-// recorded FIRST, so GiveBack can put it back even after a crash. Returns what was moved, and what could not be.
-func TakePriority(own winipcfg.LUID) ([]moved, []string) {
-	var problems []string
-	if err := RestoreLeftovers(); err != nil {
-		problems = append(problems, err.Error())
-	}
+func (ipHelper) list() ([]adapterState, error) {
 	rows, err := winipcfg.GetIPInterfaceTable(windows.AF_INET)
 	if err != nil {
-		return nil, append(problems, "the other network adapters could not be read: "+err.Error())
+		return nil, err
 	}
-	var list []moved
+	out := make([]adapterState, 0, len(rows))
 	for _, row := range rows {
-		if !row.Connected || row.InterfaceLUID == own || row.Metric > 1 {
-			continue
-		}
 		alias := fmt.Sprintf("adapter %d", row.InterfaceIndex)
 		if info, err := row.InterfaceLUID.Interface(); err == nil {
 			alias = info.Alias()
 		}
-		list = append(list, moved{uint64(row.InterfaceLUID), int(row.InterfaceIndex), alias, int(row.Metric),
-			row.UseAutomaticMetric})
+		out = append(out, adapterState{uint64(row.InterfaceLUID), int(row.InterfaceIndex), alias, int(row.Metric),
+			row.UseAutomaticMetric, row.Connected})
 	}
-	if len(list) == 0 {
-		return nil, problems
-	}
-	if err := saveRecord(list); err != nil {
-		// without the record nothing could be put back after a crash, so nothing is moved
-		return nil, append(problems, "nothing was moved, because what to put back could not be recorded: "+err.Error())
-	}
-	for _, item := range list {
-		if err := setMetric(item.LUID, 2, false); err != nil {
-			problems = append(problems, fmt.Sprintf("%s could not be moved behind the game network: %v", item.Alias, err))
-		}
-	}
-	return list, problems
+	return out, nil
 }
 
-func setMetric(luid uint64, metric int, automatic bool) error {
+func (ipHelper) setMetric(luid uint64, metric int, automatic bool) error {
 	row, err := winipcfg.LUID(luid).IPInterface(windows.AF_INET)
+	if errors.Is(err, windows.ERROR_NOT_FOUND) || errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+		return errGone
+	}
 	if err != nil {
 		return err
 	}
@@ -143,28 +116,14 @@ func setMetric(luid uint64, metric int, automatic bool) error {
 	return row.Set()
 }
 
-// GiveBack puts every adapter TakePriority moved back exactly as it was, then forgets the record.
-func GiveBack(list []moved) error {
-	var problems []error
-	for _, item := range list {
-		if !item.sane() {
-			continue
-		}
-		if err := setMetric(item.LUID, item.Metric, item.Automatic); err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
-			problems = append(problems, fmt.Errorf("%s could not be given its metric back: %w", item.Alias, err))
-		}
-	}
-	forgetRecord()
-	return errors.Join(problems...)
+// TakePriority, GiveBack and RestoreLeftovers are priority.go's, on this PC's adapters and the registry record.
+func TakePriority(own winipcfg.LUID) ([]moved, []string) {
+	return takePriority(uint64(own), ipHelper{}, registryRecord{})
 }
 
-// RestoreLeftovers gives back what a helper that was killed outright could not, before anything else.
-func RestoreLeftovers() error {
-	if list := loadRecord(); list != nil {
-		return GiveBack(list)
-	}
-	return nil
-}
+func GiveBack(list []moved) error { return giveBack(list, ipHelper{}, registryRecord{}) }
+
+func RestoreLeftovers() error { return restoreLeftovers(ipHelper{}, registryRecord{}) }
 
 // MakePrivate marks the adapter's network Private, as Radmin VPN does its own. A new adapter with no gateway is an
 // unidentified network, which Windows treats as Public, and then the firewall blocks a game that hosts. Windows makes
