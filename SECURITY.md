@@ -23,7 +23,13 @@ Who can read what:
 - A forgotten password cannot be recovered. Backups are sealed with a passphrase chosen at export time, and the same
   applies to them.
 - Screens and voice go directly between PCs over WebRTC, which encrypts the media (DTLS-SRTP). The host relays only the
-  connection setup.
+  connection setup. When two PCs cannot reach each other and the group runs a relay server, the media goes through the
+  coturn beside it, still encrypted end to end.
+- A relay (a member who turned relaying on, or the group's relay server) passes on WireGuard and QUIC traffic that is
+  encrypted end to end, and cannot read or change it. It sees the public addresses of the members using it, how much
+  they send and when. Only members can use it: the owner's PC gives each one credentials that last six hours, and what a
+  member sends to a relay proves they hold them without showing them. Anyone with the relay server's secret can use
+  that server, so the owner keeps it to themselves and changes it if it may have got out (relay/README.md).
 
 Who can join:
 
@@ -38,7 +44,8 @@ What leaves your PC:
 - A lookup of your public address through public STUN servers, a request to your router to open a port (UPnP), and signed
   address records on the public BitTorrent DHT while an invite is active. These records contain your public address and port,
   signed with the server's key, and anyone watching the DHT can see them.
-- There are no accounts, no relay servers and no update check. The app sends nothing to a company server.
+- A relay, only when the group set one up or a member turned relaying on (both are off until someone chooses them).
+- There are no accounts and no update check. The app sends nothing to a company server.
 
 Known limits:
 

@@ -373,13 +373,14 @@ def _advice(upnp, ipv6, cgnat, stun):
     if cgnat:
         return "no", ("This internet connection shares one public address between many customers (carrier-grade NAT, as on "
                       "Starlink), and no router setting can open it. People on your own network can join. People outside "
-                      "can join only with a way around it: IPv6, or the direct-connection step that PrivatePartyNet is still "
-                      "getting. Their side matters too.")
+                      "join with the invite through both routers, which works unless their router is of the same strict "
+                      "kind; then only IPv6 or a relay helps (a member who relays for others, or your group's relay "
+                      "server).")
     if stun.get("public") is None:
         return "maybe", "No public address could be found. Check the internet connection."
     if stun.get("nat") == "easy":
-        return "maybe", ("Your router did not open the port by itself. Forward the port in the router, or wait for the "
-                         "direct-connection step, which suits routers like yours.")
+        return "maybe", ("Your router did not open the port by itself, but the invite still works through it: both PCs "
+                         "send at the same moment, which suits routers like yours. Forwarding the port is faster.")
     return "maybe", "Your router did not open the port by itself. Forward the port in the router."
 
 
