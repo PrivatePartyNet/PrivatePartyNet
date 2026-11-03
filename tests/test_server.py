@@ -6,6 +6,8 @@ import ssl
 
 import tempfile
 
+import time
+
 import unittest
 
 
@@ -62,9 +64,12 @@ def next_event(response):
 
 
 
-def read_until(response, kind, test=lambda event: True):
+def read_until(response, kind, test=lambda event: True, seconds=15.0):
 
-    """Read events until one of this kind (and passing test) arrives. Socket timeouts bound the wait."""
+    """Read events until one of this kind (and passing test) arrives. The party's heartbeat keeps the socket busy, so
+    the socket timeout alone would never end the wait; `seconds` does."""
+
+    ends = time.monotonic() + seconds
 
     while True:
 
@@ -73,6 +78,10 @@ def read_until(response, kind, test=lambda event: True):
         if event.get("type") == kind and test(event):
 
             return event
+
+        if time.monotonic() > ends:
+
+            raise AssertionError(f"no {kind} event like that within {seconds:.0f} seconds")
 
 
 
@@ -151,6 +160,10 @@ class PartyTests(unittest.TestCase):
         _, response = self.open("GET", "/events?as=viewer" if viewer else "/events", headers={"Cookie": cookie})
 
         self.assertEqual(response.status, 200)
+
+        # The response owns the socket. A caller that drops it would close the page, and the party would mark the
+        # member offline and end their shares partway through the test, so the stream stays open until the test ends.
+        self.addCleanup(response.close)
 
         return response
 
