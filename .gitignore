@@ -36,3 +36,6 @@ CLAUDE.md
 DEVELOPMENT_LOG.md
 FOLDER_STRUCTURE.md
 _templates/
+
+# The game network helper, built from wghelper/ by tools/gohelper.py (and by tools/build.py)
+assets/PrivatePartyNetGameNet.exe
