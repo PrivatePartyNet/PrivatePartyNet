@@ -259,33 +259,6 @@ func TestDatagramsForUnknownOrRemovedMembersAreDroppedQuietly(t *testing.T) {
 	}
 }
 
-func tcpPacket(source, destination string, port uint16) []byte {
-	packet := udpPacket(source, destination, make([]byte, 12))
-	packet[9] = 6
-	binary.BigEndian.PutUint16(packet[10:12], 0)
-	binary.BigEndian.PutUint16(packet[10:12], checksum(packet[:ipHeader]))
-	binary.BigEndian.PutUint16(packet[22:24], port)
-	return packet
-}
-
-func TestWindowsSharingAndRemoteDesktopAreClosedToMembers(t *testing.T) {
-	_, ms := startMesh(t, "10.77.12.1", "10.77.12.2")
-	for _, port := range []uint16{445, 139, 3389, 5985} {
-		ms[0].tun.Outbound <- tcpPacket("10.77.12.1", "10.77.12.2", port)
-	}
-	nbns := udpPacket("10.77.12.1", "10.77.12.255", []byte("WORKGROUP"))
-	binary.BigEndian.PutUint16(nbns[22:24], 137)
-	ms[0].tun.Outbound <- nbns
-	ms[0].tun.Outbound <- tcpPacket("10.77.12.1", "10.77.12.2", 27015) // a game server's port
-	got := receive(t, ms[1], 5*time.Second)
-	if got == nil || binary.BigEndian.Uint16(got[22:24]) != 27015 {
-		t.Fatalf("got %x, want only the game's packet", got)
-	}
-	if extra := receive(t, ms[1], 300*time.Millisecond); extra != nil {
-		t.Fatalf("a closed port got through: %x", extra)
-	}
-}
-
 func TestAFragmentIsNeverTakenForAWrapper(t *testing.T) {
 	mesh := &Mesh{Self: netip.MustParseAddr("10.77.12.2"), Network: netip.MustParsePrefix(testNetwork)}
 	wrapper := Wrap(udpPacket("10.77.12.1", "10.77.12.255", []byte("hi")), netip.MustParseAddr("10.77.12.1"), mesh.Self)

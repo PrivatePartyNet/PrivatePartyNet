@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -170,6 +171,39 @@ func TestTheSecretIsOnlyTakenFromAnOrdinaryFileThatHoldsOne(t *testing.T) {
 	if os.Symlink(good, link) == nil { // needs Developer Mode or administrator rights to make
 		if _, err := readSecret(link); err == nil {
 			t.Fatal("a link was followed")
+		}
+	}
+}
+
+func TestTheHelperOnlyTalksToTheAppThatWroteTheSecret(t *testing.T) {
+	secret := strings.Repeat("cd", 32)
+	for _, answer := range []string{AppProof(secret), AppProof(strings.Repeat("ef", 32))} {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			line := make([]byte, 65)
+			if _, err := io.ReadFull(conn, line); err == nil {
+				conn.Write([]byte(answer + "\n"))
+			}
+			time.Sleep(200 * time.Millisecond)
+			conn.Close()
+		}()
+		conn, err := connectToApp(listener.Addr().(*net.TCPAddr).Port, secret)
+		listener.Close()
+		if answer == AppProof(secret) && err != nil {
+			t.Fatalf("the real app was refused: %v", err)
+		}
+		if answer != AppProof(secret) && err == nil {
+			t.Fatal("a program that does not know the secret was taken for the app")
+		}
+		if conn != nil {
+			conn.Close()
 		}
 	}
 }

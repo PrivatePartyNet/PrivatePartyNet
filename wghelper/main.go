@@ -22,11 +22,14 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -88,6 +91,14 @@ func readSecret(path string) (string, error) {
 	return secret, nil
 }
 
+// AppProof is what the app answers to the helper's secret, to show it is the app that wrote the secret and not some
+// other program listening on the port.
+func AppProof(secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte("PrivatePartyNet app"))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
 func connectToApp(port int, secret string) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), 10*time.Second)
 	if err != nil {
@@ -97,6 +108,13 @@ func connectToApp(port int, secret string) (net.Conn, error) {
 		conn.Close()
 		return nil, err
 	}
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	answer := make([]byte, 65)
+	if _, err := io.ReadFull(conn, answer); err != nil || !hmac.Equal(answer, []byte(AppProof(secret)+"\n")) {
+		conn.Close()
+		return nil, errors.New("whatever is on the port is not the app")
+	}
+	conn.SetReadDeadline(time.Time{})
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		tcp.SetNoDelay(true)
 	}

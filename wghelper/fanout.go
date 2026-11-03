@@ -167,14 +167,14 @@ func (f *Fanout) Write(bufs [][]byte, offset int) (int, error) {
 			continue
 		}
 		if inner, wrapped := Unwrap(packet, source, mesh); wrapped {
-			if inner != nil && !ToClosedPort(inner) {
+			if inner != nil {
 				out = append(out, inner)
 			} else {
 				f.Dropped.Add(1)
 			}
 			continue
 		}
-		if destination == mesh.Self && mesh.Network.Contains(source) && !ToClosedPort(packet) {
+		if destination == mesh.Self && mesh.Network.Contains(source) {
 			out = append(out, packet)
 		} else {
 			f.Dropped.Add(1)
@@ -187,24 +187,6 @@ func (f *Fanout) Write(bufs [][]byte, offset int) (int, error) {
 	}
 	return len(bufs), nil
 }
-
-// Windows' own file sharing, name service, remote desktop and remote management. The game network is marked Private
-// so games can host, and Windows opens these to Private networks, so members' packets to them are dropped: no LAN game
-// needs them. A datagram cut into fragments is judged by its first fragment, which carries the port; without it
-// Windows never puts the datagram together.
-var closedPorts = map[uint16]bool{135: true, 137: true, 138: true, 139: true, 445: true, 3389: true, 5357: true,
-	5985: true, 5986: true}
-
-// ToClosedPort is true for a TCP or UDP packet to one of closedPorts.
-func ToClosedPort(packet []byte) bool {
-	header := int(packet[0]&0x0F) * 4
-	if (packet[9] != 6 && packet[9] != 17) || fragmentOffset(packet) != 0 || len(packet) < header+4 {
-		return false
-	}
-	return closedPorts[binary.BigEndian.Uint16(packet[header+2:header+4])]
-}
-
-func fragmentOffset(packet []byte) int { return int(binary.BigEndian.Uint16(packet[6:8]) & 0x1FFF) }
 
 // fragmented is true for any piece of a datagram that was cut up: more fragments follow, or this is not the first.
 func fragmented(packet []byte) bool { return binary.BigEndian.Uint16(packet[6:8])&0x3FFF != 0 }

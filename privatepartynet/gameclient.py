@@ -16,6 +16,7 @@ tells the helper who the members are, and closes the path of anyone who leaves.
 """
 
 import ctypes
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -67,6 +68,12 @@ def launch_elevated(program, arguments, folder):
     if result > 32:
         return None
     return "declined" if result == 5 else f"could not start ({result})"
+
+
+def app_proof(secret):
+    """What the app answers to the helper's secret, so the helper knows it reached the app that wrote it and not another
+    program on the port (wghelper/main.go AppProof)."""
+    return hmac.new(secret.encode("ascii"), b"PrivatePartyNet app", hashlib.sha256).hexdigest().encode("ascii")
 
 
 def frame(kind, *parts):
@@ -236,6 +243,11 @@ class GameSession:
             except OSError:
                 line = b""
             if peer[0] == "127.0.0.1" and hmac.compare_digest(line.strip(), secret.encode("ascii")):
+                try:
+                    conn.sendall(app_proof(secret) + b"\n")  # and the app shows the helper it is the app
+                except OSError:
+                    conn.close()
+                    continue
                 conn.settimeout(None)
                 return conn
             conn.close()  # not our helper: keep waiting for the real one
