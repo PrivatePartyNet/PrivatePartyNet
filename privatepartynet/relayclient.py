@@ -27,13 +27,20 @@ LENGTH = struct.Struct("!H")
 
 
 def resolve(host, port):
-    """(ip, port) for a relay's name or address, IPv4 first. None when it does not resolve."""
+    """Every (ip, port) a relay's name or address has, IPv6 and IPv4 taken in turn; [] when it does not resolve."""
     try:
         infos = socket.getaddrinfo(host, port, 0, socket.SOCK_DGRAM)
     except (OSError, UnicodeError):
-        return None
-    infos.sort(key=lambda info: info[0] != socket.AF_INET)
-    return (infos[0][4][0], infos[0][4][1]) if infos else None
+        return []
+    v6 = [(i[4][0].split("%")[0], i[4][1]) for i in infos if i[0] == socket.AF_INET6]
+    v4 = [(i[4][0], i[4][1]) for i in infos if i[0] == socket.AF_INET]
+    found = []
+    for pair in zip(v6 + [None] * len(v4), v4 + [None] * len(v6)):
+        found += [a for a in pair if a is not None and a not in found]
+    return found
+
+
+HEARD_SECONDS = 3 * 15.0  # no word from the address in use for this long, and every address is tried again
 
 
 class TlsLink:
@@ -139,14 +146,20 @@ class RelayClient:
     `relay` is {"host", "port", "tls_port"?, "pin"?, "credential"}, where the credential makes BINDs
     (relayproto.HmacCredential for a VPS relay, pathway.PassCredential for a friend relay). `udp_send(data, address)`
     sends from the owner's socket; the owner passes everything that arrives from `address` to feed().
-    `on_deliver(channel, payload)` gets each datagram from the other end of a channel. Call tick() a few times a second."""
+    `on_deliver(channel, payload)` gets each datagram from the other end of a channel. Call tick() a few times a second.
+
+    A relay's name may have several addresses, IPv6 and IPv4. Until one answers, BINDs go to all of them, and the first
+    to answer is used from then on ("happy eyeballs"), so a member with only IPv6 or only IPv4 reaches a relay that
+    has both. When the one in use falls silent, all are tried again."""
 
     def __init__(self, relay, on_deliver, udp_send, clock=time.monotonic, resolver=resolve):
         self.relay = dict(relay)
         self.on_deliver = on_deliver
         self._udp_send = udp_send
         self._clock = clock
-        self.address = None
+        self.address = None  # the address in use, once one answered
+        self.addresses = []  # every address the relay's name has
+        self._last_heard = None
         self.tls = None
         self.channels = {}  # channel -> {"credential", "next", "status", "cookie"}
         self._lock = threading.Lock()
@@ -165,9 +178,15 @@ class RelayClient:
         return "tls" if self.tls is not None else "udp"
 
     def _resolve(self):
-        self.address = self._resolver(self.relay["host"], int(self.relay["port"]))
-        if self.address is None:
+        self.addresses = [tuple(a[:2]) for a in self._resolver(self.relay["host"], int(self.relay["port"]))]
+        if not self.addresses:
             log.info("The relay %s did not resolve", self.relay["host"])
+        elif len(self.addresses) == 1:
+            self.address = self.addresses[0]
+
+    def matches(self, source):
+        """True when `source` is one of this relay's addresses."""
+        return tuple(source[:2]) in self.addresses
 
     def want(self, channel, credential=None):
         """Keep `channel` bound on this relay, with `credential` (or the relay's own)."""
@@ -194,9 +213,12 @@ class RelayClient:
     def _out(self, data):
         if self.tls is not None:
             return self.tls.send(data)
-        if self.address is None:
-            return False
-        return self._udp_send(data, self.address)
+        if self.address is not None:
+            return self._udp_send(data, self.address)
+        sent = False
+        for address in self.addresses:
+            sent = self._udp_send(data, address) or sent
+        return sent
 
     def send(self, channel, payload):
         return self._out(rp.send(channel, payload))
@@ -216,6 +238,9 @@ class RelayClient:
         if self.tls is not None and not self.tls.alive:
             self.tls = None  # it failed or dropped: back to UDP, and to TLS again after another silence
             self._first_ask, self._heard = now, False
+        if self.address is not None and len(self.addresses) > 1 and self._last_heard is not None \
+                and now - self._last_heard > HEARD_SECONDS:
+            self.address = None  # the network may have changed under us: let every address race again
         with self._lock:
             due = [(c, e) for c, e in self.channels.items() if e["next"] <= now]
             for channel, entry in due:
@@ -233,13 +258,16 @@ class RelayClient:
         if self._out(message) and self._first_ask is None:
             self._first_ask = now
 
-    def feed(self, data):
-        """A message from the relay."""
+    def feed(self, data, source=None):
+        """A message from the relay; `source` is the address it came from (None over TLS)."""
         message = rp.parse(data)
         if message is None:
             return
         kind, channel, rest = message
         self._heard = True
+        self._last_heard = self._clock()
+        if source is not None and self.address is None and self.matches(source):
+            self.address = tuple(source[:2])  # the first address to answer is the one used
         if kind == rp.BOUND:
             with self._lock:
                 entry = self.channels.get(channel)
@@ -279,6 +307,15 @@ class RelayBridge:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.bind(("0.0.0.0", 0))
         self._sock.setblocking(False)
+        self._sock6 = None
+        try:
+            sock6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            sock6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            sock6.bind(("::", 0))
+            sock6.setblocking(False)
+            self._sock6 = sock6
+        except OSError:
+            pass  # no IPv6 on this PC
         self.client = RelayClient(relay, self._delivered, self._udp_send, clock=clock, resolver=resolver)
         self._locals = {}  # channel -> {"sock", "target", "peer"}
         self._lock = threading.Lock()
@@ -287,8 +324,11 @@ class RelayBridge:
         self._thread.start()
 
     def _udp_send(self, data, address):
+        sock = self._sock6 if ":" in address[0] else self._sock
+        if sock is None:
+            return False
         try:
-            self._sock.sendto(data, address)
+            sock.sendto(data, address[:2])
             return True
         except OSError:
             return False
@@ -344,7 +384,7 @@ class RelayBridge:
             with self._lock:
                 watched = {entry["sock"]: channel for channel, entry in self._locals.items()}
             try:
-                ready, _, _ = select.select([self._sock, *watched], [], [], 0.1)
+                ready, _, _ = select.select([s for s in (self._sock, self._sock6) if s] + list(watched), [], [], 0.1)
             except (OSError, ValueError):
                 ready = []
             for sock in ready:
@@ -352,9 +392,9 @@ class RelayBridge:
                     data, source = sock.recvfrom(65535)
                 except OSError:
                     continue
-                if sock is self._sock:
-                    if source[:2] == (self.client.address or (None,))[:2]:
-                        self.client.feed(data)
+                if sock is self._sock or sock is self._sock6:
+                    if self.client.matches(source):
+                        self.client.feed(data, source)
                     continue
                 channel = watched[sock]
                 entry = self._locals.get(channel)
@@ -373,3 +413,5 @@ class RelayBridge:
                 entry["sock"].close()
             self._locals.clear()
         self._sock.close()
+        if self._sock6 is not None:
+            self._sock6.close()

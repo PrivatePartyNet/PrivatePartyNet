@@ -16,14 +16,16 @@ WireGuard's ciphertext, and each pair of members meets on a relay channel only t
 
 Each member's PathManager has one UDP socket for all of this. What is sent on it:
 
-    PROBE  0x30 from(16) nonce(8) mac(16)   is this way open? mac = HMAC-SHA256(pair key, the first 25 bytes)
-    REPLY  0x31 from(16) nonce(8) mac(16)   yes; the same nonce back, under the replier's id
+    PROBE  0x30 from(16) nonce(8) mac(16) [padding]   is this way open? mac = HMAC-SHA256(pair key, the first 25 bytes)
+    REPLY  0x31 from(16) nonce(8) mac(16) [padding]   yes; the same nonce back, under the replier's id, as long
     DATA   0x32 datagram                     a datagram for the game network
 
 plus STUN, and relay messages (relayproto.py) both to the relays this PC uses and, as a friend relay, from members who
 use it. Over a relay the same three travel inside SEND and DELIVER. The pair key comes from both members' identity keys
 (X25519), so nobody else can make a path answer, or move it elsewhere. DATA is accepted only from an address or channel
-that has proved itself that way.
+that has proved itself that way. A way is used only once a probe padded to the size of the largest DATA has been
+answered at that size, and it is checked at that size again every few probes: some links (IPv6 tunnels, some mobile
+networks) carry small packets but drop large ones, and IPv6 routers never split a packet.
 
 Candidates are what a member says about itself, sent to every other member through the party (the host passes them
 on): [["key", dh, sign], [kind, address, port], ...] with the kinds above. A path needs the other side's "key" entry.
@@ -53,6 +55,9 @@ DIRECT = ("lan", "ipv6", "upnp", "punch")
 PROBE, REPLY, DATA = 0x30, 0x31, 0x32
 PROBE_SIZE = 41
 MAX_DATAGRAM = 1400  # what every path carries, the relays included; WireGuard's MTU is set to fit
+FULL_SIZE = 1 + MAX_DATAGRAM  # a probe padded to the size of the largest DATA, to show the way carries that too
+FULL_EVERY = 6  # every so many probes of a way that answers is full size
+FULL_SECONDS = 45.0  # a way whose last full-size answer is older than this is not used
 PROBE_FAST = 0.5  # seconds between probes of a way not proven yet, for FAST_SECONDS after the candidates arrive
 FAST_SECONDS = 15.0
 PROBE_SLOW = 5.0  # then this; ways that work but are not in use are checked as often
@@ -242,11 +247,14 @@ class UdpTransport:
 class _Route:
     """One way to a member: a direct address, or a channel on one relay."""
 
-    __slots__ = ("kind", "address", "relay", "last_reply", "rtt", "next_probe", "nonces", "replies", "kind_hint")
+    __slots__ = ("kind", "address", "relay", "last_reply", "rtt", "next_probe", "nonces", "replies", "kind_hint", "full",
+                 "probes")
 
     def __init__(self, kind, address=None, relay=None, kind_hint=None):
         self.kind, self.address, self.relay = kind, address, relay
         self.kind_hint = kind_hint  # for a punch address: "easy" or "hard", as the other member's STUN check said
+        self.full = None  # when a full-size probe was last answered
+        self.probes = 0
         self.last_reply = None
         self.rtt = 1.0
         self.next_probe = 0.0
@@ -255,6 +263,10 @@ class _Route:
 
     def alive(self, now):
         return self.last_reply is not None and now - self.last_reply < DEAD_SECONDS
+
+    def usable(self, now):
+        """Alive, and lately shown to carry the largest datagram."""
+        return self.alive(now) and self.full is not None and now - self.full < FULL_SECONDS
 
 
 class PeerPath:
@@ -482,7 +494,7 @@ class PathManager:
                     "relayed": dict(self._core.stats) if self._core else None,
                     "through": sorted({u for ends in self._core.channels.values() for u in ends}) if self._core else [],
                     "peers": {pid: {"kind": p.path.kind, "rtt": round(p.active.rtt * 1000) if p.active else None,
-                                    "ways": sorted({r.kind for r in p.routes.values() if r.alive(self._clock())})}
+                                    "ways": sorted({r.kind for r in p.routes.values() if r.usable(self._clock())})}
                               for pid, p in self._peers.items()}}
 
     def friend_offers(self):
@@ -782,10 +794,9 @@ class PathManager:
             self._path_message(data, source)
         elif first in (rp.BOUND, rp.DELIVER):
             with self._lock:
-                client = next((c for c in self._relays.values() if c.address is not None
-                               and tuple(c.address[:2]) == tuple(source)), None)
+                client = next((c for c in self._relays.values() if c.matches(source)), None)
             if client is not None:
-                client.feed(data)
+                client.feed(data, source)
         elif first in (rp.BIND, rp.BIND_PASS, rp.SEND):
             core = self._core
             if core is not None:
@@ -806,7 +817,7 @@ class PathManager:
             if peer is not None:
                 peer.path._deliver(data[1:])
             return
-        if kind not in (PROBE, REPLY) or len(data) != PROBE_SIZE:
+        if kind not in (PROBE, REPLY) or len(data) not in (PROBE_SIZE, FULL_SIZE):
             return
         sender, nonce = data[1:17].hex(), data[17:25]
         with self._lock:
@@ -818,6 +829,7 @@ class PathManager:
             if kind == PROBE:
                 head = bytes([REPLY]) + bytes.fromhex(self.identity.user_id) + nonce
                 answer = head + _hmac(peer.key, head)
+                answer += bytes(len(data) - len(answer))  # as long as the probe, so the way back is tested at that size
                 if relay is None and ("direct", source) not in peer.routes:
                     # It reached us from an address we did not know of: probe it back. Only a reply to our own probe
                     # lets DATA in from there, since a probe could be a copy someone sent again from elsewhere.
@@ -832,6 +844,10 @@ class PathManager:
                 route.last_reply = now
                 route.rtt = (now - sent) if route.replies == 0 else route.rtt * 0.75 + (now - sent) * 0.25
                 route.replies += 1
+                if len(data) == FULL_SIZE:
+                    route.full = now
+                elif route.full is None:
+                    route.next_probe = now  # it answers: check at once that it carries full-size datagrams too
                 if relay is None:
                     self._by_address[source] = sender
         if kind == PROBE:
@@ -848,17 +864,22 @@ class PathManager:
         route.nonces[nonce] = now
         if len(route.nonces) > 16:
             route.nonces.pop(next(iter(route.nonces)))
-        self._send_on(route, peer, head + _hmac(peer.key, head))
+        probe = head + _hmac(peer.key, head)
+        # Small until the way answers at all, then full size until it has answered at full size, then now and then.
+        if route.replies and (route.full is None or route.probes % FULL_EVERY == 0):
+            probe += bytes(FULL_SIZE - len(probe))
+        route.probes += 1
+        self._send_on(route, peer, probe)
 
     def _choose(self, peer, now):
         """Move to the best way that answers. A way of the same rank as the one in use does not replace it."""
         with self._lock:
-            alive = [r for r in peer.routes.values() if r.alive(now)]
+            alive = [r for r in peer.routes.values() if r.usable(now)]
             if not alive:
                 return
             best = min(alive, key=lambda r: (RANK[r.kind], r.rtt))
             active = peer.active
-            if active is not None and active.alive(now) and RANK[active.kind] <= RANK[best.kind]:
+            if active is not None and active.usable(now) and RANK[active.kind] <= RANK[best.kind]:
                 return
             if best is active:
                 return
@@ -904,12 +925,12 @@ class PathManager:
                 route.next_probe = now + interval * random.uniform(0.9, 1.1)
                 self._probe(peer, route, now)
             active = peer.active
-            if active is not None and not active.alive(now):
+            if active is not None and not active.usable(now):
                 self._choose_after_loss(peer, now)
 
     def _choose_after_loss(self, peer, now):
         with self._lock:
-            alive = [r for r in peer.routes.values() if r.alive(now)]
+            alive = [r for r in peer.routes.values() if r.usable(now)]
             if not alive:
                 return  # keep sending on the last way: it may come back, and nothing else answers either
             best = min(alive, key=lambda r: (RANK[r.kind], r.rtt))
