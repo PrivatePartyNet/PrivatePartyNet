@@ -14,19 +14,21 @@
 //
 // On the way out it gives back the metrics it moved and closes the adapter, which removes it from Windows.
 //
-// Started as: PrivatePartyNetGameNet.exe --port P --secret-file F --parent PID [--state-file S]
-// The secret is read from a file the app writes and the helper deletes, so it never appears on a command line. The
-// app sends this PC's key, address and members over the link once it is open (see link.go).
+// Started as: PrivatePartyNetGameNet.exe --port P --secret-file F --parent PID
+// The secret is read from a file the app writes (and deletes once the helper has connected), so it never appears on a
+// command line. The helper only reads that file, and only an ordinary file holding a secret's 64 hex characters: it runs
+// with administrator rights, and the file is in a folder any program the user runs could change. The app sends this
+// PC's key, address and members over the link once it is open (see link.go).
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,7 +49,6 @@ type options struct {
 	port          int
 	secretFile    string
 	parent        int
-	stateFile     string
 	memoryAdapter bool
 }
 
@@ -57,7 +58,6 @@ func parseOptions(args []string) (options, error) {
 	flags.IntVar(&o.port, "port", 0, "the app's loopback port")
 	flags.StringVar(&o.secretFile, "secret-file", "", "the file holding the one-time secret")
 	flags.IntVar(&o.parent, "parent", 0, "the app's process id")
-	flags.StringVar(&o.stateFile, "state-file", "", "where the metrics of moved adapters are kept")
 	flags.BoolVar(&o.memoryAdapter, "memory-adapter", false, "tests: no Wintun, packets go over the link")
 	if err := flags.Parse(args); err != nil {
 		return o, err
@@ -65,20 +65,27 @@ func parseOptions(args []string) (options, error) {
 	if o.port <= 0 || o.port > 65535 || o.secretFile == "" {
 		return o, errors.New("--port and --secret-file are needed")
 	}
-	if o.stateFile == "" {
-		o.stateFile = filepath.Join(filepath.Dir(o.secretFile), "net-metrics.json")
-	}
 	return o, nil
 }
 
-// readSecret reads the one-time secret and deletes its file.
+// readSecret reads the one-time secret: 64 hex characters in an ordinary file (not a link to something else).
 func readSecret(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	os.Remove(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(data)), nil
+	if !info.Mode().IsRegular() || info.Size() > 128 {
+		return "", errors.New("the secret file is not an ordinary small file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	secret := strings.TrimSpace(string(data))
+	if raw, err := hex.DecodeString(secret); err != nil || len(raw) != 32 {
+		return "", errors.New("the secret file does not hold a secret")
+	}
+	return secret, nil
 }
 
 func connectToApp(port int, secret string) (net.Conn, error) {
@@ -133,7 +140,7 @@ func run(link *Link, o options, alive func(int) bool) string {
 		memory = NewMemoryTun(link)
 		adapter = memory
 	} else {
-		RestoreLeftovers(o.stateFile)
+		RestoreLeftovers()
 		tun.WintunTunnelType = AdapterName
 		adapter, err = tun.CreateTUN(AdapterName, MTU)
 		if err != nil {
@@ -145,8 +152,8 @@ func run(link *Link, o options, alive func(int) bool) string {
 			status(link, "failed", "The game network adapter could not be set up: "+err.Error())
 			return err.Error()
 		}
-		list = TakePriority(AdapterName, o.stateFile)
-		defer GiveBack(list, o.stateFile)
+		list = TakePriority(AdapterName)
+		defer GiveBack(list)
 		go MakePrivate(AdapterName)
 	}
 	logger := &device.Logger{

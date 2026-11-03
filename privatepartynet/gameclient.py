@@ -171,6 +171,9 @@ class GameSession:
 
     def _run(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            # Without it, another program could bind the same port too and be handed the helper and its secret.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
         listener.settimeout(1.0)
@@ -192,6 +195,10 @@ class GameSession:
                           else f"The game network helper {problem}.")
                 return
             conn = self._accept(listener, secret)
+            try:
+                secret_file.unlink()  # used once; the helper only reads it
+            except OSError:
+                pass
             if conn is None:
                 return
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,7 +31,7 @@ func startHelper(t *testing.T, alive func(int) bool) (*app, chan string) {
 		}
 	}()
 	why := make(chan string, 1)
-	o := options{memoryAdapter: true, stateFile: filepath.Join(t.TempDir(), "state.json")}
+	o := options{memoryAdapter: true}
 	go func() {
 		link := NewLink(helperSide)
 		why <- run(link, o, alive)
@@ -144,4 +145,31 @@ func TestSettingsOutsideTheGameNetworkAreRefused(t *testing.T) {
 		t.Fatalf("status %s", state.Body)
 	}
 	<-why
+}
+
+func TestTheSecretIsOnlyTakenFromAnOrdinaryFileThatHoldsOne(t *testing.T) {
+	folder := t.TempDir()
+	good := filepath.Join(folder, "net.key")
+	secret := strings.Repeat("ab", 32)
+	os.WriteFile(good, []byte(secret), 0o600)
+	if got, err := readSecret(good); err != nil || got != secret {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if _, err := os.Stat(good); err != nil {
+		t.Fatal("the helper must not delete it: the app does")
+	}
+	other := filepath.Join(folder, "something.txt")
+	os.WriteFile(other, []byte("password=hunter2"), 0o600)
+	if _, err := readSecret(other); err == nil {
+		t.Fatal("a file without a secret in it was read as one")
+	}
+	if _, err := readSecret(folder); err == nil {
+		t.Fatal("a folder was read as a secret")
+	}
+	link := filepath.Join(folder, "link.key")
+	if os.Symlink(good, link) == nil { // needs Developer Mode or administrator rights to make
+		if _, err := readSecret(link); err == nil {
+			t.Fatal("a link was followed")
+		}
+	}
 }

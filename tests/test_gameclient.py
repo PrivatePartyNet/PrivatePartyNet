@@ -156,6 +156,26 @@ class GameNetworkTests(unittest.TestCase):
         self.assertFalse(secret_file.exists())
         self.assertFalse(any(len(a) == 64 and all(c in "0123456789abcdef" for c in a) for a in seen["arguments"]))
 
+    def test_no_other_program_can_share_the_helpers_port(self):
+        def squatter(program, arguments, cwd):
+            port = int(arguments[arguments.index("--port") + 1])
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", port))
+                seen["bound"] = True
+            except OSError:
+                seen["bound"] = False
+            finally:
+                sock.close()
+            return "declined"
+
+        seen = {}
+        session = GameSession("10.77.12.2", NET, new_private_key(), self.folder, launch=squatter, program=self.program)
+        session.start()
+        session._thread.join(timeout=5)
+        self.assertEqual(seen, {"bound": False})
+
     def test_a_process_without_the_secret_is_turned_away(self):
         def impostor(program, arguments, cwd):
             port = int(arguments[arguments.index("--port") + 1])

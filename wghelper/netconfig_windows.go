@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"os/exec"
 	"strings"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // command runs a program with no window and gives what it printed.
@@ -58,11 +58,58 @@ type moved struct {
 	Automatic bool   `json:"automatic"`
 }
 
+// The record of what TakePriority moved lives in the registry under HKEY_LOCAL_MACHINE, which only administrators can
+// write, and not in a file in the user's folder: a file there could be swapped for a link by any program the user runs,
+// and the helper, with administrator rights, would then write or replay whatever it points to.
+const (
+	recordKey   = `SOFTWARE\PrivatePartyNet`
+	recordValue = "GameNetworkMovedMetrics"
+)
+
+func saveRecord(list []moved) error {
+	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, recordKey, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+	data, _ := json.Marshal(list)
+	return key.SetStringValue(recordValue, string(data))
+}
+
+func loadRecord() []moved {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, recordKey, registry.QUERY_VALUE)
+	if err != nil {
+		return nil
+	}
+	defer key.Close()
+	data, _, err := key.GetStringValue(recordValue)
+	if err != nil {
+		return nil
+	}
+	var list []moved
+	json.Unmarshal([]byte(data), &list)
+	return list
+}
+
+func forgetRecord() {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, recordKey, registry.SET_VALUE)
+	if err != nil {
+		return
+	}
+	defer key.Close()
+	key.DeleteValue(recordValue)
+}
+
+// sane is true for an entry that could have come from TakePriority: a real interface number and a metric Windows allows.
+func (m moved) sane() bool {
+	return m.Index > 0 && m.Index < 1<<24 && m.Metric >= 0 && m.Metric <= 9999
+}
+
 // TakePriority moves every other connected adapter at metric 1 (Radmin VPN, for one) to 2 while the game network is
 // on, so the game network's 1 wins. What each one had, including whether Windows chose its metric automatically, is
-// written to `stateFile` FIRST, so GiveBack can put it back even after a crash.
-func TakePriority(name, stateFile string) []moved {
-	RestoreLeftovers(stateFile)
+// recorded FIRST, so GiveBack can put it back even after a crash.
+func TakePriority(name string) []moved {
+	RestoreLeftovers()
 	out, err := powershell("Get-NetIPInterface -AddressFamily IPv4 | Where-Object { $_.ConnectionState -eq 'Connected' " +
 		"-and $_.InterfaceAlias -ne '" + name + "' -and $_.InterfaceMetric -le 1 } | Select-Object " +
 		"InterfaceIndex, InterfaceAlias, InterfaceMetric, @{n='Automatic';e={[string]$_.AutomaticMetric}} " +
@@ -84,13 +131,15 @@ func TakePriority(name, stateFile string) []moved {
 		metric, _ := item["InterfaceMetric"].(float64)
 		alias, _ := item["InterfaceAlias"].(string)
 		automatic, _ := item["Automatic"].(string)
-		list = append(list, moved{int(index), alias, int(metric), strings.EqualFold(automatic, "enabled")})
+		entry := moved{int(index), alias, int(metric), strings.EqualFold(automatic, "enabled")}
+		if entry.sane() {
+			list = append(list, entry)
+		}
 	}
 	if len(list) == 0 {
 		return nil
 	}
-	data, _ := json.Marshal(list)
-	if os.WriteFile(stateFile, data, 0o600) != nil {
+	if saveRecord(list) != nil {
 		return nil // without the record nothing could be put back after a crash, so nothing is moved
 	}
 	for _, item := range list {
@@ -99,9 +148,12 @@ func TakePriority(name, stateFile string) []moved {
 	return list
 }
 
-// GiveBack puts every adapter TakePriority moved back exactly as it was, then forgets the state file.
-func GiveBack(list []moved, stateFile string) {
+// GiveBack puts every adapter TakePriority moved back exactly as it was, then forgets the record.
+func GiveBack(list []moved) {
 	for _, item := range list {
+		if !item.sane() {
+			continue
+		}
 		if item.Automatic {
 			powershell(fmt.Sprintf("Set-NetIPInterface -InterfaceIndex %d -AddressFamily IPv4 -AutomaticMetric Enabled", item.Index))
 		} else {
@@ -109,18 +161,14 @@ func GiveBack(list []moved, stateFile string) {
 				item.Index, item.Metric))
 		}
 	}
-	os.Remove(stateFile)
+	forgetRecord()
 }
 
 // RestoreLeftovers gives back what a helper that was killed outright could not, before anything else.
-func RestoreLeftovers(stateFile string) {
-	data, err := os.ReadFile(stateFile)
-	if err != nil {
-		return
+func RestoreLeftovers() {
+	if list := loadRecord(); list != nil {
+		GiveBack(list)
 	}
-	var list []moved
-	json.Unmarshal(data, &list)
-	GiveBack(list, stateFile)
 }
 
 // MakePrivate marks the adapter's network Private, as Radmin VPN does its own. A new adapter with no gateway is an
