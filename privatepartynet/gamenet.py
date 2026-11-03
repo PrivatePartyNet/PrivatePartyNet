@@ -57,7 +57,8 @@ SERVICE_GROUPS = [
     {"id": "remote_desktop", "label": "Remote Desktop",
      "detail": "Members could ask to sign in to this PC, if Remote Desktop is turned on in Windows."},
     {"id": "remote_management", "label": "Remote management",
-     "detail": "Administration tools on members' PCs (WinRM, remote procedure calls) could reach this PC."},
+     "detail": "Administration tools on members' PCs (WinRM, remote procedure calls) could reach this PC. Closed, the "
+               "front door of remote procedure calls (port 135) is shut; the ports games use stay open."},
     {"id": "discovery", "label": "Network discovery",
      "detail": "Members' PCs could see this PC and its media and devices in their Network folder."},
 ]

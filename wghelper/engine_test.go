@@ -460,6 +460,10 @@ func TestTheServicesFilterHasNoWayRoundIt(t *testing.T) {
 		{tcp, 3388, false}, {tcp, 3389, true}, {tcp, 3390, false},
 		{tcp, 5984, false}, {tcp, 5985, true}, {tcp, 5986, true}, {tcp, 5987, false},
 		{udp, 445, false}, // file sharing is TCP 445 only
+		{tcp, 5356, false}, {tcp, 5357, true}, {tcp, 5358, true}, {tcp, 5359, false},
+		{udp, 5357, false}, // WS-Discovery's HTTP is TCP only
+		{udp, 3702, true}, {tcp, 3702, false}, {udp, 1900, true}, {tcp, 1900, false},
+		{tcp, 138, true}, {tcp, 137, true}, {udp, 5353, false},
 	} {
 		cases = append(cases, struct {
 			name   string
