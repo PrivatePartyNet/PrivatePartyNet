@@ -1,4 +1,4 @@
-"""Paths between members, on this PC: every rung of the ladder, with software routers (natsim.py) in place of real ones.
+"""Paths between members, on this PC: every rung of the ladder, with software routers (fakenat.py) in place of real ones.
 The test that matters most: two members both behind hard routers reach each other through a friend or a relay server."""
 
 import os
@@ -12,7 +12,7 @@ from privatepartynet import relayproto as rp
 from privatepartynet.identity import Identity
 from privatepartynet.pathway import (DATA, MAX_DATAGRAM, PROBE, LoopbackHub, LoopbackPathManager, PathManager,
                                      open_relay_config, sign_relay_config)
-from natsim import NatTransport
+from fakenat import NatTransport
 from test_connect import FakeStun
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "relay"))
