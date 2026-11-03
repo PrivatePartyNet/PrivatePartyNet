@@ -1,6 +1,7 @@
 """The NAT simulator (natsim.py) itself, and the punch-through path of 3.0 put through it: which pairs of routers it gets
 across, and which it cannot (the gap a relay closes)."""
 
+import ipaddress
 import socket
 import threading
 import time
@@ -195,6 +196,101 @@ class ProbeTests(SimTests):
 
     def test_two_symmetric_routers_never_let_the_probes_in(self):
         self.assertEqual(self.punch(natsim.SYMMETRIC, natsim.SYMMETRIC), (None, None))
+
+
+def arrived(pc, timeout=0.5):
+    """(data, source) of the next datagram for a natsim PC, or None when nothing comes within `timeout` seconds."""
+    ends = time.monotonic() + timeout
+    while time.monotonic() < ends:
+        got = pc.receive(0.05)
+        if got is not None:
+            return got
+    return None
+
+
+class V6Tests(SimTests):
+    def pc(self, v6, v4=natsim.SYMMETRIC, **options):
+        return self.internet.pc(v4=v4, v6=v6, **options)
+
+    def test_an_ipv6_address_is_global_and_keeps_the_pcs_port(self):
+        pc = self.pc(natsim.V6_STATEFUL)
+        (kind, address), = pc.addresses
+        self.assertEqual(kind, "ipv6")
+        self.assertIn(ipaddress.ip_address(address), natsim.V6_NETWORK)
+        other = self.pc(natsim.V6_OPEN)
+        pc.sendto(b"hello", (other.address6, other.port))
+        self.assertEqual(arrived(other), (b"hello", (address, pc.port)), "no NAT: the other side sees the PC itself")
+
+    def test_a_stateful_firewall_lets_in_only_answers(self):
+        pc, other = self.pc(natsim.V6_STATEFUL), self.pc(natsim.V6_OPEN)
+        other.sendto(b"unasked", (pc.address6, pc.port))
+        self.assertIsNone(arrived(pc))
+        self.assertEqual(pc.v6_router.dropped[-1][0], "not an answer to anything sent from there")
+        pc.sendto(b"hello", (other.address6, other.port))
+        self.assertEqual(arrived(other)[0], b"hello")
+        other.sendto(b"answer", (pc.address6, pc.port))
+        self.assertEqual(arrived(pc), (b"answer", (other.address6, other.port)))
+
+    def test_two_stateful_firewalls_open_for_each_other_when_both_send(self):
+        a, b = self.pc(natsim.V6_STATEFUL), self.pc(natsim.V6_STATEFUL)
+        for _ in range(3):
+            a.sendto(b"from a", (b.address6, b.port))
+            b.sendto(b"from b", (a.address6, a.port))
+        self.assertEqual(arrived(a)[0], b"from b")
+        self.assertEqual(arrived(b)[0], b"from a")
+
+    def test_a_network_that_blocks_inbound_udp_lets_not_even_answers_in(self):
+        pc, other = self.pc(natsim.V6_BLOCKS_INBOUND), self.pc(natsim.V6_OPEN)
+        pc.sendto(b"hello", (other.address6, other.port))
+        self.assertEqual(arrived(other)[0], b"hello", "it can still send")
+        other.sendto(b"answer", (pc.address6, pc.port))
+        self.assertIsNone(arrived(pc))
+        self.assertEqual(pc.v6_router.dropped[-1][0], "inbound UDP is blocked")
+        with self.assertRaises(ValueError):
+            pc.v6_router.forward(pc.v6)
+
+    def test_a_pc_with_no_ipv6_offers_none_and_cannot_send_there(self):
+        pc, other = self.pc(natsim.NO_V6), self.pc(natsim.V6_OPEN)
+        self.assertIsNone(pc.v6)
+        self.assertEqual(pc.addresses, [])
+        self.assertFalse(pc.sendto(b"hello", (other.address6, other.port)))
+        with self.assertRaises(ValueError):
+            self.internet.router(natsim.NO_V6)
+
+    def test_ipv4_still_goes_through_the_pcs_router(self):
+        pc = self.pc(natsim.V6_OPEN, v4=natsim.PORT_RESTRICTED)
+        server, public = self.server()
+        pc.sendto(b"hello", public)
+        data, source = received(server)
+        self.assertEqual(source[0], pc.v4_router.address)
+        server.sendto(b"answer", source)
+        self.assertEqual(arrived(pc), (b"answer", public))
+
+    def test_a_dual_stack_server_answers_on_the_family_it_was_asked_on(self):
+        server = self.udp()
+        public, global_ = self.internet.server(server), self.internet.server(server, family=6)
+        self.assertEqual(global_[1], server.getsockname()[1], "no NAT on IPv6: the server's own port")
+        pc = self.pc(natsim.V6_STATEFUL, v4=natsim.PORT_RESTRICTED)
+        pc.sendto(b"over v4", public)
+        pc.sendto(b"over v6", global_)
+        for _ in range(2):
+            data, source = received(server)
+            server.sendto(data + b" back", source)
+        answers = {arrived(pc), arrived(pc)}
+        self.assertEqual(answers, {(b"over v4 back", public), (b"over v6 back", global_)})
+
+    def test_an_mtu_drops_what_would_not_fit(self):
+        pc, other = self.pc(natsim.V6_OPEN, v6_mtu=1280), self.pc(natsim.V6_OPEN)
+        pc.sendto(b"x" * 1232, (other.address6, other.port))
+        self.assertEqual(len(arrived(other)[0]), 1232, "1232 bytes and 48 of header make 1280")
+        pc.sendto(b"x" * 1233, (other.address6, other.port))
+        self.assertIsNone(arrived(other))
+        self.assertIn("MTU of 1280", pc.v6_router.dropped[-1][0])
+
+    def test_an_address_nobody_has_loses_the_datagram_quietly(self):
+        pc = self.pc(natsim.V6_OPEN)
+        self.assertTrue(pc.sendto(b"hello", ("2001:db8:77::ffff", 9)))
+        self.assertTrue(pc.sendto(b"hello", ("2001:0db8:0077:0:0:0:0:ffff", 9)), "any spelling of an address")
 
 
 class TunnelThroughRoutersTests(Base):

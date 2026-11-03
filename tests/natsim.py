@@ -19,6 +19,21 @@ The kinds of router (RFC 4787 names in brackets):
                      (address-and-port-dependent mapping). Many carrier-grade NATs and mobile networks.
     UDP_BLOCKED      no UDP in or out at all
 
+IPv6 has no NAT: a PC's address is global and keeps its port. What stands in the way is a firewall, of one of these
+kinds:
+
+    V6_OPEN            nothing is filtered; anyone may send to the PC
+    V6_STATEFUL        only the exact address and port the PC has sent to may answer. Most home routers and ISPs.
+    V6_BLOCKS_INBOUND  the PC may send, but no UDP comes in at all, not even answers. Some mobile carriers.
+    NO_V6              no IPv6 at all (not a router: give it as v6= to Internet.pc)
+
+Windows gives loopback only one IPv6 address (::1), so IPv6 is carried over IPv4 loopback. Each IPv6 PC gets a global
+address in 2001:db8:77::/48 (the documentation prefix), and Internet.pc() returns a transport with the same parts as
+pathway.UdpTransport (port, v4, v6, receive, sendto, close). It turns those addresses into the sockets that carry them
+and back, so the code under test sees and uses real IPv6 addresses. A router can also have an MTU: a datagram that
+would make a bigger packet (28 bytes of IPv4 and UDP header, 48 for IPv6) is dropped, as on a link that does not
+fragment.
+
 TCP is not translated. A test that wants "only TCP gets through" uses UDP_BLOCKED and opens TCP connections only to a
 server it treats as public (a relay). No router lets an unasked-for TCP connection in, so a test should not dial a PC
 that is behind a router.
@@ -31,17 +46,22 @@ Use:
     sock = home.socket()                  # a UDP socket on 127.0.0.1, behind that router
     stun = internet.stun_servers(2)       # pass as stun_servers=; each reports the public address it sees
     relay = internet.server(relay_sock)   # a public host with no NAT; returns its public (address, port)
+    relay6 = internet.server(relay_sock, family=6)   # the same host on IPv6 too: its global (address, port)
     with home.adopting():                 # UDP sockets bound in this thread during the block are behind `home`
         host = HostPunch(...)
     home.attach(51820)                    # a socket the test cannot reach, by its port on 127.0.0.1
     home.forward(sock)                    # a forwarded port: a public (address, port) anyone may send to
     home.public_address(sock, to)         # the public address `sock` uses towards `to`, or None if it has none yet
     home.dropped                          # what the router refused, as (why, from, to), for assertions and debugging
+    pc = internet.pc(v4=natsim.SYMMETRIC, v6=natsim.V6_STATEFUL)   # transport= for PathManager
+    pc.addresses                          # [("ipv6", its global address)], for PathManager's addresses=
+    pc.v4_router, pc.v6_router            # their dropped lists say what each refused
 
 Limits: a packet sent to a public address where no mapping exists reaches a closed port on loopback. Windows then
 reports a ConnectionResetError on the sender's socket, where a real router would drop the packet without a word. A
 router does not refuse packets between two PCs behind it (hairpinning always works). Mappings never time out unless
-`mapping_seconds` is given.
+`mapping_seconds` is given. A socket attached to an IPv6 router by hand (not through Internet.pc) sees the IPv4
+sockets that carry IPv6, not the IPv6 addresses; it can still answer them.
 """
 
 import contextlib
@@ -62,7 +82,15 @@ SYMMETRIC = "symmetric"
 UDP_BLOCKED = "udp blocked"
 KINDS = (FULL_CONE, RESTRICTED, PORT_RESTRICTED, SYMMETRIC, UDP_BLOCKED)
 
+V6_OPEN = "v6 open"
+V6_STATEFUL = "v6 stateful"
+V6_BLOCKS_INBOUND = "v6 blocks inbound UDP"
+NO_V6 = "no v6"
+V6_KINDS = (V6_OPEN, V6_STATEFUL, V6_BLOCKS_INBOUND)
+
 PUBLIC_NETWORK = ipaddress.ip_network("127.77.0.0/16")
+V6_NETWORK = ipaddress.ip_network("2001:db8:77::/48")
+HEADER = {4: 28, 6: 48}  # IP and UDP header bytes a datagram gains on the wire
 _addresses = itertools.count(1)  # across every Internet in this process, so a closed one's address is not reused
 
 
@@ -72,6 +100,11 @@ def _inside(sock_or_port):
         return ("127.0.0.1", sock_or_port)
     address, port = sock_or_port.getsockname()[:2]
     return ("127.0.0.1" if address in ("0.0.0.0", "") else address, port)
+
+
+def _name(address):
+    """An IPv6 (address, port) in one spelling, so that two ways of writing an address find the same PC."""
+    return (str(ipaddress.ip_address(address[0])), int(address[1]))
 
 
 # --- picking up sockets that other code makes ------------------------------------------------------------------------
@@ -110,7 +143,8 @@ class _Mapping:
         self.router = router
         self.inside = inside
         self.sock = sock
-        self.public = sock.getsockname()[:2]
+        self.public = sock.getsockname()[:2]  # for IPv6, the IPv4 socket that carries it
+        self.name = None  # for IPv6, the global (address, port) others know it by
         self.forwarded = forwarded
         self.sent_to = set()  # public (address, port)s the PC has sent to through this mapping
         self.used = time.monotonic()
@@ -118,22 +152,26 @@ class _Mapping:
 
 
 class Router:
-    """One home router: its public address, its kind, and the PCs behind it. Make one with Internet.router()."""
+    """One home router (or, for IPv6, one firewall): its public address, its kind, and the PCs behind it. Make one with
+    Internet.router()."""
 
-    def __init__(self, internet, kind, address, mapping_seconds=None):
-        if kind not in KINDS:
+    def __init__(self, internet, kind, address, mapping_seconds=None, mtu=None):
+        if kind not in KINDS + V6_KINDS:
             raise ValueError(f"unknown kind of router: {kind!r}")
         self.internet = internet
         self.kind = kind
-        self.address = address
+        self.family = 6 if kind in V6_KINDS else 4
+        self.address = address  # the IPv4 address its sockets are on
+        self.global_address = str(V6_NETWORK[int(ipaddress.ip_address(address)) & 0xFFFF]) if self.family == 6 else None
         self.mapping_seconds = mapping_seconds
+        self.mtu = mtu
         self.dropped = collections.deque(maxlen=1000)
         self._mappings = {}  # (inside, destination, or None when the mapping is the same for every destination)
         self._forwards = {}  # inside -> its forwarded mapping
         self._pending = []  # weak references to sockets bound in an adopting() block, not yet seen sending
 
     def __repr__(self):
-        return f"<Router {self.kind} {self.address}>"
+        return f"<Router {self.kind} {self.global_address or self.address}>"
 
     def attach(self, sock_or_port):
         """Put a PC's UDP socket (or its port on 127.0.0.1) behind this router."""
@@ -162,14 +200,14 @@ class Router:
 
     def forward(self, sock_or_port):
         """Forward a public port to this socket: anyone may send to it, and its own packets go out from it. Returns
-        the public (address, port)."""
-        if self.kind == UDP_BLOCKED:
-            raise ValueError("a router that blocks UDP cannot forward a UDP port")
+        the public (address, port), for IPv6 its global one."""
+        if self.kind in (UDP_BLOCKED, V6_BLOCKS_INBOUND):
+            raise ValueError("a network that lets no UDP in cannot forward a UDP port")
         inside = _inside(sock_or_port)
         with self.internet._lock:
             self.internet._attach(self, inside)
             mapping = self._forwards[inside] = self.internet._open(self, inside, forwarded=True)
-        return mapping.public
+        return mapping.name or mapping.public
 
     def public_address(self, sock_or_port, destination=None):
         """The public (address, port) this socket's packets to `destination` come from, or None when it has not sent
@@ -177,10 +215,17 @@ class Router:
         inside = _inside(sock_or_port)
         with self.internet._lock:
             if inside in self._forwards:
-                return self._forwards[inside].public
-            key = (inside, tuple(destination) if self.kind == SYMMETRIC and destination else None)
-            mapping = self._mappings.get(key)
-            return mapping.public if mapping else None
+                mapping = self._forwards[inside]
+            else:
+                key = (inside, tuple(destination) if self.kind == SYMMETRIC and destination else None)
+                mapping = self._mappings.get(key)
+            return (mapping.name or mapping.public) if mapping else None
+
+    def _host(self, inside, port):
+        """An IPv6 PC: its one mapping exists from the start, under its global address and its own port."""
+        with self.internet._lock:
+            self.internet._attach(self, inside)
+            self._mappings[(inside, None)] = self.internet._open(self, inside, port=port)
 
     def _drop(self, why, source, destination):
         self.dropped.append((why, source, destination))
@@ -213,8 +258,11 @@ class Router:
         if self._timed_out(mapping, time.monotonic()):
             self._drop("the mapping timed out", source, mapping.public)
             return False
-        if mapping.forwarded or self.kind == FULL_CONE:
+        if mapping.forwarded or self.kind in (FULL_CONE, V6_OPEN):
             return True
+        if self.kind == V6_BLOCKS_INBOUND:
+            self._drop("inbound UDP is blocked", source, mapping.public)
+            return False
         if self.kind == RESTRICTED:
             allowed = source[0] in {address for address, _ in mapping.sent_to}
         else:
@@ -224,30 +272,114 @@ class Router:
         return allowed
 
 
+class PC:
+    """A PC with IPv4 behind one router and, if it has IPv6, a firewall of its own: what pathway.PathManager takes as
+    transport=. One port for both, as pathway.UdpTransport has. Make one with Internet.pc()."""
+
+    def __init__(self, internet, v4_router, v6_router):
+        self.internet = internet
+        self.v4_router, self.v6_router = v4_router, v6_router
+        self.v4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.v4.bind(("127.0.0.1", 0))
+        self.v4.setblocking(False)
+        self.port = self.v4.getsockname()[1]
+        v4_router.attach(self.v4)
+        self.v6 = None  # the IPv4 socket that carries this PC's IPv6
+        self.address6 = None
+        if v6_router is not None:
+            self.v6 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.v6.bind(("127.0.0.1", 0))
+            self.v6.setblocking(False)
+            v6_router._host(_inside(self.v6), self.port)
+            self.address6 = v6_router.global_address
+
+    @property
+    def addresses(self):
+        """What this PC offers about itself besides STUN: its IPv6 address, if it has one."""
+        return [("ipv6", self.address6)] if self.address6 else []
+
+    def receive(self, timeout):
+        """(data, (address, port)) or None after `timeout` seconds. IPv6 comes from its global address."""
+        sockets = [s for s in (self.v4, self.v6) if s is not None]
+        try:
+            ready, _, _ = select.select(sockets, [], [], timeout)
+        except (OSError, ValueError):
+            return None
+        for sock in ready:
+            try:
+                data, source = sock.recvfrom(65535)
+            except OSError:
+                continue
+            if sock is self.v6:
+                source = self.internet._name_of(source[:2])
+                if source is None:
+                    continue  # not from anyone on the IPv6 internet
+            return data, tuple(source[:2])
+        return None
+
+    def sendto(self, data, address):
+        if ":" in address[0]:
+            if self.v6 is None:
+                return False
+            carrier = self.internet._carrier_of(address)
+            if carrier is None:
+                return True  # nobody has that address: lost on the way, as on the internet
+            sock, to = self.v6, carrier
+        else:
+            sock, to = self.v4, tuple(address[:2])
+        try:
+            sock.sendto(data, to)
+            return True
+        except OSError:
+            return False
+
+    def close(self):
+        for sock in (self.v4, self.v6):
+            if sock is not None:
+                sock.close()
+
+
 class Internet:
     """The pretend internet: every router on it, and one thread that carries packets between them."""
 
     def __init__(self):
         self._lock = threading.RLock()
         self._routers = []
-        self._inside = {}  # a PC's (address, port) on loopback -> its Router
+        self._inside = {}  # a PC's (address, port) on loopback -> {4 or 6: its Router}
         self._by_socket = {}  # public socket -> its _Mapping
+        self._by_public = {}  # an IPv6 mapping's carrying (address, port) -> its _Mapping
+        self._by_name = {}  # a global IPv6 (address, port) -> its _Mapping
         self._servers = []  # fake STUN servers to close
+        self._pcs = []
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="natsim", daemon=True)
         self._thread.start()
 
-    def router(self, kind=PORT_RESTRICTED, mapping_seconds=None):
-        """A new router with its own public address."""
+    def router(self, kind=PORT_RESTRICTED, mapping_seconds=None, mtu=None):
+        """A new router (or IPv6 firewall) with its own public address."""
+        if kind == NO_V6:
+            raise ValueError("no IPv6 is not a firewall; give v6=NO_V6 to Internet.pc")
         address = str(PUBLIC_NETWORK[next(_addresses)])
-        router = Router(self, kind, address, mapping_seconds)
+        router = Router(self, kind, address, mapping_seconds, mtu)
         with self._lock:
             self._routers.append(router)
         return router
 
-    def server(self, sock_or_port):
-        """A public host with no NAT in front of it (a STUN server, a relay on a VPS). Returns its public address."""
-        return self.router(FULL_CONE).forward(sock_or_port)
+    def server(self, sock_or_port, family=4):
+        """A public host with no NAT or firewall in front of it (a STUN server, a relay on a VPS). Returns its public
+        address, or with family=6 its global IPv6 address. Call it once for each family to have both."""
+        return self.router(FULL_CONE if family == 4 else V6_OPEN).forward(sock_or_port)
+
+    def pc(self, v4=PORT_RESTRICTED, v6=NO_V6, v4_mtu=None, v6_mtu=None):
+        """A PC with IPv4 behind a `v4` router and IPv6 behind a `v6` firewall (or none), as a transport for
+        pathway.PathManager. Closed with the internet."""
+        v4_router = self.router(v4, mtu=v4_mtu)
+        v6_router = None if v6 in (None, NO_V6) else self.router(v6, mtu=v6_mtu)
+        if v6_router is not None and v6_router.family != 6:
+            raise ValueError(f"not a kind of IPv6 firewall: {v6!r}")
+        made = PC(self, v4_router, v6_router)
+        self._pcs.append(made)
+        return made
 
     def stun_servers(self, count=2):
         """`count` fake STUN servers on the internet, as a tuple of public addresses for stun_servers=. Each reports the
@@ -266,6 +398,8 @@ class Internet:
         self._thread.join(timeout=5)
         for fake in self._servers:
             fake.close()
+        for made in self._pcs:
+            made.close()
         with self._lock:
             for sock in self._by_socket:
                 sock.close()
@@ -273,15 +407,33 @@ class Internet:
 
     def _attach(self, router, inside):
         with self._lock:
-            self._inside[inside] = router
+            self._inside.setdefault(inside, {})[router.family] = router
 
-    def _open(self, router, inside, forwarded=False):
+    def _open(self, router, inside, forwarded=False, port=None):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind((router.address, 0))
         sock.setblocking(False)
         mapping = _Mapping(router, inside, sock, forwarded)
         self._by_socket[sock] = mapping
+        if router.family == 6:
+            mapping.name = (router.global_address, port or inside[1])  # no NAT: the PC's own port
+            self._by_public[mapping.public] = mapping
+            self._by_name[mapping.name] = mapping
         return mapping
+
+    def _name_of(self, carrier):
+        with self._lock:
+            mapping = self._by_public.get(tuple(carrier))
+            return mapping.name if mapping else None
+
+    def _carrier_of(self, address):
+        try:
+            name = _name(address)
+        except ValueError:
+            return None
+        with self._lock:
+            mapping = self._by_name.get(name)
+            return mapping.public if mapping else None
 
     def _settle(self, router):
         """Attach the router's adopted sockets that have a port by now; forget the ones that are closed."""
@@ -295,30 +447,36 @@ class Internet:
             except OSError:
                 continue
             if inside[1]:
-                self._inside[inside] = router
+                self._inside.setdefault(inside, {})[router.family] = router
             else:
                 keep.append(reference)
         router._pending = keep
 
-    def _sender(self, source):
-        router = self._inside.get(source)
-        if router is None:
+    def _sender(self, source, family):
+        routers = self._inside.get(source)
+        if routers is None:
             for candidate in self._routers:
                 if candidate._pending:
                     self._settle(candidate)
-            router = self._inside.get(source)
-        return router
+            routers = self._inside.get(source)
+        return (routers or {}).get(family)
 
     def _carry(self, mapping, data, source):
         """A packet from `source` (a PC on loopback) arrived at `mapping`'s public socket."""
         with self._lock:
-            sender = self._sender(source)
+            receiver = mapping.router
+            sender = self._sender(source, receiver.family)
             if sender is None:
-                mapping.router._drop("from a socket on no router (attach it, or make it a server)", source,
-                                     mapping.public)
+                receiver._drop(f"from a socket on no IPv{receiver.family} router (attach it, or make it a server)",
+                               source, mapping.public)
+                return
+            mtu = min((m for m in (sender.mtu, receiver.mtu) if m), default=None)
+            if mtu is not None and len(data) + HEADER[receiver.family] > mtu:
+                sender._drop(f"a {len(data)}-byte datagram is bigger than the path's MTU of {mtu}", source,
+                             mapping.public)
                 return
             out = sender._out(source, mapping.public)
-            if out is None or not mapping.router._lets_in(mapping, out.public):
+            if out is None or not receiver._lets_in(mapping, out.public):
                 return
             via, to = out.sock, mapping.inside
         try:
