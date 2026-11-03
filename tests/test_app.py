@@ -1,3 +1,4 @@
+import queue
 import socket
 import tempfile
 import time
@@ -634,21 +635,27 @@ class MemberCopyTests(unittest.TestCase):
 
 
 class GameNetworkThroughTheControllerTests(unittest.TestCase):
-    """Host and member apps, each with its game network on, the adapters in memory (Wintun needs administrator rights)."""
+    """Host and member apps, each with its game network on: the real helper with its adapter in memory (Wintun needs
+    administrator rights), and the paths between them in memory."""
 
     def setUp(self):
-        from test_gameclient import FakeLaunch
-        from privatepartynet.gamenet import MemoryTun
+        from gamehelper import FakePaths, Hub, helper_program, launch_plain
 
+        program = helper_program()
+        if program is None:
+            self.skipTest("Go is not installed, so the game network helper cannot be built")
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.host = Controller(data_folder=folder.name + "/host", discovery_port=0, grabber=FakeGrabber())
         self.guest = Controller(data_folder=folder.name + "/guest", discovery_port=0, grabber=FakeGrabber())
         self.addCleanup(self.host.shutdown)
         self.addCleanup(self.guest.shutdown)
-        self.host_tun, self.guest_tun = MemoryTun(), MemoryTun()
-        self.host._game_launch = FakeLaunch(self.host_tun)
-        self.guest._game_launch = FakeLaunch(self.guest_tun)
+        self.host_tun, self.guest_tun = queue.Queue(), queue.Queue()
+        hub = Hub()
+        for controller, arrived in ((self.host, self.host_tun), (self.guest, self.guest_tun)):
+            controller._game_launch = launch_plain
+            controller._game_helper = {"program": program, "memory_adapter": True, "on_packet": arrived.put}
+            controller._game_paths = lambda identity: FakePaths(identity, hub)
         self.assertTrue(self.host.start("Host", free_port())["ok"])
         self.guest._name = "Guest"
         opened = []
@@ -657,7 +664,7 @@ class GameNetworkThroughTheControllerTests(unittest.TestCase):
 
         invite = connect.decode_invite(self.host.invite()["invite"])
         code = connect.encode_invite(invite["name"], invite["password"], [["lan", "127.0.0.1", self.host._party.port]],
-                                     invite["fingerprint"], invite["server_id"])
+                                     invite["fingerprint"], invite["server_id"], host_sign=invite["host_sign"])
         self.guest.join_invite(code)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and not self.host._party.pending_requests():
@@ -668,6 +675,16 @@ class GameNetworkThroughTheControllerTests(unittest.TestCase):
             time.sleep(0.05)
         session = self.host._party.redeem(opened[0]["url"].split("token=")[1])
         self.host._party.attach(self.host._party.member_for(session))  # the party window being open
+
+    def got(self, arrived, payload, seconds=8):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                if arrived.get(timeout=0.1).endswith(payload):
+                    return True
+            except queue.Empty:
+                continue
+        return False
 
     def wait_on(self, controller, seconds=10):
         deadline = time.monotonic() + seconds
@@ -686,10 +703,30 @@ class GameNetworkThroughTheControllerTests(unittest.TestCase):
         self.assertEqual(host_state["network"], guest_state["network"])
         self.assertTrue(host_state["address"].endswith(".1"))
         self.assertEqual(guest_state["active"], joined["key"], "the green light is on this server")
-        self.guest_tun.outgoing.put(make_packet(guest_state["address"], host_state["address"], b"lobby?"))
-        self.assertEqual(self.host_tun.incoming.get(timeout=5)[-6:], b"lobby?")
-        self.host_tun.outgoing.put(make_packet(host_state["address"], "255.255.255.255", b"game on port 5000"))
-        self.assertEqual(self.guest_tun.incoming.get(timeout=5)[-17:], b"game on port 5000")
+        host_session, guest_session = self.host._game["session"], self.guest._game["session"]
+        guest_session.put_packet(make_packet(guest_state["address"], host_state["address"], b"lobby?"))
+        self.assertTrue(self.got(self.host_tun, b"lobby?"))
+        host_session.put_packet(make_packet(host_state["address"], "255.255.255.255", b"game on port 5000"))
+        self.assertTrue(self.got(self.guest_tun, b"game on port 5000"))
+        self.assertEqual([m["address"] for m in self.host.game_state()["members"]], [guest_state["address"]])
+
+    def test_a_removed_member_is_dropped_by_the_host_at_once(self):
+        self.host.game_use("own")
+        (joined,) = self.guest.joined_servers()
+        self.guest.game_use(joined["key"])
+        self.wait_on(self.host), self.wait_on(self.guest)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not self.host.game_state()["members"]:
+            time.sleep(0.05)
+        party = self.host._party
+        guest_id = next(m["id"] for m in party.roster() if m["role"] == "member")
+        party.kick(party.host_id, guest_id)
+        while time.monotonic() < deadline and self.host.game_state()["members"]:
+            time.sleep(0.05)
+        self.assertEqual(self.host.game_state()["members"], [])
+        while time.monotonic() < deadline and self.guest.game_state()["active"]:
+            time.sleep(0.05)
+        self.assertEqual(self.guest.game_state()["active"], "", "the removed member's game network turns off")
 
     def test_the_choice_is_remembered_and_turning_it_off_clears_the_light(self):
         self.host.game_use("own")

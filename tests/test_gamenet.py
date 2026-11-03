@@ -1,13 +1,13 @@
-import io
 import ipaddress
-import queue
+import tempfile
 import threading
-import time
 import unittest
+from pathlib import Path
 
 from privatepartynet import gamenet
-from privatepartynet.gamenet import (MemoryTun, NetError, Router, bridge, carried, is_group, make_packet, parse, read_frame,
-                              subnet_for, write_frame)
+from privatepartynet.gamenet import (Directory, NetError, clean_candidates, is_group, make_packet, new_private_key,
+                                     open_roster, parse, public_key, roster_body, sign_roster, subnet_for)
+from privatepartynet.identity import Identity
 
 NET = ipaddress.ip_network("10.77.12.0/24")
 
@@ -41,20 +41,20 @@ class AddressTests(unittest.TestCase):
 
     def test_members_keep_their_address_and_the_host_is_dot_one(self):
         saved = []
-        router = Router(NET, on_change=saved.append)
-        self.assertEqual(str(router.address_for(None)), "10.77.12.1")
-        alex = router.address_for("u-alex")
-        sam = router.address_for("u-sam")
+        directory = Directory(NET, on_change=saved.append, host_user="u-host")
+        self.assertEqual(str(directory.address_for("u-host")), "10.77.12.1")
+        alex = directory.address_for("u-alex")
+        sam = directory.address_for("u-sam")
         self.assertEqual((str(alex), str(sam)), ("10.77.12.2", "10.77.12.3"))
-        self.assertEqual(router.address_for("u-alex"), alex)
-        again = Router(NET, assignments=saved[-1])
+        self.assertEqual(directory.address_for("u-alex"), alex)
+        again = Directory(NET, assignments=saved[-1])
         self.assertEqual(again.address_for("u-sam"), sam, "remembered across restarts")
         self.assertEqual(len(saved), 2, "only new assignments are saved")
 
     def test_a_full_network_says_so(self):
-        router = Router(NET, assignments={f"u{n}": n for n in range(2, 255)})
+        directory = Directory(NET, assignments={f"u{n}": n for n in range(2, 255)})
         with self.assertRaises(NetError):
-            router.address_for("one more")
+            directory.address_for("one more")
 
 
 class PacketTests(unittest.TestCase):
@@ -83,162 +83,111 @@ class PacketTests(unittest.TestCase):
         self.assertTrue(is_group(ipaddress.IPv4Address("239.255.255.250"), NET))
         self.assertFalse(is_group(ipaddress.IPv4Address("10.77.12.9"), NET))
 
-    def test_only_game_network_traffic_leaves_the_pc(self):
-        self.assertTrue(carried(make_packet("10.77.12.2", "10.77.12.3"), NET))
-        self.assertTrue(carried(make_packet("10.77.12.2", "255.255.255.255"), NET))
-        self.assertFalse(carried(make_packet("10.77.12.2", "8.8.8.8"), NET), "never a route to the internet")
-        self.assertFalse(carried(make_packet("10.77.12.2", "192.168.0.5"), NET), "never a route into someone's home network")
-        self.assertFalse(carried(b"\x60" + bytes(39), NET))
+
+class KeyTests(unittest.TestCase):
+    def test_a_key_pair_is_wireguards_kind(self):
+        private = new_private_key()
+        self.assertEqual(len(bytes.fromhex(private)), 32)
+        self.assertEqual(len(bytes.fromhex(public_key(private))), 32)
+        self.assertNotEqual(public_key(private), public_key(new_private_key()))
+
+    def test_each_server_has_its_own_key_kept_sealed(self):
+        from privatepartynet.vault import Vault
+
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Vault(Path(folder) / "keys", use_dpapi=False)
+            vault.unlock()
+            first = gamenet.load_key(vault, Path(folder) / "identity", "own-server")
+            self.assertEqual(gamenet.load_key(vault, Path(folder) / "identity", "own-server"), first, "kept")
+            self.assertNotEqual(gamenet.load_key(vault, Path(folder) / "identity", "joined-abc"), first, "one per server")
+            stored = b"".join(p.read_bytes() for p in (Path(folder) / "identity" / gamenet.KEY_FOLDER).iterdir())
+            self.assertNotIn(first.encode("ascii"), stored, "never on disk in the clear")
+            self.assertNotIn(bytes.fromhex(first), stored)
 
 
-class FrameTests(unittest.TestCase):
-    def test_frames_round_trip_with_keepalives(self):
-        stream = io.BytesIO()
-        write_frame(stream, b"one")
-        write_frame(stream, b"")
-        write_frame(stream, b"two" * 1000)
-        stream.seek(0)
-        self.assertEqual([read_frame(stream), read_frame(stream), read_frame(stream)], [b"one", b"", b"two" * 1000])
-        with self.assertRaises(EOFError):
-            read_frame(stream)
-
-    def test_a_cut_frame_is_the_end_of_the_link(self):
-        stream = io.BytesIO(b"\x00\x10abc")
-        with self.assertRaises(EOFError):
-            read_frame(stream)
-
-    def test_an_oversized_packet_is_refused(self):
-        with self.assertRaises(NetError):
-            write_frame(io.BytesIO(), bytes(70000))
-
-
-class RouterTests(unittest.TestCase):
+class DirectoryTests(unittest.TestCase):
     def setUp(self):
-        self.router = Router(NET)
-        self.host = self.router.address_for(None)
-        self.alex = self.router.address_for("u-alex")
-        self.sam = self.router.address_for("u-sam")
-        self.boxes = {a: self.router.attach(a) for a in (self.host, self.alex, self.sam)}
+        self.directory = Directory(NET, host_user="u-host")
+        self.keys = {name: public_key(new_private_key()) for name in ("host", "alex", "sam")}
 
-    def drain(self, address):
-        out = []
-        while True:
-            try:
-                out.append(self.boxes[address].get_nowait())
-            except queue.Empty:
-                return out
+    def test_members_join_with_their_key_and_everyone_sees_the_same_list(self):
+        self.assertEqual(str(self.directory.join("u-host", self.keys["host"], [["lan", "192.168.1.5", 4000]])), "10.77.12.1")
+        self.assertEqual(str(self.directory.join("u-alex", self.keys["alex"])), "10.77.12.2")
+        peers = self.directory.peers()
+        self.assertEqual([(p["user"], p["address"], p["key"]) for p in peers],
+                         [("u-host", "10.77.12.1", self.keys["host"]), ("u-alex", "10.77.12.2", self.keys["alex"])])
+        self.assertEqual(peers[0]["candidates"], [["lan", "192.168.1.5", 4000]])
 
-    def test_a_packet_goes_to_its_one_member(self):
-        packet = make_packet(self.alex, self.sam, b"move")
-        self.assertEqual(self.router.route(self.alex, packet), 1)
-        self.assertEqual(self.drain(self.sam), [packet])
-        self.assertEqual(self.drain(self.host), [])
-        self.assertEqual(self.drain(self.alex), [])
+    def test_someone_elses_key_or_no_key_is_refused(self):
+        self.directory.join("u-alex", self.keys["alex"])
+        with self.assertRaises(NetError):
+            self.directory.join("u-sam", self.keys["alex"])
+        with self.assertRaises(NetError):
+            self.directory.join("u-sam", "not a key")
 
-    def test_a_broadcast_goes_to_everyone_else(self):
-        packet = make_packet(self.alex, "255.255.255.255", b"anyone hosting?")
-        self.assertEqual(self.router.route(self.alex, packet), 2)
-        self.assertEqual(self.drain(self.sam), [packet])
-        self.assertEqual(self.drain(self.host), [packet])
-        self.assertEqual(self.drain(self.alex), [], "not echoed back")
+    def test_every_change_wakes_the_links_that_wait(self):
+        woke = []
+        version = self.directory.version
+        waiter = threading.Thread(target=lambda: woke.append(self.directory.wait(version, 5)))
+        waiter.start()
+        self.directory.join("u-alex", self.keys["alex"])
+        waiter.join(timeout=5)
+        self.assertEqual(woke, [version + 1])
+        self.assertEqual(self.directory.wait(self.directory.version, 0.05), self.directory.version, "nothing new: timeout")
+        self.assertTrue(self.directory.set_candidates("u-alex", [["upnp", "203.0.113.9", 5000]]))
+        self.assertFalse(self.directory.set_candidates("u-alex", [["upnp", "203.0.113.9", 5000]]),
+                         "the same again is no change")
+        self.assertTrue(self.directory.leave("u-alex"))
+        self.assertEqual(self.directory.peers(), [])
 
-    def test_a_forged_sender_is_dropped(self):
-        packet = make_packet(self.sam, self.host, b"I am Sam")
-        self.assertEqual(self.router.route(self.alex, packet), 0)
-        self.assertEqual(self.drain(self.host), [])
-        self.assertEqual(self.router.dropped, 1)
+    def test_a_late_leave_from_an_old_link_does_not_remove_the_new_one(self):
+        self.directory.join("u-alex", self.keys["alex"])
+        newer = public_key(new_private_key())
+        self.directory.join("u-alex", newer)
+        self.assertFalse(self.directory.leave("u-alex", self.keys["alex"]))
+        self.assertEqual([p["key"] for p in self.directory.peers()], [newer])
 
-    def test_traffic_for_elsewhere_goes_nowhere(self):
-        self.assertEqual(self.router.route(self.alex, make_packet(self.alex, "8.8.8.8")), 0)
-        self.assertEqual(self.router.route(self.alex, make_packet(self.alex, "10.77.12.200")), 0, "nobody there")
-
-    def test_a_member_who_cannot_keep_up_loses_packets_instead_of_holding_others(self):
-        packet = make_packet(self.alex, self.sam, b"x")
-        for _ in range(gamenet.QUEUE_PACKETS + 10):
-            self.router.route(self.alex, packet)
-        self.assertEqual(len(self.drain(self.sam)), gamenet.QUEUE_PACKETS)
-        self.assertEqual(self.router.dropped, 10)
-
-    def test_a_reconnect_replaces_the_old_link_and_an_old_detach_does_not_remove_the_new(self):
-        old = self.boxes[self.sam]
-        new = self.router.attach(self.sam)
-        self.router.detach(self.sam, old)
-        self.assertEqual(self.router.route(self.alex, make_packet(self.alex, self.sam)), 1)
-        self.assertEqual(new.qsize(), 1)
+    def test_candidates_are_kept_only_when_they_are_small_and_plain(self):
+        self.assertEqual(clean_candidates([["lan", "10.0.0.5", 4000], ["key", "ab" * 32, "cd" * 32]]),
+                         [["lan", "10.0.0.5", 4000], ["key", "ab" * 32, "cd" * 32]])
+        self.assertEqual(clean_candidates("lan"), [])
+        self.assertEqual(clean_candidates([["lan", {"x": 1}, 4000], [], ["x"] * 9, ["vps", True, 1]]), [])
+        self.assertEqual(clean_candidates([["lan", "x" * 250, 1]] * 24), [], "too much altogether")
 
 
-class PipeStream:
-    """One direction of a fake socket: write() on one side, read() on the other, with a close."""
+class RosterTests(unittest.TestCase):
+    def setUp(self):
+        self.host = Identity.create()
+        directory = Directory(NET, host_user="u-host")
+        directory.join("u-host", public_key(new_private_key()))
+        directory.join("u-alex", public_key(new_private_key()), [["lan", "192.168.1.9", 4100]])
+        self.body = roster_body("feedface", NET, directory.version, directory.peers())
 
-    def __init__(self):
-        self._data = queue.Queue()
-        self._buffer = b""
-        self._closed = False
+    def test_a_signed_list_opens_with_the_hosts_key(self):
+        roster = open_roster(sign_roster(self.body, self.host.sign), self.host.sign_public.hex(), "feedface", str(NET))
+        self.assertEqual([p["address"] for p in roster["peers"]], ["10.77.12.1", "10.77.12.2"])
+        self.assertEqual(roster["peers"][1]["candidates"], [["lan", "192.168.1.9", 4100]])
 
-    def write(self, data):
-        if self._closed:
-            raise OSError("closed")
-        self._data.put(bytes(data))
+    def test_a_list_signed_by_anyone_else_or_not_at_all_is_refused_when_the_host_is_known(self):
+        someone = Identity.create()
+        for signed in (sign_roster(self.body, someone.sign), sign_roster(self.body, None)):
+            with self.assertRaises(NetError):
+                open_roster(signed, self.host.sign_public.hex())
+        changed = sign_roster(self.body, self.host.sign)
+        changed["roster"] = changed["roster"].replace("10.77.12.2", "10.77.12.3")
+        with self.assertRaises(NetError):
+            open_roster(changed, self.host.sign_public.hex())
 
-    def flush(self):
-        pass
-
-    def read(self, count):
-        while len(self._buffer) < count:
-            if self._closed and self._data.empty():
-                break
-            try:
-                self._buffer += self._data.get(timeout=0.1)
-            except queue.Empty:
-                continue
-        out, self._buffer = self._buffer[:count], self._buffer[count:]
-        return out
-
-    def close(self):
-        self._closed = True
-
-
-class PumpTests(unittest.TestCase):
-    def test_a_member_link_carries_both_ways_and_keepalives(self):
-        router = Router(NET)
-        host, alex = router.address_for(None), router.address_for("u-alex")
-        host_box = router.attach(host)
-        to_host, to_member = PipeStream(), PipeStream()
-        stop = threading.Event()
-        inbox = router.attach(alex)
-        thread = threading.Thread(target=gamenet.pump_link, args=(to_host, to_member, router, alex, inbox, stop),
-                                  kwargs={"keepalive": 0.2}, daemon=True)
-        thread.start()
-        write_frame(to_host, make_packet(alex, host, b"hello host"))
-        self.assertEqual(host_box.get(timeout=2), make_packet(alex, host, b"hello host"))
-        router.route(host, make_packet(host, alex, b"hello alex"))
-        frames = [read_frame(to_member) for _ in range(2)]
-        self.assertIn(make_packet(host, alex, b"hello alex"), frames)
-        time.sleep(0.5)
-        self.assertEqual(read_frame(to_member), b"", "a keep-alive while idle")
-        to_host.close()
-        thread.join(timeout=3)
-        self.assertFalse(thread.is_alive(), "the pump ends when the link closes")
-        self.assertNotIn(str(alex), router.online(), "and the member is detached")
-        stop.set()
-
-
-class BridgeTests(unittest.TestCase):
-    def test_only_game_network_packets_leave_the_adapter(self):
-        tun = MemoryTun()
-        sent = []
-        stop = threading.Event()
-        for packet in (make_packet("10.77.12.2", "10.77.12.3"), make_packet("10.77.12.2", "1.1.1.1"), b"\x60" + bytes(39),
-                       make_packet("10.77.12.2", "10.77.12.255")):
-            tun.outgoing.put(packet)
-        thread = threading.Thread(target=bridge, args=(tun, sent.append, NET, stop), daemon=True)
-        thread.start()
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline and len(sent) < 2:
-            time.sleep(0.05)
-        stop.set()
-        thread.join(timeout=2)
-        self.assertEqual([parse(p)[1] for p in sent], [ipaddress.IPv4Address("10.77.12.3"), ipaddress.IPv4Address("10.77.12.255")])
+    def test_a_list_for_another_server_or_network_or_with_a_stray_address_is_refused(self):
+        signed = sign_roster(self.body, self.host.sign)
+        with self.assertRaises(NetError):
+            open_roster(signed, self.host.sign_public.hex(), server_id="another")
+        with self.assertRaises(NetError):
+            open_roster(signed, self.host.sign_public.hex(), network="10.77.13.0/24")
+        stray = roster_body("feedface", NET, 1, [{"user": "u-x", "address": "8.8.8.8", "key": public_key(new_private_key()),
+                                                  "candidates": []}])
+        with self.assertRaises(NetError):
+            open_roster(sign_roster(stray, self.host.sign), self.host.sign_public.hex())
 
 
 if __name__ == "__main__":

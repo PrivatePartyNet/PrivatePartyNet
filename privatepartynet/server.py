@@ -184,9 +184,10 @@ def clean_password(value):
     return text
 
 
-def net_message(fingerprint, nonce):
-    """What a member signs to open their game network link: the host certificate they checked and a fresh challenge."""
-    return f"PrivatePartyNet net|{fingerprint}|{nonce}".encode("utf-8")
+def net_message(fingerprint, nonce, key):
+    """What a member signs to open their game network link: the host certificate they checked, a fresh challenge, and the
+    WireGuard public key they will use on it."""
+    return f"PrivatePartyNet net|{fingerprint}|{nonce}|{key}".encode("utf-8")
 
 
 def ask_message(fingerprint, nonce, name):
@@ -253,7 +254,7 @@ class Party:
 
     def __init__(self, passcode, port, certfile, keyfile, party_name, host_name,
                  failed_login_delay=1.0, heartbeat=15.0, grabber=None, theme="system",
-                 store=None, server_id=None, host_user_id=None, trust_local=True):
+                 store=None, server_id=None, host_user_id=None, trust_local=True, signer=None):
         self.trust_local = trust_local  # people on this network ask without the password (they still wait for a yes)
         # Addresses that look local but must not be trusted as such: the router, because some routers hand on
         # connections from the internet under their own address once a port is forwarded.
@@ -261,6 +262,7 @@ class Party:
         self.store = store  # the encrypted chat store; None keeps chat in memory for this run only
         self.server_id = server_id or secrets.token_hex(8)
         self._host_user_id = host_user_id
+        self._signer = signer  # the host identity's sign(data); it signs the game network's list of members
         self.theme = theme  # "system", "light" or "dark"; every page the party serves uses it
         self.grabber = grabber  # frames for the host's own screen; None disables the host's frame route
         self.party_name = clean_name(party_name)
@@ -283,8 +285,9 @@ class Party:
         self._challenges = {}  # nonce -> expires at
         self._net_subnet = record.get("net")  # this server's game network, chosen once and kept
         self._net_vips = dict(record.get("vips") or {})
-        self._net = None  # the router, made when the first person joins the game network
-        self._net_links = {}  # member id -> event that ends their game network link
+        self._net = None  # the directory of who is on, made when the first person joins the game network
+        self._net_links = {}  # member id -> (event that ends their game network link, their id, their WireGuard key)
+        self._net_signed = (None, None)  # (version, signed list): the last list signed, sent to everyone
         self._invite_secrets = [dict(i) for i in record.get("invites") or [] if isinstance(i, dict)]
         self._fails = {}  # address -> times of wrong passwords
         self._fails_all = deque()  # times of wrong passwords from anywhere
@@ -806,15 +809,20 @@ class Party:
 
     # --- the game network ------------------------------------------------------------------------------------
 
-    def net_router(self):
-        """This server's game network router, made the first time it is needed (its network is chosen then and kept)."""
+    def net_directory(self):
+        """This server's game network directory, made the first time it is needed (its network is chosen then and kept)."""
         with self._lock:
             if self._net is None:
                 if self._net_subnet is None:
                     self._net_subnet = str(gamenet.subnet_for(self.server_id, gamenet.local_networks()))
-                self._net = gamenet.Router(self._net_subnet, self._net_vips, on_change=lambda _: self._save_net())
+                self._net = gamenet.Directory(self._net_subnet, self._net_vips, on_change=lambda _: self._save_net(),
+                                              host_user=self.net_host_user)
                 self._save_locked()
             return self._net
+
+    @property
+    def net_host_user(self):
+        return self._host_user_id or "host"
 
     def _save_net(self):
         with self._lock:
@@ -831,11 +839,12 @@ class Party:
         network = _ip.ip_network(subnet)
         return {"network": str(network), "host": str(network.network_address + 1)}
 
-    def net_open(self, card, nonce, signature):
-        """Check a member who asks for a game network link. Returns (member id, address, inbox, stop event).
+    def net_open(self, card, nonce, signature, key, candidates=()):
+        """Check a member who asks for a game network link and put them on it. Returns (member id, user id, address,
+        stop event).
 
-        The member proves who they are as at the front door, and must be in the party now, online, and not a guest. A
-        second link from the same member ends the first."""
+        The member proves who they are as at the front door, signing their WireGuard key with it, and must be in the
+        party now, online, and not a guest. A second link from the same member ends the first."""
         try:
             user, sign, dh = card["id"], card["sign"], card["dh"]
             if user_id_of(sign, dh) != user:
@@ -846,29 +855,55 @@ class Party:
             until = self._challenges.pop(str(nonce), None)
         if until is None or until < time.monotonic():
             raise Forbidden("The sign-in step expired. Try again.")
-        if not isinstance(signature, str) or not verify(sign, signature, net_message(self.fingerprint, nonce)):
+        if not isinstance(signature, str) or not verify(sign, signature, net_message(self.fingerprint, nonce, key)):
             raise Forbidden("Your identity could not be checked.")
-        router = self.net_router()
+        directory = self.net_directory()
         with self._lock:
             member = next((m for m in self._members.values() if m.get("user") == user and m["online"]
                            and m["role"] in ("host", "admin", "member")), None)
             if member is None:
                 raise Forbidden("Join the party first. Guests are not on the game network.")
             self._end_net_locked(member["id"])
+            address = directory.join(user, key, candidates)
             stop = threading.Event()
-            self._net_links[member["id"]] = stop
-            member_id, is_host = member["id"], member["role"] == "host"
-        address = router.address_for(None if is_host else user)
-        inbox = router.attach(address)
-        return member_id, address, inbox, stop
+            self._net_links[member["id"]] = (stop, user, key)
+            return member["id"], user, address, stop
 
-    def net_host(self):
-        """The host's own place on the game network: (address, inbox, send). The host's app connects its adapter here
-        directly, with no network link in between."""
-        router = self.net_router()
-        address = router.address_for(None)
-        inbox = router.attach(address)
-        return address, inbox, lambda packet: router.route(address, packet)
+    def net_host(self, key, candidates=()):
+        """Put the host's own PC on the game network with its WireGuard key. Returns its address (.1). The host's app
+        follows the list with net_wait and net_roster, as a member's link does."""
+        return self.net_directory().join(self.net_host_user, key, candidates)
+
+    def net_host_off(self, key):
+        self.net_directory().leave(self.net_host_user, key)
+
+    def net_candidates(self, user, candidates):
+        """A member's (or the host's) ways to be reached changed; everyone is sent the new list."""
+        self.net_directory().set_candidates(user, candidates)
+
+    def net_closed(self, member_id, stop):
+        """A member's link ended by itself (they closed it, or the network dropped it): they are off the list."""
+        with self._lock:
+            link = self._net_links.get(member_id)
+            if link is not None and link[0] is stop:
+                self._end_net_locked(member_id)
+
+    def net_wait(self, version, timeout):
+        """Wait for the list to change from `version`; returns the version now."""
+        return self.net_directory().wait(version, timeout)
+
+    def net_roster(self, user):
+        """The signed list of who is on, for one member, with the relay settings the path layer gives that member."""
+        directory = self.net_directory()
+        with self._lock:
+            version, signed = self._net_signed
+            if version != directory.version or signed is None:
+                version = directory.version
+                body = gamenet.roster_body(self.server_id, directory.network, version, directory.peers())
+                signed = gamenet.sign_roster(body, self._signer)
+                self._net_signed = (version, signed)
+        relay_for = getattr(self, "path_relay_for", None)
+        return {**signed, "relay": relay_for(user) if callable(relay_for) else None}
 
     # --- channels --------------------------------------------------------------------------------------------
 
@@ -1126,9 +1161,13 @@ class Party:
                 "shares": [{"slot": slot, **info} for slot, info in sorted(member["shares"].items())]}
 
     def _end_net_locked(self, member_id):
-        stop = self._net_links.pop(member_id, None)
-        if stop is not None:
+        """End a member's game network link and take them off the list, so every other member drops them at once."""
+        link = self._net_links.pop(member_id, None)
+        if link is not None:
+            stop, user, key = link
             stop.set()
+            if self._net is not None:
+                self._net.leave(user, key)
 
     def _remove_locked(self, member_id, notice):
         self._end_net_locked(member_id)
@@ -1452,27 +1491,30 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, JSON_TYPE, json.dumps({"ticket": self._result}).encode("utf-8"))
 
     def _net_link(self):
-        """A member's game network link: {"card", "nonce", "sig"}, then the connection stays open and carries frames
-        both ways (see gamenet.py) until either side closes it or the member leaves."""
+        """A member's game network link: {"card", "nonce", "sig", "key", "candidates"}, then the connection stays open.
+        The host sends a JSON line each time the list of who is on changes (and an empty one as a keep-alive); the
+        member sends a line when their ways to be reached change. It ends when either side closes it or the member
+        leaves, and the member is then off the list."""
         party = self.server.party
         body = self._json()
         if not isinstance(body, dict) or not isinstance(body.get("card"), dict):
             self._send(400, TEXT, b"The game network needs your identity.")
             return
         try:
-            member_id, address, inbox, stop = party.net_open(body["card"], body.get("nonce"), body.get("sig"))
+            member_id, user, address, stop = party.net_open(body["card"], body.get("nonce"), body.get("sig"),
+                                                            body.get("key"), gamenet.clean_candidates(body.get("candidates")))
         except Forbidden as error:
             self._send(403, TEXT, str(error).encode("utf-8"))
             return
         except gamenet.NetError as error:
             self._send(409, TEXT, str(error).encode("utf-8"))
             return
-        router = party.net_router()
+        directory = party.net_directory()
         self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        hello = {"address": str(address), "network": str(router.network), "host": str(router.host_address)}
+        hello = {"address": str(address), "network": str(directory.network), "host": str(directory.host_address)}
         self.wfile.write(json.dumps(hello).encode("utf-8") + b"\n")
         self.wfile.flush()
         self.close_connection = True
@@ -1489,13 +1531,41 @@ class _Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-        watcher = threading.Thread(target=watch, daemon=True)
-        watcher.start()
+        def read():
+            try:
+                while not both.is_set():
+                    line = self.rfile.readline(gamenet.MAX_CANDIDATES_BYTES + 64)
+                    if not line.endswith(b"\n"):
+                        break  # closed, or a line too long to be candidates
+                    message = json.loads(line) if line.strip() else {}
+                    if isinstance(message, dict) and "candidates" in message:
+                        party.net_candidates(user, message["candidates"])
+            except (OSError, ValueError):
+                pass
+            finally:
+                both.set()
+                party.net_closed(member_id, stop)  # off the list now, which also wakes the writer below
+
+        threads =[threading.Thread(target=watch, daemon=True), threading.Thread(target=read, daemon=True)]
+        for thread in threads:
+            thread.start()
+        version = None
         try:
-            gamenet.pump_link(self.rfile, self.wfile, router, address, inbox, both)
+            while not both.is_set():
+                current = party.net_wait(version, gamenet.KEEPALIVE_SECONDS)
+                if both.is_set():
+                    break
+                line = party.net_roster(user) if current != version else {}
+                version = current
+                self.wfile.write(json.dumps(line).encode("utf-8") + b"\n")
+                self.wfile.flush()
+        except (OSError, ValueError):
+            pass
         finally:
             both.set()
-            watcher.join(timeout=2)
+            party.net_closed(member_id, stop)
+            for thread in threads:
+                thread.join(timeout=2)
 
     def _ask_status(self):
         query = parse_qs(urlsplit(self.path).query)

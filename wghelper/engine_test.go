@@ -242,3 +242,19 @@ func TestCheckRefusesAnythingOutsideTheGameNetwork(t *testing.T) {
 		}
 	}
 }
+
+func TestDatagramsForUnknownOrRemovedMembersAreDroppedQuietly(t *testing.T) {
+	_, ms := startMesh(t, "10.77.12.1", "10.77.12.2", "10.77.12.3")
+	if err := ms[0].engine.Apply(configFor(ms[0], ms[:2])); err != nil { // member 3 removed
+		t.Fatal(err)
+	}
+	ms[0].engine.Deliver(3, []byte{4, 0, 0, 0, 1, 2, 3}) // from the removed member: a cut-short data message
+	ms[0].engine.Deliver(99, make([]byte, 148))          // from nobody: a handshake-sized datagram of zeros
+	ms[0].engine.Deliver(2, nil)
+	ms[0].engine.PathUp(3)
+	ms[0].engine.PathUp(200)
+	ms[1].tun.Outbound <- udpPacket("10.77.12.2", "10.77.12.1", []byte("still fine"))
+	if got := receive(t, ms[0], 5*time.Second); !bytes.HasSuffix(got, []byte("still fine")) {
+		t.Fatalf("got %x", got)
+	}
+}
