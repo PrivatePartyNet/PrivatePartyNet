@@ -105,6 +105,16 @@ class KeyTests(unittest.TestCase):
             self.assertNotIn(bytes.fromhex(first), stored)
 
 
+class ServiceGroupTests(unittest.TestCase):
+    def test_the_app_and_the_helper_name_the_same_groups(self):
+        import re
+
+        source = (Path(__file__).resolve().parent.parent / "wghelper" / "services.go").read_text(encoding="utf-8")
+        start = source.index("var ServiceGroups")
+        block = source[start:source.index("\n}\n", start)]
+        self.assertEqual(sorted(re.findall(r'^\t"(\w+)":', block, re.M)), sorted(gamenet.SERVICE_IDS))
+
+
 class DirectoryTests(unittest.TestCase):
     def setUp(self):
         self.directory = Directory(NET, host_user="u-host")

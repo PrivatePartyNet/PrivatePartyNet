@@ -46,6 +46,23 @@ ROSTER_LABEL = b"PrivatePartyNet game roster|"
 KEY_FOLDER = "wireguard"
 
 
+# Windows' own services that party members cannot reach on this PC unless its owner opens them, group by group, in the
+# control panel. The game network is marked Private so games can host, and Windows opens these to Private networks too;
+# the helper drops members' packets to them (wghelper/services.go has the ports). Games never need them. The setting
+# belongs to this PC and is never sent to the party.
+SERVICE_GROUPS = [
+    {"id": "sharing", "label": "File and printer sharing",
+     "detail": "Members could open the folders and printers this PC shares."},
+    {"id": "remote_desktop", "label": "Remote Desktop",
+     "detail": "Members could ask to sign in to this PC, if Remote Desktop is turned on in Windows."},
+    {"id": "remote_management", "label": "Remote management",
+     "detail": "Administration tools on members' PCs (WinRM, remote procedure calls) could reach this PC."},
+    {"id": "discovery", "label": "Network discovery",
+     "detail": "Members' PCs could see this PC and its media and devices in their Network folder."},
+]
+SERVICE_IDS = tuple(group["id"] for group in SERVICE_GROUPS)
+
+
 class NetError(Exception):
     pass
 

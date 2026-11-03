@@ -106,10 +106,11 @@ class GameSession:
     sets it."""
 
     def __init__(self, address, network, private_key, folder, on_datagram=None, launch=None,
-                 accept_seconds=ACCEPT_SECONDS, program=None, memory_adapter=False, on_packet=None):
+                 accept_seconds=ACCEPT_SECONDS, program=None, memory_adapter=False, on_packet=None, open_services=()):
         self.address, self.network = str(address), str(network)
         self._private_key = private_key
         self._peers = []
+        self._open = sorted(open_services)  # Windows services members may reach on this PC (gamenet.SERVICE_GROUPS)
         self.on_datagram = on_datagram or (lambda member, datagram: None)
         self._on_packet = on_packet  # tests: packets for "Windows" with memory_adapter
         self._folder = Path(folder)
@@ -146,6 +147,11 @@ class GameSession:
         self._peers = [{"key": p["key"], "address": p["address"]} for p in peers]
         self._put(frame("C", json.dumps(self._config()).encode("utf-8")))
 
+    def set_open_services(self, groups):
+        """Which groups of Windows services members may reach on this PC. Takes effect at once in the helper."""
+        self._open = sorted(groups)
+        self._put(frame("C", json.dumps(self._config()).encode("utf-8")))
+
     def deliver(self, member, datagram):
         """Hand the helper a datagram that arrived on the path from `member` (their address's last byte)."""
         return self._put(frame("D", bytes([member]), datagram))
@@ -160,7 +166,7 @@ class GameSession:
 
     def _config(self):
         return {"private_key": self._private_key, "address": self.address, "network": self.network,
-                "peers": self._peers}
+                "peers": self._peers, "open": self._open}
 
     def _put(self, data):
         if self._sock is None:

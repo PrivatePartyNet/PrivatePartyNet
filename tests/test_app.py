@@ -710,6 +710,41 @@ class GameNetworkThroughTheControllerTests(unittest.TestCase):
         self.assertTrue(self.got(self.guest_tun, b"game on port 5000"))
         self.assertEqual([m["address"] for m in self.host.game_state()["members"]], [guest_state["address"]])
 
+    def test_windows_services_are_closed_to_members_until_this_pc_opens_them_live(self):
+        import struct
+
+        from privatepartynet.gamenet import make_packet
+
+        groups = self.host.game_services()["groups"]
+        self.assertEqual([g["id"] for g in groups], ["sharing", "remote_desktop", "remote_management", "discovery"])
+        self.assertFalse(any(g["open"] for g in groups), "all closed unless opened")
+        self.assertTrue(all(g["label"] and g["detail"] for g in groups))
+        self.host.game_use("own")
+        (joined,) = self.guest.joined_servers()
+        self.guest.game_use(joined["key"])
+        host_state, guest_state = self.wait_on(self.host), self.wait_on(self.guest)
+
+        def to_host(port, text):
+            payload = struct.pack(">HH", 50000, port) + bytes(16) + text
+            self.guest._game["session"].put_packet(make_packet(guest_state["address"], host_state["address"], payload, 6))
+
+        to_host(445, b"open the share")
+        to_host(27015, b"join my game")
+        self.assertTrue(self.got(self.host_tun, b"join my game"))
+        self.assertFalse(self.got(self.host_tun, b"open the share", seconds=0.5))
+        self.assertTrue(self.host.game_set_service("sharing", True)["groups"][0]["open"])
+        time.sleep(0.3)  # the helper takes the change from the app's link
+        to_host(445, b"open the share")
+        self.assertTrue(self.got(self.host_tun, b"open the share"), "opened at once, with no new permission prompt")
+        self.assertEqual(load_settings(self.host._data_dir)["game_open"], ["sharing"], "kept for next time")
+        self.host.game_set_service("sharing", False)
+        time.sleep(0.3)
+        to_host(445, b"open the share again")
+        to_host(27015, b"marker")
+        self.assertTrue(self.got(self.host_tun, b"marker"))
+        self.assertFalse(self.got(self.host_tun, b"open the share again", seconds=0.5))
+        self.assertFalse(self.host.game_set_service("everything", True)["ok"])
+
     def test_a_removed_member_is_dropped_by_the_host_at_once(self):
         self.host.game_use("own")
         (joined,) = self.guest.joined_servers()

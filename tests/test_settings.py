@@ -16,7 +16,8 @@ class SettingsTests(unittest.TestCase):
 
     def test_saved_values_come_back(self):
         save_settings({"port": 9100, "name": "Kitchen PC"}, self.folder)
-        self.assertEqual(load_settings(self.folder), {"port": 9100, "name": "Kitchen PC", "theme": "system", "server_id": None, "game_server": None})
+        self.assertEqual(load_settings(self.folder), {"port": 9100, "name": "Kitchen PC", "theme": "system", "server_id": None, "game_server": None,
+                                                     "game_open": []})
 
     def test_the_name_defaults_to_none_meaning_this_pc(self):
         self.assertIsNone(load_settings(self.folder)["name"])
@@ -30,6 +31,14 @@ class SettingsTests(unittest.TestCase):
     def test_bad_values_fall_back_one_by_one(self):
         settings_path(self.folder).write_text(json.dumps({"port": 80, "name": "   "}), encoding="utf-8")
         self.assertEqual(load_settings(self.folder), DEFAULTS)
+
+    def test_the_windows_services_opened_to_the_game_network_are_kept_as_a_clean_list(self):
+        self.assertEqual(load_settings(self.folder)["game_open"], [], "all closed unless opened")
+        settings_path(self.folder).write_text(json.dumps({"game_open": ["sharing", "discovery", "sharing", 7, "a b", "x" * 40]}),
+                                              encoding="utf-8")
+        self.assertEqual(load_settings(self.folder)["game_open"], ["discovery", "sharing"])
+        settings_path(self.folder).write_text(json.dumps({"game_open": "sharing"}), encoding="utf-8")
+        self.assertEqual(load_settings(self.folder)["game_open"], [])
 
     def test_a_boolean_is_not_a_port(self):
         self.assertFalse(valid_port(True))

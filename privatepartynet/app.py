@@ -765,7 +765,7 @@ class Controller:
 
     def _game_session(self, game, address, network):
         session = GameSession(address, network, game["private"], self._data_dir / "keys", launch=self._game_launch,
-                              **self._game_helper)
+                              open_services=self._open_services(), **self._game_helper)
         game["session"] = session
         game["mesh"] = GameMesh(self._identity.user_id, game["paths"], session)
         session.start()
@@ -855,6 +855,30 @@ class Controller:
         self._game_note = ""
         self._save(game_server=key)
         return {"ok": True, "message": "Turning the game network on. Windows will ask for permission."}
+
+    def _open_services(self):
+        return [g for g in self._settings.get("game_open") or [] if g in gamenet.SERVICE_IDS]
+
+    def game_services(self):
+        """What party members can reach on this PC besides games: each group of Windows services, all closed unless the
+        owner of this PC opened them. A setting of this PC only; it is never sent to the party."""
+        opened = set(self._open_services())
+        return {"ok": True, "groups": [{**group, "open": group["id"] in opened} for group in gamenet.SERVICE_GROUPS]}
+
+    def game_set_service(self, group, open_it):
+        """Open or close one group. A game network that is on takes it at once, with no new permission prompt."""
+        if group not in gamenet.SERVICE_IDS:
+            return {"ok": False, "message": "There is no such group of services."}
+        opened = set(self._open_services())
+        if open_it:
+            opened.add(group)
+        else:
+            opened.discard(group)
+        self._save(game_open=sorted(opened))
+        game = self._game
+        if game is not None and game.get("session") is not None:
+            game["session"].set_open_services(sorted(opened))
+        return self.game_services()
 
     def game_off(self):
         game, self._game = self._game, None
