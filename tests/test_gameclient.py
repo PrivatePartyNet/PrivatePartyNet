@@ -203,21 +203,41 @@ class GameNetworkTests(unittest.TestCase):
         self.assertIn("not a game network", session.status["message"])
 
     def test_turning_it_off_ends_the_helper(self):
-        host, alex = self.mesh(2)
-        before = self.helpers()
-        alex.session.stop()
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and self.helpers() >= before:
-            time.sleep(0.2)
-        self.assertLess(self.helpers(), before)
+        started = []
 
-    def helpers(self):
-        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {gameclient.HELPER}", "/FO", "CSV", "/NH"],
-                             capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return out.stdout.count(gameclient.HELPER)
+        def launch(program, arguments, cwd):
+            started.append(subprocess.Popen([program, *arguments], cwd=cwd,
+                                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)))
+            return None
+
+        session = GameSession("10.77.12.2", NET, new_private_key(), self.folder, launch=launch, program=self.program,
+                              memory_adapter=True)
+        session.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and session.status["state"] != "on":
+            time.sleep(0.05)
+        self.assertIsNone(started[0].poll(), "running while on")
+        session.stop()
+        self.assertEqual(started[0].wait(timeout=10), 0, "it ends, on its own, when the app's link closes")
 
 
 class SessionPieceTests(unittest.TestCase):
+    def test_what_windows_would_not_do_is_said_in_plain_words(self):
+        import json
+
+        session = GameSession("10.77.12.2", NET, new_private_key(), ".")
+        a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        warning = "Windows kept this network Public, so games hosted on this PC may be blocked by the firewall."
+        b.sendall(gameclient.frame("S", json.dumps({"state": "on", "warnings": []}).encode()))
+        b.sendall(gameclient.frame("S", json.dumps({"state": "on", "warnings": [warning, 7]}).encode()))
+        b.close()
+        session._pump(a)
+        self.assertEqual(session.status["state"], "on")
+        self.assertEqual(session.status["message"], f"Game network on: this PC is 10.77.12.2. {warning}")
+        self.assertEqual(session.status["warnings"], [warning])
+
     def test_saying_no_to_the_permission_prompt_leaves_it_off(self):
         with tempfile.TemporaryDirectory() as folder:
             program = Path(folder) / gameclient.HELPER

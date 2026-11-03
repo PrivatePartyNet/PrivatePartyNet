@@ -287,7 +287,13 @@ class GameSession:
                 elif kind == "S":
                     status = json.loads(body)
                     if status.get("state") == "on":
-                        self._set("on", f"Game network on: this PC is {self.address}.")
+                        # What Windows would not do (keep the network Private, let another adapter step aside), in
+                        # the helper's plain words: the game network works, but the person should know.
+                        warnings = [str(w)[:300] for w in status.get("warnings") or [] if isinstance(w, str)]
+                        self.status = {"state": "on", "message": " ".join([f"Game network on: this PC is {self.address}.",
+                                                                          *warnings]), "warnings": warnings}
+                        for warning in warnings:
+                            log.warning("Game network: %s", warning)
                     else:
                         self._set("failed", status.get("message") or "The game network helper stopped.")
                 elif kind == "L":
