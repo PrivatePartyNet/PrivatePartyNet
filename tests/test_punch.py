@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from privatepartynet import punch
+from privatepartynet import relayproto as rp
 from privatepartynet.cert import ensure_certificate
 from privatepartynet.connect import _connect, certificate_fingerprint
 from privatepartynet.dht import Dht
@@ -246,3 +247,135 @@ class JoinerPunchTests(RendezvousTests):
         joiner.run()
         self.assertEqual(joiner.status["state"], "failed")
         self.assertNotIn("through the routers", joiner.status["message"])
+
+
+class NoDht:
+    """A DHT that finds nothing, as when the host's record is missing or the DHT cannot be reached."""
+
+    def put_mutable(self, *args, **kwargs):
+        pass
+
+    def get_mutable(self, *args, **kwargs):
+        return None
+
+    def close(self):
+        pass
+
+
+class RelayJoinTests(Base):
+    """The join tunnel through a relay: the group's relay server or a member who relays for others."""
+
+    SECRET = "the group's relay secret"
+
+    def setUp(self):
+        super().setUp()
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "relay"))
+        from ppn_relay import ThreadedRelay
+
+        self.relay = ThreadedRelay([self.SECRET], host="127.0.0.1", udp_port=0)
+        self.addCleanup(self.relay.close)
+        self.party.set_relay(self.party.host_id, {"host": "127.0.0.1", "port": self.relay.udp_port, "tls_port": 0,
+                                                  "secret": self.SECRET})
+        self.invite_secret = b"invite-secret-02"
+        silent = FakeStun(silent=True)
+        self.addCleanup(silent.close)
+        self.host = HostPunch(Identity.create()._sign, "feedfacecafebeef", self.certfile, self.keyfile, self.party.port,
+                              lambda: [self.invite_secret], dht_factory=NoDht, stun_servers=(silent.address,),
+                              poll=0.5, relays=self.party.host_relays)
+        self.addCleanup(self.host.close)
+
+    def invite(self, **options):
+        from privatepartynet import connect
+
+        code = connect.encode_invite("Heroes night", "river-stone-42", [], self.fingerprint, secret=self.invite_secret.hex(),
+                                     relays=self.party.invite_relays(self.invite_secret), **options)
+        return connect.decode_invite(code)
+
+    def test_a_host_that_nobody_can_punch_to_is_still_reached_through_the_relay_server(self):
+        self.assertIsNone(self.host.mapping, "no STUN answer: the host waits on the relays only")
+        (relay,) = self.invite()["relays"]
+        self.assertEqual(relay["kind"], "vps")
+        client = punch.join_relayed(self.invite_secret, self.fingerprint, [relay], connect_seconds=10)
+        self.addCleanup(client.close)
+        self.assertEqual(client.kind, "relay")
+        status, body = self.through(client.port, "GET", "/ask?challenge=1")
+        self.assertEqual(status, 200)
+        status, _ = self.through(client.port, "POST", "/ask", {"name": "Far", "password": "river-stone-42"})
+        self.assertEqual(status, 200)
+        (waiting,) = self.party.pending_requests()
+        self.assertFalse(is_local_address(waiting["address"]), "a joiner through a relay is from outside")
+        self.assertGreater(self.relay.server.core.stats["forwarded"], 0)
+
+    def test_join_through_falls_back_to_the_relay_when_the_host_is_not_found(self):
+        invite = self.invite()
+        client = join_through(Identity.create().sign_public.hex(), "feedfacecafebeef", self.invite_secret,
+                              self.fingerprint, dht_factory=NoDht, find_seconds=0.5, relays=invite["relays"],
+                              connect_seconds=10)
+        self.addCleanup(client.close)
+        self.assertEqual(self.through(client.port, "GET", "/ask?challenge=1")[0], 200)
+
+    def test_a_wrong_host_certificate_through_the_relay_is_refused(self):
+        with self.assertRaisesRegex(PunchError, "certificate differs"):
+            punch.join_relayed(self.invite_secret, "00" * 32, self.invite()["relays"], connect_seconds=8)
+
+    def test_a_relay_that_refuses_the_token_is_reported(self):
+        (relay,) = self.invite()["relays"]
+        forged = dict(relay, token=rp.mint_token("a guess", "00" * 16))
+        with self.assertRaisesRegex(PunchError, "did not accept"):
+            punch.join_relayed(self.invite_secret, self.fingerprint, [forged], connect_seconds=5)
+
+    def test_an_invite_for_another_secret_meets_nobody(self):
+        with self.assertRaises(PunchError):
+            punch.join_relayed(b"invite-secret-99", self.fingerprint, self.invite()["relays"], connect_seconds=3)
+
+    def test_a_member_who_relays_for_others_carries_the_join(self):
+        from privatepartynet.pathway import PathManager
+
+        friend = PathManager(Identity.create(), {}, self.party.path_relay_for("22" * 16)["relay"],
+                             addresses=[("upnp", "127.0.0.1")], probe_network=False)
+        self.addCleanup(friend.stop)
+        self.party.set_relay(self.party.host_id, None)
+        self.party.friend_relays = lambda: [("127.0.0.1", friend.port)]
+        self.host._sync_relays()
+        (relay,) = self.invite()["relays"]
+        self.assertEqual(relay["kind"], "friend")
+        client = punch.join_relayed(self.invite_secret, self.fingerprint, [relay], connect_seconds=10)
+        self.addCleanup(client.close)
+        self.assertEqual(self.through(client.port, "GET", "/ask?challenge=1")[0], 200)
+        self.assertGreater(friend.state()["relayed"]["forwarded"], 0)
+
+    def test_the_joiner_uses_the_relay_when_no_address_answers(self):
+        from privatepartynet import connect
+
+        invite = self.invite()
+        invite["candidates"] = [["public", "127.0.0.1", 9]]
+        joiner = connect.Joiner(invite, "Far Away", identity=Identity.create(), my_lan=[], poll=0.1, timeout=2.0)
+        thread = threading.Thread(target=joiner.run, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline and joiner.status["state"] != "waiting":
+            time.sleep(0.1)
+        self.assertEqual(joiner.status["state"], "waiting", joiner.status)
+        (request,) = self.party.pending_requests()
+        self.party.decide_request(self.party.host_id, request["id"], True)
+        thread.join(10)
+        self.assertEqual(joiner.status["state"], "allowed")
+        self.assertEqual(joiner.tunnel.kind, "relay")
+        joiner.tunnel.close()
+
+
+class InviteRelayTests(unittest.TestCase):
+    def test_relays_round_trip_in_an_invite_and_bad_ones_are_dropped(self):
+        from privatepartynet import connect
+
+        token = rp.mint_token("s" * 16, "00" * 16).hex()
+        relays = [["vps", "relay.example.net", 3479, 443, "ab" * 32, token], ["friend", "198.51.100.7", 40001, 0, "", token],
+                  ["friend", "a.name.instead", 1, 0, "", token], ["vps", "x", 0, 0, "", token], ["other", "x", 1, 0, "", token],
+                  ["vps", "x", 1, 0, "", "beef"]]
+        invite = connect.decode_invite(connect.encode_invite("P", "pw", [], "cd" * 32, secret="ee" * 16, relays=relays))
+        self.assertEqual([(r["kind"], r["host"], r["port"]) for r in invite["relays"]],
+                         [("vps", "relay.example.net", 3479), ("friend", "198.51.100.7", 40001)])
+        self.assertEqual(invite["relays"][0]["token"], bytes.fromhex(token))
+        self.assertEqual(connect.decode_invite(connect.encode_invite("P", "pw", [], "cd" * 32))["relays"], [])

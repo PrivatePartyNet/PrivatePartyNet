@@ -43,6 +43,7 @@ STUN_SERVERS = (("stun.l.google.com", 19302), ("stun1.l.google.com", 19302), ("s
 STUN_MAGIC = 0x2112A442
 INVITE_PREFIX = "ppn1-"
 MAX_CANDIDATES = 8
+MAX_RELAYS = 4
 ASK_TIMEOUT = 5.0
 ANSWER_WAIT = 300.0
 POLL_SECONDS = 1.5
@@ -390,10 +391,13 @@ def certificate_fingerprint(pem_text):
     return hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem_text)).hexdigest()
 
 
-def encode_invite(name, password, candidates, fingerprint, server_id="", host_sign="", secret=""):
-    """`secret` (hex) lets the joiner find the host through the DHT when no address answers (punch.py)."""
+def encode_invite(name, password, candidates, fingerprint, server_id="", host_sign="", secret="", relays=()):
+    """`secret` (hex) lets the joiner find the host through the DHT when no address answers (punch.py). `relays`
+    (Party.invite_relays) are where the two can meet when no direct way works at all."""
     data = {"v": 1, "n": str(name)[:40], "p": str(password), "c": [list(c) for c in candidates][:MAX_CANDIDATES],
             "f": fingerprint, "s": server_id, "k": host_sign, "r": secret}
+    if relays:
+        data["y"] = [list(r) for r in relays][:MAX_RELAYS]
     packed = zlib.compress(json.dumps(data, separators=(",", ":")).encode("utf-8"), 9)
     check = hashlib.sha256(packed).digest()[:3]
     return INVITE_PREFIX + base64.urlsafe_b64encode(packed + check).decode("ascii").rstrip("=")
@@ -431,7 +435,30 @@ def decode_invite(code):
     host_sign = data.get("k") if isinstance(data.get("k"), str) and re.fullmatch(r"[0-9a-f]{64}", data.get("k") or "") else ""
     return {"name": str(data.get("n") or "Party")[:40], "password": str(data.get("p") or ""), "candidates": candidates,
             "fingerprint": fingerprint, "server_id": str(data.get("s") or "")[:40], "host_sign": host_sign,
-            "secret": secret}
+            "secret": secret, "relays": _read_relays(data.get("y"))}
+
+
+def _read_relays(items):
+    """The relays in an invite, as punch.join_relayed takes them; anything malformed is left out."""
+    found = []
+    for item in (items if isinstance(items, list) else [])[:MAX_RELAYS]:
+        try:
+            kind, host, port, tls_port, pin, token = item
+            token = bytes.fromhex(token)
+            host, port, tls_port, pin = str(host), int(port), int(tls_port or 0), str(pin or "")
+        except (ValueError, TypeError):
+            continue
+        if kind not in ("vps", "friend") or not host or len(host) > 253 or len(token) != 36:
+            continue
+        if not 0 < port < 65536 or not 0 <= tls_port < 65536 or (pin and not re.fullmatch(r"[0-9a-f]{64}", pin)):
+            continue
+        if kind == "friend":
+            try:
+                ipaddress.ip_address(host)  # a member's PC is named by its address, never by a name to look up
+            except ValueError:
+                continue
+        found.append({"kind": kind, "host": host, "port": port, "tls_port": tls_port, "pin": pin, "token": token})
+    return found
 
 
 # --- asking to join ---------------------------------------------------------------------------------------------
@@ -533,16 +560,20 @@ class Joiner:
         """Reach the host through both routers (punch.py) when no address answered. True when it was tried to the end
         (joined, denied or failed with its own message); False when the invite cannot do it."""
         invite = self.invite
-        if not (invite.get("host_sign") and invite.get("secret") and invite.get("server_id") and invite["fingerprint"]):
+        relays = invite.get("relays") or []
+        findable = invite.get("host_sign") and invite.get("server_id")
+        if not (invite.get("secret") and invite["fingerprint"] and (findable or relays)):
             return False
         if self._cancel.is_set():
             return False
         from privatepartynet import punch
 
-        self._set("trying", "No address answered; trying a direct connection through both routers (this takes up to a minute)...")
+        self._set("trying", "No address answered; trying a direct connection through both routers, then a relay "
+                            "(this takes up to a minute)..." if relays else
+                            "No address answered; trying a direct connection through both routers (this takes up to a minute)...")
         try:
-            tunnel = punch.join_through(invite["host_sign"], invite["server_id"], bytes.fromhex(invite["secret"]),
-                                        invite["fingerprint"])
+            tunnel = punch.join_through(invite.get("host_sign", ""), invite.get("server_id", ""),
+                                        bytes.fromhex(invite["secret"]), invite["fingerprint"], relays=relays)
         except Exception as exc:
             why = "; ".join(sorted(set(tried))[:2])
             self._set("failed", f"Could not reach the party ({why}). The connection through the routers did not work "

@@ -1,4 +1,4 @@
-"""Reaching a party whose host lets nothing in (carrier-grade NAT, no IPv6, no open port), with no relay and no server.
+"""Reaching a party whose host lets nothing in (carrier-grade NAT, no IPv6, no open port).
 
 Both PCs make one UDP socket each, learn the public address their router gives that socket (STUN), and swap those
 addresses through signed records on the BitTorrent DHT (dht.py): the host publishes its own under its identity key, and a
@@ -7,8 +7,13 @@ probes to each other's public address at the same time, which opens each router 
 Over that same socket a QUIC connection (aioquic) carries the party's own TLS connections, one QUIC stream each, so the
 pages, the join and the game network work exactly as on a LAN. The joiner sees them on a loopback port.
 
-What it cannot do: two routers that each give a new public port for every destination ("hard" NAT on both sides). The
-STUN check says which kind a router is, and the app says so plainly instead of trying for ever. Nothing relays traffic.
+Punching cannot cross two routers that each give a new public port for every destination ("hard" NAT on both sides).
+Then, or when the host's address is not found at all, the same QUIC connection goes through a relay instead (see
+relayproto.py): the group's own relay server or a member who relays for others, both listed in the invite with a
+token for that invite. Joiner and host meet there on a channel only the invite's holders can work out, and the relay
+carries QUIC's ciphertext without being able to read it. The host keeps the channels of its live invites bound on every
+relay it knows of, so it needs no message to start. With no relay in the invite the app says plainly that this case
+cannot work.
 
 The host hands each tunnelled connection to the party from its own address in 127.1.0.0/16 (one per joiner), which the
 party treats as outside the network: such a joiner needs the password and is rate limited on their own.
@@ -27,6 +32,7 @@ import time
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from privatepartynet import relayproto
 from privatepartynet.connect import STUN_SERVERS, _stun_binding
 
 log = logging.getLogger("privatepartynet.punch")
@@ -74,6 +80,11 @@ def read_record(value, max_age=600):
     if not 0 < port < 65536 or abs(time.time() - stamp) > max_age:
         return None
     return str(address), port, nat
+
+
+def join_channel(secret):
+    """The relay channel for an invite: the joiner and the host both work it out from the invite's secret."""
+    return relayproto.channel_for("join", bytes(secret))
 
 
 def tunnel_source(remote):
@@ -219,13 +230,15 @@ class TunnelClient:
     """QUIC from one punched socket to the host, pinned to the host certificate's fingerprint. Connections to the
     loopback port `port` are carried to the party, one QUIC stream each."""
 
-    def __init__(self, sock, remote, fingerprint, connect_seconds=CONNECT_SECONDS):
+    def __init__(self, sock, remote, fingerprint, connect_seconds=CONNECT_SECONDS, bridge=None):
         from aioquic.asyncio.protocol import QuicConnectionProtocol
         from aioquic.quic.configuration import QuicConfiguration
         from aioquic.quic.connection import QuicConnection
 
         self.sock = sock
         self.remote = (remote[0], int(remote[1]))
+        self.bridge = bridge  # the relay this tunnel goes through, if it does; it closes with the tunnel
+        self.kind = "relay" if bridge is not None else "punch"
         self._loop = _Loop("privatepartynet-tunnel-join")
         # The idle limit must outlast the wait for the host to open its router, or QUIC gives up first (seen: 60 s).
         configuration = QuicConfiguration(is_client=True, alpn_protocols=[ALPN],
@@ -276,6 +289,8 @@ class TunnelClient:
 
     def close(self):
         self._loop.stop(closing=(self._listener, self.protocol, self.transport))
+        if self.bridge is not None:
+            self.bridge.close()
 
 
 # --- the whole rendezvous -------------------------------------------------------------------------------------------
@@ -286,7 +301,9 @@ class HostPunch:
     mailboxes of the invites given out, and open the way for each joiner who writes there."""
 
     def __init__(self, identity_key, server_id, certfile, keyfile, party_port, secrets_, dht_factory=None,
-                 stun_servers=STUN_SERVERS, refresh=60.0, poll=5.0, max_seconds=24 * 3600):
+                 stun_servers=STUN_SERVERS, refresh=60.0, poll=5.0, max_seconds=24 * 3600, relays=None):
+        """`relays` is a callable giving the relays to wait on (Party.host_relays): with them the host stays reachable
+        even when no STUN server answers, as on a network that lets no UDP out (the relays then fall back to TLS)."""
         self._key = identity_key
         self._server_id = server_id
         self._secrets = secrets_  # a callable: the invite secrets still valid
@@ -294,11 +311,20 @@ class HostPunch:
         self._stun = stun_servers
         self._refresh, self._poll, self._max_seconds = refresh, poll, max_seconds
         self._stop = threading.Event()
+        self._relays = relays or (lambda: [])
+        self.bridges = {}  # (host, port) of a relay -> RelayBridge carrying the invites' channels to the QUIC socket
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("0.0.0.0", 0))
-        self.mapping = learn_mapping(self.sock, stun_servers)
+        try:
+            self.mapping = learn_mapping(self.sock, stun_servers)
+        except PunchError:
+            if not self._relays():
+                self.sock.close()
+                raise
+            self.mapping = None  # nobody can punch through to us, but the relays still bring joiners in
         self.tunnel = TunnelHost(self.sock, certfile, keyfile, party_port)
         self.seen = {}  # joiner's public address -> time it was last opened for
+        self._sync_relays()
         self._thread = threading.Thread(target=self._run, name="privatepartynet-punch-host", daemon=True)
         self._thread.start()
 
@@ -318,11 +344,12 @@ class HostPunch:
         try:
             while not self._stop.is_set() and time.monotonic() - started < self._max_seconds:
                 seq = max(seq + 1, int(time.time()))
-                address, port, nat = self.mapping
-                try:
-                    dht.put_mutable(self._key, record(address, port, nat), seq, host_salt(self._server_id))
-                except Exception:
-                    log.debug("Publishing the host record failed", exc_info=True)
+                if self.mapping is not None:
+                    address, port, nat = self.mapping
+                    try:
+                        dht.put_mutable(self._key, record(address, port, nat), seq, host_salt(self._server_id))
+                    except Exception:
+                        log.debug("Publishing the host record failed", exc_info=True)
                 self._stop.wait(self._refresh)
         finally:
             dht.close()
@@ -334,6 +361,7 @@ class HostPunch:
         seqs = {}  # mailbox -> the newest seq acted on
         try:
             while not self._stop.is_set() and time.monotonic() - started < self._max_seconds:
+                self._sync_relays()
                 for secret in list(self._secrets()):
                     if self._stop.is_set():
                         break
@@ -353,9 +381,36 @@ class HostPunch:
         finally:
             dht.close()
 
+    def _sync_relays(self):
+        """Keep every live invite's channel bound on every relay there is now, each carried to the QUIC socket."""
+        from privatepartynet.relayclient import RelayBridge
+
+        try:
+            relays = {(r["host"], int(r["port"])): r for r in self._relays()}
+            channels = {join_channel(secret) for secret in self._secrets()}
+        except Exception:
+            log.debug("Reading the relays failed", exc_info=True)
+            return
+        target = ("127.0.0.1", self.sock.getsockname()[1])
+        for key in [k for k in self.bridges if k not in relays]:
+            self.bridges.pop(key).close()
+        for key, relay in relays.items():
+            bridge = self.bridges.get(key)
+            if bridge is None:
+                bridge = self.bridges[key] = RelayBridge(relay)
+            bridge.client.relay["token"] = relay["token"]
+            for channel in list(bridge.client.channels):
+                if channel not in channels:
+                    bridge.remove(channel)
+            for channel in channels:
+                bridge.add(channel, token=relay["token"], target=target)
+
     def close(self):
         self._stop.set()
         self._thread.join(timeout=30)
+        for bridge in list(self.bridges.values()):
+            bridge.close()
+        self.bridges.clear()
         self.tunnel.close()
         try:
             self.sock.close()
@@ -364,9 +419,59 @@ class HostPunch:
 
 
 def join_through(host_key, server_id, secret, fingerprint, dht_factory=None, stun_servers=STUN_SERVERS,
-                 connect_seconds=CONNECT_SECONDS, find_seconds=60.0):
+                 connect_seconds=CONNECT_SECONDS, find_seconds=60.0, relays=()):
     """From a joiner's PC: find the host's public address on the DHT, write ours into the invite's mailbox, punch, and
-    open the QUIC tunnel. Returns a TunnelClient whose .port is the loopback port to reach the party on."""
+    open the QUIC tunnel; when that cannot work, open it through one of `relays` (from the invite) instead. Returns a
+    TunnelClient whose .port is the loopback port to reach the party on, and whose .kind says which way it went."""
+    if not (host_key and server_id):
+        if not relays:
+            raise PunchError("the invite has nothing to find the host by")
+        return join_relayed(secret, fingerprint, relays, connect_seconds)
+    try:
+        return _join_punched(host_key, server_id, secret, fingerprint, dht_factory, stun_servers, connect_seconds,
+                             find_seconds)
+    except PunchError as exc:
+        if not relays:
+            raise
+        log.info("Punching through to the host did not work (%s); trying the relays", exc)
+        try:
+            return join_relayed(secret, fingerprint, relays, connect_seconds)
+        except PunchError as relayed:
+            raise PunchError(f"{exc}; and through the relays: {relayed}") from None
+
+
+def join_relayed(secret, fingerprint, relays, connect_seconds=CONNECT_SECONDS, bind_seconds=8.0):
+    """The QUIC tunnel through the first relay that works, in the order given. Each relay is {"host", "port",
+    "tls_port", "pin", "token": bytes}. The host's certificate is checked exactly as on a direct path."""
+    from privatepartynet.relayclient import RelayBridge
+
+    channel = join_channel(secret)
+    why = []
+    for relay in relays:
+        bridge = RelayBridge(relay)
+        try:
+            port = bridge.add(channel)
+            if not bridge.wait_bound(channel, bind_seconds):
+                raise PunchError(f"{relay['host']} did not answer")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("127.0.0.1", 0))
+            try:
+                return TunnelClient(sock, ("127.0.0.1", port), fingerprint, connect_seconds=connect_seconds, bridge=bridge)
+            except PunchError:
+                sock.close()
+                raise
+            except Exception as exc:
+                sock.close()
+                raise PunchError(f"the host did not answer through {relay['host']} ({type(exc).__name__})") from exc
+        except (PunchError, relayproto.RelayError) as exc:
+            bridge.close()
+            if "certificate differs" in str(exc):
+                raise
+            why.append(str(exc))
+    raise PunchError("; ".join(why) or "no relay to try")
+
+
+def _join_punched(host_key, server_id, secret, fingerprint, dht_factory, stun_servers, connect_seconds, find_seconds):
     from privatepartynet.dht import Dht
 
     dht = dht_factory() if dht_factory else Dht()
