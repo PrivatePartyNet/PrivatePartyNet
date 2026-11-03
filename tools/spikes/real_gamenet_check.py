@@ -9,6 +9,8 @@ What it proves, with this PC as the host on its real adapter and a stand-in memb
   2. A broadcast a game sends on the adapter (UDP to the network's broadcast address and to 255.255.255.255) reaches
      the member, through the helper's fan-out.
   3. The adapter is the game network's: its address, metric 1, the network marked Private, and its packet size.
+  4. Killing the helper outright (taskkill /F, as a crash would) removes the adapter: Wintun ties it to the process.
+     Metrics it moved stay moved until the game network is next turned on, which puts them back first.
 The stand-in member's helper keeps its adapter in memory (no second permission prompt), and the path between the two
 is in memory, as on one PC both ends would be. The ping times are printed for comparison with the earlier design.
 
@@ -174,6 +176,14 @@ def main():
                 seen.add(packet.split(b"lobby? ")[1].decode())
         print("broadcasts that reached the member:", sorted(seen))
         ok = pinged and len(seen) == 2
+        subprocess.run(["taskkill", "/F", "/IM", gameclient.HELPER], capture_output=True, timeout=20,
+                       creationflags=NO_WINDOW)  # the elevated one may refuse a normal taskkill; then see the note
+        time.sleep(3)
+        killed = subprocess.run(["netsh", "interface", "ipv4", "show", "addresses", "PrivatePartyNet"], capture_output=True,
+                                text=True, timeout=20, creationflags=NO_WINDOW)
+        print("adapter removed after the helper was killed outright:",
+              killed.returncode != 0 or "PrivatePartyNet" not in killed.stdout,
+              "(if False: run taskkill /F from an administrator prompt and look again)")
     stop.set()
     session.stop()
     if "session" in holder:
