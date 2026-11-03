@@ -485,6 +485,14 @@ class PathManager:
                                     "ways": sorted({r.kind for r in p.routes.values() if r.alive(self._clock())})}
                               for pid, p in self._peers.items()}}
 
+    def friend_offers(self):
+        """(address, port) of every member known to relay for others, this PC included: what an invite can carry."""
+        with self._lock:
+            found = [tuple(c[1:3]) for c in self._candidates if c[0] == "friend"]
+            for peer in self._peers.values():
+                found += [o for o in sorted(peer.friend_offers) if o not in found]
+            return found
+
     def problems(self):
         """Members this PC has found no way to after trying for FAST_SECONDS, each with the reason in plain words and
         what would help: [{"peer", "why"}]."""
@@ -986,6 +994,9 @@ class LoopbackPathManager:
         return 0
 
     def problems(self):
+        return []
+
+    def friend_offers(self):
         return []
 
     def state(self):

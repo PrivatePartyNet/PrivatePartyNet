@@ -562,7 +562,11 @@ class ReviewControllerTests(unittest.TestCase):
             def set_friend_relay(self, on, mbps=None):
                 self.changed = (on, mbps)
 
+            def friend_offers(self):
+                return [("198.51.100.7", 40001)]
+
         paths = self.one.path_manager = Paths()
+        self.assertEqual(self.one._friend_relays(), [("198.51.100.7", 40001)], "what the party's invites carry")
         view = self.one.state()["friend_relay"]
         self.assertEqual(view["through"], ["Alex"])
         self.assertEqual(view["problems"], ["Sam: Both of your routers give a new port for every connection."])

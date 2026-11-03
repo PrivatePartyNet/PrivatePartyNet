@@ -135,6 +135,7 @@ class LadderTests(Base):
         # The friend forwarded only what the pair sent; nothing it handled could be read as theirs.
         self.assertNotIn(b"wireguard ciphertext from a", friend.got)
         self.assertEqual(friend.manager.state()["through"], sorted([a.id, b.id]), "the friend can see whom it carries")
+        self.assertEqual(a.manager.friend_offers(), [("127.0.0.1", friend.manager.port)], "for the invites")
         self.assertEqual(a.manager.problems(), [])
 
     def test_two_hard_routers_meet_through_the_groups_relay_server(self):

@@ -1023,6 +1023,7 @@ class Controller:
             log.exception("Could not listen on port %s", port)
             return {"ok": False, "message": f"Could not listen on port {port}: {exc}"}
         party.start()
+        party.friend_relays = self._friend_relays  # members who relay for others, for the invites' relays
         self._party = party
         self._passcode = party.passcode
         self._check_reach(party.port)
@@ -1101,6 +1102,14 @@ class Controller:
         """What a PathManager (pathway.py) on this PC is given as its settings."""
         return {"friend_relay": self._settings.get("friend_relay") is True,
                 "friend_relay_mbps": self._settings.get("friend_relay_mbps", 8)}
+
+    def _friend_relays(self):
+        manager = self.path_manager
+        try:
+            return manager.friend_offers() if manager is not None else []
+        except Exception:
+            log.exception("Reading the members who relay for others failed")
+            return []
 
     def _name_of(self, user_id):
         party = self._party
