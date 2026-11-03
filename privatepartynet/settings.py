@@ -7,12 +7,20 @@ from privatepartynet.paths import data_dir
 
 THEMES = ("system", "light", "dark")
 DEFAULTS = {"port": 8765, "name": None, "theme": "system", "server_id": None, "game_server": None}  # name None means: use this PC's name; server_id is made on the first party
+# Forwarding for other members who cannot reach each other (a friend relay, pathway.py): on unless the person turns it
+# off, and never more than this many megabits a second for everyone together.
+DEFAULTS.update({"friend_relay": True, "friend_relay_mbps": 8})
+MAX_FRIEND_MBPS = 1000
 SETTINGS_FILE = "settings.json"
 MAX_SAVED_NAME = 200  # the window trims names properly; this only stops a damaged file from growing huge
 
 
 def valid_port(port):
     return isinstance(port, int) and not isinstance(port, bool) and 1024 <= port <= 65535
+
+
+def valid_mbps(value):
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_FRIEND_MBPS
 
 
 def settings_path(folder=None):
@@ -39,6 +47,10 @@ def load_settings(folder=None):
             settings["game_server"] = game
         if isinstance(saved.get("name"), str) and saved["name"].strip():
             settings["name"] = saved["name"][:MAX_SAVED_NAME]
+        if isinstance(saved.get("friend_relay"), bool):
+            settings["friend_relay"] = saved["friend_relay"]
+        if valid_mbps(saved.get("friend_relay_mbps")):
+            settings["friend_relay_mbps"] = saved["friend_relay_mbps"]
     return settings
 
 

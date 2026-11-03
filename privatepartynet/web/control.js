@@ -27,6 +27,14 @@
     serverPassword: document.getElementById("serverPassword"),
     newServerPassword: document.getElementById("newServerPassword"),
     saveServerPassword: document.getElementById("saveServerPassword"),
+    relayNow: document.getElementById("relayNow"),
+    relayAddress: document.getElementById("relayAddress"),
+    relaySecret: document.getElementById("relaySecret"),
+    relayPin: document.getElementById("relayPin"),
+    saveRelay: document.getElementById("saveRelay"),
+    clearRelay: document.getElementById("clearRelay"),
+    friendRelay: document.getElementById("friendRelay"),
+    friendRelayMbps: document.getElementById("friendRelayMbps"),
     copyInvite: document.getElementById("copyInvite"),
     inviteNote: document.getElementById("inviteNote"),
     inviteCode: document.getElementById("inviteCode"),
@@ -77,6 +85,7 @@
     el.version.textContent = "Version " + state.version;
     renderReach(state.reach);
     renderGame(state.game);
+    renderRelay(state.relay, state.friend_relay);
     el.unlockBox.hidden = !state.locked;
     el.openMessages.disabled = state.locked;
     el.dmUnread.textContent = state.dm_unread ? state.dm_unread + " unread" : "";
@@ -444,6 +453,41 @@
   el.gameOff.addEventListener("click", function () {
     api().game_off();
   });
+
+  function renderRelay(relay, friend) {
+    if (relay) {
+      var where = relay.host.indexOf(":") >= 0 ? "[" + relay.host + "]" : relay.host;
+      el.relayNow.textContent = "In use: " + where + ":" + relay.port + (relay.pin ? ", certificate checked." : ".");
+    } else {
+      el.relayNow.textContent = "No relay server is set.";
+    }
+    el.clearRelay.hidden = !relay;
+    if (friend && document.activeElement !== el.friendRelay && document.activeElement !== el.friendRelayMbps) {
+      el.friendRelay.checked = friend.on;
+      el.friendRelayMbps.value = friend.mbps;
+      el.friendRelayMbps.disabled = !friend.on;
+    }
+  }
+
+  el.saveRelay.addEventListener("click", function () {
+    api().set_relay(el.relayAddress.value, el.relaySecret.value, el.relayPin.value).then(function (result) {
+      say(result.message);
+      if (result.ok) el.relaySecret.value = ""; // it is kept on this PC now; the page never shows it again
+    });
+  });
+
+  el.clearRelay.addEventListener("click", function () {
+    api().clear_relay().then(function (result) { say(result.message); });
+  });
+
+  function saveFriendRelay() {
+    api().set_friend_relay(el.friendRelay.checked, el.friendRelayMbps.value).then(function (result) {
+      if (!result.ok) say(result.message);
+    });
+  }
+
+  el.friendRelay.addEventListener("change", saveFriendRelay);
+  el.friendRelayMbps.addEventListener("change", saveFriendRelay);
 
   window.addEventListener("pywebviewready", loadJoined);
 })();

@@ -519,6 +519,43 @@ class ReviewControllerTests(unittest.TestCase):
         self.one.start("Desk", port)
         self.assertEqual(self.one.state()["passcode"], "owls at noon")
 
+    def test_the_owner_sets_a_relay_server_that_invites_carry_without_its_secret(self):
+        from privatepartynet import connect
+
+        self.assertFalse(self.one.set_relay("relay.example.net", "x" * 20)["ok"], "no party yet")
+        self.assertTrue(self.one.start("Desk", free_port())["ok"])
+        self.assertIsNone(self.one.state()["relay"])
+        self.assertFalse(self.one.set_relay("relay.example.net", "short")["ok"])
+        result = self.one.set_relay("relay.example.net:4000", "a-long-enough-relay-secret", "ab" * 32)
+        self.assertTrue(result["ok"], result)
+        relay = self.one.state()["relay"]
+        self.assertEqual((relay["host"], relay["port"], relay["pin"]), ("relay.example.net", 4000, "ab" * 32))
+        self.assertNotIn("a-long-enough-relay-secret", repr(self.one.state()))
+        code = self.one.invite()["invite"]
+        (carried,) = connect.decode_invite(code)["relays"]
+        self.assertEqual((carried["kind"], carried["host"], carried["port"]), ("vps", "relay.example.net", 4000))
+        self.assertNotIn(b"a-long-enough-relay-secret", repr(connect.decode_invite(code)).encode())
+        self.assertTrue(self.one.clear_relay()["ok"])
+        self.assertIsNone(self.one.state()["relay"])
+
+    def test_relaying_for_others_can_be_turned_off_and_limited(self):
+        self.assertEqual(self.one.state()["friend_relay"], {"on": True, "mbps": 8})
+        self.assertFalse(self.one.set_friend_relay(True, "lots")["ok"])
+        self.assertTrue(self.one.set_friend_relay(False, 20)["ok"])
+        self.assertEqual(self.one.state()["friend_relay"], {"on": False, "mbps": 20})
+        self.assertEqual(self.one.path_settings(), {"friend_relay": False, "friend_relay_mbps": 20})
+        again = Controller(data_folder=self.folder + "/one", discovery_port=0, grabber=FakeGrabber())
+        self.addCleanup(again.shutdown)
+        self.assertEqual(again.state()["friend_relay"], {"on": False, "mbps": 20}, "kept in the settings")
+
+    def test_relay_addresses_are_read_with_or_without_a_port(self):
+        from privatepartynet.app import _split_address
+
+        self.assertEqual(_split_address(" relay.example.net "), ("relay.example.net", None))
+        self.assertEqual(_split_address("203.0.113.5:4000"), ("203.0.113.5", "4000"))
+        self.assertEqual(_split_address("[2001:db8::1]:4000"), ("2001:db8::1", "4000"))
+        self.assertEqual(_split_address("2001:db8::1"), ("2001:db8::1", None))
+
     def test_importing_an_identity_keeps_the_old_one_and_moves_the_listener_to_the_new_keys(self):
         two = Controller(data_folder=self.folder + "/two", discovery_port=0, grabber=FakeGrabber())
         self.addCleanup(two.shutdown)

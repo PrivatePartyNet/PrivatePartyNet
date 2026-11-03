@@ -38,7 +38,7 @@ from privatepartynet.identity import Identity, safety_number
 from privatepartynet.netinfo import LOOPBACK, address_for, lan_addresses
 from privatepartynet.paths import data_dir, web_dir
 from privatepartynet.server import Forbidden, NotFound, Party, generate_password
-from privatepartynet.settings import THEMES, load_settings, save_settings, valid_port
+from privatepartynet.settings import THEMES, load_settings, save_settings, valid_mbps, valid_port
 from privatepartynet.store import Store
 from privatepartynet.vault import Locked, Vault, VaultError, WrongPassword
 
@@ -569,7 +569,7 @@ class Controller:
 
             try:
                 host = punch.HostPunch(self._identity._sign, party.server_id, str(certfile), str(keyfile), party.port,
-                                       party.invite_secrets, poll=15.0)
+                                       party.invite_secrets, poll=15.0, relays=party.host_relays)
             except Exception:
                 log.exception("Could not get ready to be reached through the routers")
                 return
@@ -600,10 +600,11 @@ class Controller:
         if self._reach and self._reach.get("state") == "done":
             candidates = self._reach["candidates"]
         self._start_host_punch()
+        secret = self._party.new_invite_secret()
         return connect.encode_invite(self._name, self._party.passcode, candidates, connect.certificate_fingerprint(self._cert_pem),
                                      server_id=self._settings.get("server_id") or "",
                                      host_sign=self._identity.sign_public.hex() if self._identity else "",
-                                     secret=self._party.new_invite_secret())
+                                     secret=secret, relays=self._party.invite_relays(bytes.fromhex(secret)))
 
     def invite(self):
         """The invite code for this party: the name, the password, where to try and the certificate to check."""
@@ -933,6 +934,9 @@ class Controller:
             "dm_unread": self._dm_unread(),
             "reach": self._reach_view(),
             "game": self.game_state(),
+            "relay": party.relay_view() if party else None,
+            "friend_relay": {"on": self._settings.get("friend_relay", True) is not False,
+                             "mbps": self._settings.get("friend_relay_mbps", 8)},
         }
 
     def _all_requests(self):
@@ -1010,7 +1014,8 @@ class Controller:
                 self._save(server_id=secrets.token_hex(8))  # this PC's server keeps one id, so its chat is the same each run
             party = Party(passcode, port, certfile, keyfile, party_name=name, host_name=name, grabber=self._grabber,
                           theme=self._settings.get("theme", "system"), store=self._store,
-                          server_id=self._settings["server_id"], host_user_id=self._identity.user_id)
+                          server_id=self._settings["server_id"], host_user_id=self._identity.user_id,
+                          signer=self._identity.sign)
         except OSError as exc:
             log.exception("Could not listen on port %s", port)
             return {"ok": False, "message": f"Could not listen on port {port}: {exc}"}
@@ -1052,6 +1057,44 @@ class Controller:
             return {"ok": False, "message": str(exc)}
         self._passcode = self._party.passcode
         return {"ok": True, "message": "Password changed. Copy a new invite for anyone new."}
+
+    def set_relay(self, address, secret, pin=""):
+        """The owner sets the group's relay server (relay/README.md): its address (a name or numbers, with :port when it
+        is not 3479), the secret the setup script printed, and its certificate fingerprint. Kept with the server; the
+        secret never leaves this PC. Returns {ok, message}."""
+        if self._party is None:
+            return {"ok": False, "message": "Start the party first."}
+        host, port = _split_address(address)
+        try:
+            self._party.set_relay(self._party.host_id, {"host": host, "port": port, "secret": secret, "pin": pin})
+        except (Forbidden, NotFound) as exc:
+            return {"ok": False, "message": str(exc)}
+        return {"ok": True, "message": "Relay server saved. Members get it the next time they connect."}
+
+    def clear_relay(self):
+        if self._party is None:
+            return {"ok": False, "message": "Start the party first."}
+        self._party.set_relay(self._party.host_id, None)
+        return {"ok": True, "message": "Relay server removed."}
+
+    def set_friend_relay(self, on, mbps=None):
+        """Allow or stop forwarding for other members who cannot reach each other, and how much at most."""
+        changes = {"friend_relay": bool(on)}
+        if mbps is not None:
+            try:
+                mbps = int(mbps)
+            except (TypeError, ValueError):
+                mbps = 0
+            if not valid_mbps(mbps):
+                return {"ok": False, "message": "The limit is a whole number of megabits a second, from 1 to 1000."}
+            changes["friend_relay_mbps"] = mbps
+        self._save(**changes)
+        return {"ok": True, "message": "Saved." if on else "This PC will not relay for others."}
+
+    def path_settings(self):
+        """What a PathManager (pathway.py) on this PC is given as its settings."""
+        return {"friend_relay": self._settings.get("friend_relay", True) is not False,
+                "friend_relay_mbps": self._settings.get("friend_relay_mbps", 8)}
 
     def rename(self, name):
         name = clean_name(name)
@@ -1207,6 +1250,19 @@ class Controller:
         save_settings(self._settings, self._data_dir)
 
 
+
+
+def _split_address(text):
+    """(host, port) from "relay.example.net", "203.0.113.5:4000" or "[2001:db8::1]:4000"; the port is None if not given."""
+    text = str(text or "").strip()
+    if text.startswith("["):
+        host, _, rest = text[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    elif text.count(":") == 1:
+        host, port = text.split(":")
+    else:
+        host, port = text, ""
+    return host, (port or None)
 
 
 def window_test(seconds=45):
