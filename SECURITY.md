@@ -47,5 +47,9 @@ Known limits:
   PCs on a network could read and change what is sent over a local join, so use local joins only on networks you trust.
 - The game network adds a virtual network adapter, which Windows only allows with administrator permission. A small helper is
   started with that permission when you turn the game network on, and it ends with the app. It only creates the adapter,
-  moves other adapters' priority while the game network is on, and passes game packets.
+  moves other adapters' priority while the game network is on, and runs WireGuard on it. WireGuard opens no connection of
+  its own: its sealed packets go to the app, which sends them to each member. The helper checks what the app gives it, so
+  it can only ever reach addresses inside that server's game network.
+- Each member has a WireGuard key for each server, kept sealed with the rest of the keys. The host signs the list of
+  members and their keys, and WireGuard only accepts from each member packets that carry that member's own address.
 - The installer is not code-signed, so Windows may show an unknown publisher.
