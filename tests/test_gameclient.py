@@ -8,6 +8,7 @@ tests build the helper from wghelper/ and are skipped when Go is not installed."
 import ipaddress
 import queue
 import socket
+import struct
 import subprocess
 import tempfile
 import threading
@@ -43,7 +44,9 @@ class Member:
         return {"user": self.user, "address": self.address, "key": self.key, "candidates": []}
 
     def send(self, destination, payload):
-        self.session.put_packet(make_packet(self.address, destination, payload))
+        """A UDP packet from a game on port 5000 (with a real UDP header: the helper drops one too short for its ports)."""
+        udp = struct.pack(">HHHH", 5000, 5000, 8 + len(payload), 0) + payload
+        self.session.put_packet(make_packet(self.address, destination, udp))
 
     def got(self, payload, seconds=8):
         """True when a packet ending in `payload` reached this PC's "Windows" within `seconds`."""
