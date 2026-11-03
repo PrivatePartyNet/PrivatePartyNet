@@ -270,3 +270,104 @@ func TestAFragmentIsNeverTakenForAWrapper(t *testing.T) {
 		t.Fatal("a fragment was taken for a wrapper")
 	}
 }
+
+func tcpPacket(source, destination string, port uint16) []byte {
+	packet := udpPacket(source, destination, make([]byte, 12))
+	packet[9] = tcp
+	binary.BigEndian.PutUint16(packet[10:12], 0)
+	binary.BigEndian.PutUint16(packet[10:12], checksum(packet[:ipHeader]))
+	binary.BigEndian.PutUint16(packet[22:24], port)
+	return packet
+}
+
+func toPort(packet []byte, protocol byte, port uint16) []byte {
+	packet = append([]byte(nil), packet...)
+	packet[9] = protocol
+	binary.BigEndian.PutUint16(packet[10:12], 0)
+	binary.BigEndian.PutUint16(packet[10:12], checksum(packet[:ipHeader]))
+	binary.BigEndian.PutUint16(packet[22:24], port)
+	return packet
+}
+
+// samples is one packet to each group's ports, and one to a game's.
+var samples = map[string][]struct {
+	protocol byte
+	port     uint16
+}{
+	"sharing":           {{tcp, 445}, {tcp, 139}, {udp, 137}, {udp, 138}},
+	"remote_desktop":    {{tcp, 3389}, {udp, 3389}},
+	"remote_management": {{tcp, 5985}, {tcp, 5986}, {tcp, 135}},
+	"discovery":         {{tcp, 5357}, {udp, 3702}, {udp, 1900}, {tcp, 2869}, {udp, 5355}},
+}
+
+func reaches(t *testing.T, from, to *member, protocol byte, port uint16, destination string) bool {
+	t.Helper()
+	marker := udpPacket(from.address, to.address, []byte("marker"))
+	from.tun.Outbound <- toPort(udpPacket(from.address, destination, []byte("service")), protocol, port)
+	from.tun.Outbound <- marker
+	for {
+		got := receive(t, to, 5*time.Second)
+		if got == nil {
+			t.Fatal("the marker never came")
+		}
+		if bytes.HasSuffix(got, []byte("service")) {
+			receive(t, to, 5*time.Second) // the marker
+			return true
+		}
+		if bytes.HasSuffix(got, []byte("marker")) {
+			return false
+		}
+	}
+}
+
+func TestWindowsServicesAreClosedToMembersUntilTheOwnerOpensThem(t *testing.T) {
+	_, ms := startMesh(t, "10.77.12.1", "10.77.12.2")
+	for group, ports := range samples {
+		for _, p := range ports {
+			if reaches(t, ms[0], ms[1], p.protocol, p.port, "10.77.12.2") {
+				t.Errorf("%s: port %d/%d is open by default", group, p.port, p.protocol)
+			}
+		}
+	}
+	nbns := toPort(udpPacket("10.77.12.1", "10.77.12.255", []byte("service")), udp, 137)
+	ms[0].tun.Outbound <- nbns
+	ms[0].tun.Outbound <- udpPacket("10.77.12.1", "10.77.12.2", []byte("marker"))
+	if got := receive(t, ms[1], 5*time.Second); !bytes.HasSuffix(got, []byte("marker")) {
+		t.Fatal("a broadcast to a closed service got through")
+	}
+	for _, game := range []uint16{27015, 7777, 47624, 6112, 5353} {
+		if !reaches(t, ms[0], ms[1], udp, game, "10.77.12.2") || !reaches(t, ms[0], ms[1], tcp, game, "10.77.12.2") {
+			t.Errorf("a game's port %d was closed", game)
+		}
+	}
+
+	// The owner of member 2's PC opens one group at a time; it applies at once, and only to that group.
+	for group := range samples {
+		c := configFor(ms[1], ms)
+		c.Open = []string{group}
+		if err := ms[1].engine.Apply(c); err != nil {
+			t.Fatal(err)
+		}
+		for other, ports := range samples {
+			for _, p := range ports {
+				if got := reaches(t, ms[0], ms[1], p.protocol, p.port, "10.77.12.2"); got != (other == group) {
+					t.Errorf("with %s open, %s port %d/%d reaches: %v", group, other, p.port, p.protocol, got)
+				}
+			}
+		}
+	}
+	if err := ms[1].engine.Apply(configFor(ms[1], ms)); err != nil {
+		t.Fatal(err)
+	}
+	if reaches(t, ms[0], ms[1], tcp, 445, "10.77.12.2") {
+		t.Error("closing again did not take")
+	}
+}
+
+func TestOnlyKnownGroupsCanBeOpened(t *testing.T) {
+	keys := newKeypair(t)
+	c := Config{PrivateKey: keys.private, Address: "10.77.12.1", Network: testNetwork, Open: []string{"everything"}}
+	if _, err := Check(c); err == nil {
+		t.Fatal("an unknown group was accepted")
+	}
+}

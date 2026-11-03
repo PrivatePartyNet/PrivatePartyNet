@@ -35,6 +35,7 @@ type Mesh struct {
 	Self    netip.Addr
 	Network netip.Prefix
 	Peers   []netip.Addr
+	Closed  []portRule // Windows services members cannot reach on this PC (services.go)
 }
 
 // Fanout wraps a tun.Device. Read gives WireGuard only what belongs on the game network, with broadcast and multicast
@@ -167,14 +168,14 @@ func (f *Fanout) Write(bufs [][]byte, offset int) (int, error) {
 			continue
 		}
 		if inner, wrapped := Unwrap(packet, source, mesh); wrapped {
-			if inner != nil {
+			if inner != nil && !ToClosedService(inner, mesh.Closed) {
 				out = append(out, inner)
 			} else {
 				f.Dropped.Add(1)
 			}
 			continue
 		}
-		if destination == mesh.Self && mesh.Network.Contains(source) {
+		if destination == mesh.Self && mesh.Network.Contains(source) && !ToClosedService(packet, mesh.Closed) {
 			out = append(out, packet)
 		} else {
 			f.Dropped.Add(1)

@@ -40,6 +40,8 @@ type Config struct {
 	Address    string `json:"address"`
 	Network    string `json:"network"`
 	Peers      []Peer `json:"peers"`
+	// The groups of Windows services members may reach on this PC (services.go). None unless the owner opens them.
+	Open []string `json:"open"`
 }
 
 type checkedPeer struct {
@@ -52,6 +54,7 @@ type checked struct {
 	self       netip.Addr
 	network    netip.Prefix
 	peers      []checkedPeer
+	closed     []portRule
 }
 
 func hexKey(value string) (string, error) {
@@ -83,7 +86,10 @@ func Check(c Config) (*checked, error) {
 	if len(c.Peers) > MaxPeers {
 		return nil, errors.New("too many members")
 	}
-	out := &checked{privateKey: private, self: self, network: network}
+	if err := checkOpen(c.Open); err != nil {
+		return nil, err
+	}
+	out := &checked{privateKey: private, self: self, network: network, closed: closedRules(c.Open)}
 	seenKey, seenAddress := map[string]bool{}, map[netip.Addr]bool{self: true}
 	for _, p := range c.Peers {
 		key, err := hexKey(p.Key)
@@ -138,10 +144,10 @@ func meshOf(c *checked) *Mesh {
 	for i, p := range c.peers {
 		peers[i] = p.address
 	}
-	return &Mesh{Self: c.self, Network: c.network, Peers: peers}
+	return &Mesh{Self: c.self, Network: c.network, Peers: peers, Closed: c.closed}
 }
 
-// Apply changes the members. This PC's address, network and key stay as they were at the start.
+// Apply changes the members and the Windows services they may reach. This PC's address, network and key stay as they were at the start.
 func (e *Engine) Apply(c Config) error {
 	next, err := Check(c)
 	if err != nil {
