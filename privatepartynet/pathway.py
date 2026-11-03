@@ -50,6 +50,10 @@ from privatepartynet.relayclient import RelayClient
 log = logging.getLogger("privatepartynet.pathway")
 
 KINDS = ("lan", "ipv6", "upnp", "punch", "friend", "vps")
+# What each way is called where people read it (the control panel).
+WAY_TEXT = {"lan": "direct on the same network", "ipv6": "direct over IPv6", "upnp": "direct through an open port",
+            "punch": "direct through both routers", "friend": "through a member's PC", "vps": "through the relay server",
+            "": "not connected yet"}
 RANK = {kind: index for index, kind in enumerate(KINDS)}
 DIRECT = ("lan", "ipv6", "upnp", "punch")
 PROBE, REPLY, DATA = 0x30, 0x31, 0x32

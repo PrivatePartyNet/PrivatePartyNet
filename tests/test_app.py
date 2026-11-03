@@ -539,7 +539,8 @@ class ReviewControllerTests(unittest.TestCase):
         self.assertIsNone(self.one.state()["relay"])
 
     def test_relaying_for_others_is_off_until_turned_on_and_can_be_limited(self):
-        self.assertEqual(self.one.state()["friend_relay"], {"on": False, "mbps": 8, "through": [], "problems": []})
+        self.assertEqual(self.one.state()["friend_relay"], {"on": False, "mbps": 8, "through": [], "problems": [],
+                                                            "ways": []})
         self.assertFalse(self.one.set_friend_relay(True, "lots")["ok"])
         self.assertTrue(self.one.set_friend_relay(True, 20)["ok"])
         self.assertEqual(self.one.state()["friend_relay"]["on"], True)
@@ -554,7 +555,7 @@ class ReviewControllerTests(unittest.TestCase):
             changed = None
 
             def state(self):
-                return {"through": ["aa" * 16]}
+                return {"through": ["aa" * 16], "peers": {"aa" * 16: {"kind": "ipv6"}, "bb" * 16: {"kind": ""}}}
 
             def problems(self):
                 return [{"peer": "bb" * 16, "why": "Both of your routers give a new port for every connection."}]
@@ -569,6 +570,7 @@ class ReviewControllerTests(unittest.TestCase):
         self.assertEqual(self.one._friend_relays(), [("198.51.100.7", 40001)], "what the party's invites carry")
         view = self.one.state()["friend_relay"]
         self.assertEqual(view["through"], ["Alex"])
+        self.assertEqual(view["ways"], ["Alex, direct over IPv6", "Sam, not connected yet"])
         self.assertEqual(view["problems"], ["Sam: Both of your routers give a new port for every connection."])
         self.one.set_friend_relay(True, 4)
         self.assertEqual(paths.changed, (True, 4), "a running game network follows the setting at once")

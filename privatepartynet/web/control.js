@@ -37,6 +37,7 @@
     friendRelayMbps: document.getElementById("friendRelayMbps"),
     friendRelayNow: document.getElementById("friendRelayNow"),
     pathProblems: document.getElementById("pathProblems"),
+    pathWays: document.getElementById("pathWays"),
     copyInvite: document.getElementById("copyInvite"),
     inviteNote: document.getElementById("inviteNote"),
     inviteCode: document.getElementById("inviteCode"),
@@ -473,6 +474,9 @@
     var through = friend.through || [];
     el.friendRelayNow.textContent = through.length ? "Going through this PC now: " + through.join(", ") + "." : "";
     el.friendRelayNow.hidden = !through.length;
+    var ways = friend.ways || [];
+    el.pathWays.textContent = ways.length ? "Game network: " + ways.join("; ") + "." : "";
+    el.pathWays.hidden = !ways.length;
     var problems = friend.problems || [];
     el.pathProblems.textContent = problems.length ? "Cannot reach " + problems.join(" ") : "";
     el.pathProblems.hidden = !problems.length;

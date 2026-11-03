@@ -2005,6 +2005,12 @@
     line.textContent = (summary.rtt == null ? "Round trip n/a" : "Round trip " + Math.round(summary.rtt) + " ms") +
       "  ·  Packet loss " + summary.loss.toFixed(1) + "%";
     el.tip.append(line);
+    if (summary.way) {
+      var wayLine = document.createElement("div");
+      wayLine.className = "line";
+      wayLine.textContent = Stats.wayText(summary.way);
+      el.tip.append(wayLine);
+    }
     var note = document.createElement("div");
     note.className = "note";
     note.textContent = "CPU figures are the share of the whole PC spent encoding or decoding, estimated from the codec's own timing.";
@@ -2110,7 +2116,7 @@
         var peer = entry[1];
         var state = peer.pc.connectionState;
         if (state === "connected") connected += 1;
-        var summary = { state: state, rtt: null, loss: 0, down: [], up: [] };
+        var summary = { state: state, rtt: null, way: null, loss: 0, down: [], up: [] };
         try {
           var sample = await collect(peer);
           var previous = statSamples.get(id);
@@ -2118,6 +2124,7 @@
           var activeIn = new Set(sharesOf(id).map(function (s) { return s.slot; }));
           var result = Stats.diff(previous, sample, { cores: cores, activeIn: activeIn, activeOut: activeOut });
           summary.rtt = result.rtt;
+          summary.way = result.way;
           summary.loss = result.loss;
           summary.down = result.down;
           summary.up = result.up;

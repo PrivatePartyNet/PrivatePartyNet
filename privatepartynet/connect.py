@@ -386,6 +386,12 @@ def gather(port, upnp=None, stun=None, ipv6=None, lan=None):
 
 
 def _advice(upnp, ipv6, cgnat, stun):
+    if ipv6 and cgnat:
+        return "yes", ("This internet connection shares one IPv4 address between many customers (carrier-grade NAT), but "
+                       "it also has IPv6, which has no such sharing: members with IPv6 reach this PC directly over it, "
+                       "and the game network goes over IPv6 whenever both ends have it. If your router has a firewall for "
+                       "IPv6 (the standard Starlink router blocks it and cannot be changed), the invite still gets through "
+                       "it, because both PCs send at the same moment.")
     if ipv6:
         return "yes", ("People with IPv6 can reach this PC directly. If your router has a firewall for IPv6 (the standard "
                        "Starlink router blocks it and cannot be changed), allow this port or put the router in bypass mode.")

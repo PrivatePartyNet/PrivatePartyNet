@@ -19,7 +19,7 @@
   // One stats report, as an array of its entries, reduced to the video slots it describes. mids is the list of
   // transceiver mids in slot order, so a stream's mid says which slot it is.
   function normalize(entries, mids, now) {
-    var sample = { at: now, rtt: null, inn: {}, out: {} };
+    var sample = { at: now, rtt: null, way: way(entries), inn: {}, out: {} };
     entries.forEach(function (s) {
       if (s.type === "candidate-pair") {
         if (s.nominated && s.state === "succeeded" && typeof s.currentRoundTripTime === "number") {
@@ -43,6 +43,36 @@
       }
     });
     return sample;
+  }
+
+  // Which way the connection in use goes, from its pair of candidates: "relay" through the group's relay server (TURN),
+  // "ipv6" directly over IPv6, "lan" directly on one network, "direct" through the routers, or null before it is known.
+  function way(entries) {
+    var byId = {};
+    var pair = null;
+    entries.forEach(function (s) {
+      if (s.type === "local-candidate" || s.type === "remote-candidate") byId[s.id] = s;
+      if (s.type === "candidate-pair" && s.nominated && s.state === "succeeded") pair = s;
+    });
+    if (!pair) return null;
+    var local = byId[pair.localCandidateId] || {};
+    var remote = byId[pair.remoteCandidateId] || {};
+    if (local.candidateType === "relay" || remote.candidateType === "relay") return "relay";
+    var address = String(remote.address || remote.ip || "");
+    if (address.indexOf(":") >= 0) return "ipv6";
+    if (local.candidateType === "host" && remote.candidateType === "host") return "lan";
+    return address ? "direct" : null;
+  }
+
+  var WAYS = {
+    relay: "Through the relay server",
+    ipv6: "Direct over IPv6",
+    lan: "Direct on the same network",
+    direct: "Direct through the routers",
+  };
+
+  function wayText(kind) {
+    return WAYS[kind] || "";
   }
 
   function perSlot(prev, cur, secs, cores, active, outgoing) {
@@ -72,7 +102,7 @@
   // of slots this side is sharing }. Returns { rtt, loss, down: [slot], up: [slot] }; a slot is { slot, kbps, fps, w, h,
   // cpu } and an upload slot also has the encoder's limit.
   function diff(prev, cur, ctx) {
-    var result = { rtt: cur.rtt, loss: 0, down: [], up: [] };
+    var result = { rtt: cur.rtt, way: cur.way || null, loss: 0, down: [], up: [] };
     if (!prev) return result;
     var secs = (cur.at - prev.at) / 1000;
     if (secs <= 0) return result;
@@ -139,6 +169,8 @@
   return {
     normalize: normalize,
     diff: diff,
+    way: way,
+    wayText: wayText,
     flowing: flowing,
     total: total,
     formatRate: formatRate,

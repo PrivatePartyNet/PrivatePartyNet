@@ -165,7 +165,10 @@ class GatherTests(unittest.TestCase):
         report = gather(8765, upnp=self.NO, stun={"public": "100.66.1.2", "nat": "hard"}, ipv6=["2603:6011:abcd::10"], lan=["192.168.1.9"])
         self.assertEqual(report["reachable"], "yes")
         self.assertIn(["ipv6", "2603:6011:abcd::10", 8765], report["candidates"])
-        self.assertIn("bypass", report["advice"])
+        self.assertIn("carrier-grade NAT", report["advice"], "it says plainly that IPv6 is what gets past the shared address")
+        self.assertIn("goes over IPv6", report["advice"])
+        no_cgnat = gather(8765, upnp=self.NO, stun={"public": "9.9.9.9", "nat": "easy"}, ipv6=["2603:6011:abcd::10"], lan=[])
+        self.assertIn("bypass", no_cgnat["advice"])
 
     def test_an_easy_router_that_did_not_open_the_port_is_a_maybe(self):
         report = gather(8765, upnp=self.NO, stun={"public": "9.9.9.9", "nat": "easy"}, ipv6=[], lan=["192.168.0.5"])

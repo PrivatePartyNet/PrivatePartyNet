@@ -1121,16 +1121,20 @@ class Controller:
 
     def _paths_view(self):
         """Who is going through this PC now, and whom this PC cannot reach and why (from the game network's paths)."""
+        from privatepartynet.pathway import WAY_TEXT
+
         manager = self.path_manager
         if manager is None:
-            return {"through": [], "problems": []}
+            return {"through": [], "problems": [], "ways": []}
         try:
             state, problems = manager.state(), manager.problems()
         except Exception:
             log.exception("Reading the paths failed")
-            return {"through": [], "problems": []}
+            return {"through": [], "problems": [], "ways": []}
+        ways = sorted(f"{self._name_of(peer)}, {WAY_TEXT.get(info.get('kind') or '', 'not connected yet')}"
+                      for peer, info in (state.get("peers") or {}).items())
         return {"through": [self._name_of(u) for u in state.get("through") or []],
-                "problems": [f"{self._name_of(p['peer'])}: {p['why']}" for p in problems]}
+                "problems": [f"{self._name_of(p['peer'])}: {p['why']}" for p in problems], "ways": ways}
 
     def rename(self, name):
         name = clean_name(name)
