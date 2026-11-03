@@ -79,6 +79,18 @@ def powershell(script):
     return (result.stdout + result.stderr).strip()
 
 
+def metrics():
+    """{name: (metric, state)} of every IPv4 adapter, as netsh shows them."""
+    shown = subprocess.run(["netsh", "interface", "ipv4", "show", "interfaces"], capture_output=True, text=True, timeout=20,
+                           creationflags=NO_WINDOW).stdout
+    found = {}
+    for line in shown.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) == 5 and parts[0].isdigit():
+            found[parts[4].strip()] = (int(parts[1]), parts[3])
+    return found
+
+
 def adapter_line():
     """netsh's own line for the adapter: index, metric, packet size, state, name. netsh does not go through WMI."""
     shown = subprocess.run(["netsh", "interface", "ipv4", "show", "interfaces"], capture_output=True, text=True, timeout=20,
@@ -153,6 +165,9 @@ def main():
                 mesh.apply(open_roster(party.net_roster(party.net_host_user)))
 
     threading.Thread(target=follow, daemon=True).start()
+    before = metrics()
+    first = {name: m for name, (m, state) in before.items() if state == "connected" and m <= 1}
+    print("other connected adapters at metric 1 before:", first or "none")
     session.start()
     print("asking Windows for permission (UAC)...")
     while session.status["state"] not in ("on", "failed", "declined") and time.monotonic() - started < DEADLINE:
@@ -165,6 +180,10 @@ def main():
         print(subprocess.run(["netsh", "interface", "ipv4", "show", "addresses", "PrivatePartyNet"], capture_output=True,
                              text=True, timeout=20, creationflags=NO_WINDOW).stdout.strip())
         print("index, metric, packet size, state, name:", adapter_line())
+        during = metrics()
+        print("those adapters while the game network is on:", {name: during.get(name, ("gone",))[0] for name in first})
+        moved = all(during.get(name, (0,))[0] >= 2 for name in first)
+        print("the helper says:", session.status.get("message"))
         print("networks and their profiles:", "; ".join(powershell(NETWORKS).splitlines()))
         print("through WMI, as the helper asks:", powershell(
             "(Get-NetConnectionProfile -InterfaceAlias PrivatePartyNet -ErrorAction Stop).NetworkCategory").splitlines()[0])
@@ -190,10 +209,16 @@ def main():
             if b"lobby? " in packet:
                 seen.add(packet.split(b"lobby? ")[1].decode())
         print("broadcasts that reached the member:", sorted(seen))
-        ok = pinged and len(seen) == 2
+        ok = pinged and len(seen) == 2 and moved
         # The helper runs with administrator rights, so killing it takes them too: Windows asks a second time.
         print("asking Windows for permission to kill the helper outright (UAC)...")
-        problem = gameclient.launch_elevated("taskkill", ["/F", "/IM", gameclient.HELPER], str(folder))
+        # One prompt for both: kill it, then put back the metrics it could not (the helper's --restore).
+        import ctypes
+
+        started = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", "cmd.exe", f'/c taskkill /F /IM {gameclient.HELPER} & "{gameclient.helper_path()}" --restore',
+            str(folder), 0)
+        problem = None if started > 32 else f"not started ({started})"
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline and not problem and adapter_line():
             time.sleep(0.5)
@@ -209,6 +234,10 @@ def main():
     gone = subprocess.run(["netsh", "interface", "ipv4", "show", "addresses", "PrivatePartyNet"], capture_output=True, text=True,
                           timeout=20, creationflags=NO_WINDOW)
     print("adapter removed after the check:", gone.returncode != 0 or "PrivatePartyNet" not in gone.stdout)
+    after = metrics()
+    print("those adapters after:", {name: after.get(name, ("gone",))[0] for name in first},
+          "(the same as before, after the kill and --restore)")
+    ok = ok and all(after.get(name, (None,))[0] == m for name, m in first.items())
     print("RESULT", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

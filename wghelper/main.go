@@ -15,6 +15,7 @@
 // On the way out it gives back the metrics it moved and closes the adapter, which removes it from Windows.
 //
 // Started as: PrivatePartyNetGameNet.exe --port P --secret-file F --parent PID
+// or as PrivatePartyNetGameNet.exe --restore, which only puts back metrics a helper killed outright left moved.
 // The secret is read from a file the app writes (and deletes once the helper has connected), so it never appears on a
 // command line. The helper only reads that file, and only an ordinary file holding a secret's 64 hex characters: it runs
 // with administrator rights, and the file is in a folder any program the user runs could change. The app sends this
@@ -279,6 +280,13 @@ func run(link *Link, o options, alive func(int) bool) string {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--restore" {
+		// Put back the metrics a helper that was killed outright left moved, and nothing else.
+		if RestoreLeftovers() != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	o, err := parseOptions(os.Args[1:])
 	if err != nil {
 		os.Exit(2)
