@@ -29,6 +29,7 @@ from privatepartynet.cpu import sample_detail as cpu_detail
 from privatepartynet.discovery import clean_name
 from privatepartynet.frames import clamp_fps, clamp_height
 from privatepartynet import gamenet
+from privatepartynet import relayproto
 from privatepartynet.identity import user_id_of, verify
 from privatepartynet.paths import web_dir
 
@@ -80,6 +81,8 @@ MAX_REQUESTS_PER_ADDRESS = 3
 MAX_FORM_BYTES = 1024
 MAX_BODY_BYTES = 256 * 1024  # an SDP with every candidate is a few kilobytes
 SIGNAL_KINDS = {"offer", "answer", "quality"}
+TURN_PORT = 3478  # coturn beside the relay server (relay/turnserver.conf)
+TURN_SECONDS = 24 * 3600  # how long the TURN credentials a page is given last; a page that reconnects gets new ones
 GO_LIVE_QUALITIES = ("source", "1080", "720", "480")
 GO_LIVE_FPS = (15, 30, 60)
 MIN_SIZE, MAX_SIZE = 64, 16384
@@ -216,6 +219,31 @@ def is_local_address(address):
     return any(ip in network for network in LOCAL_NETWORKS if network.version == ip.version)
 
 
+def clean_relay(config):
+    """The owner's relay server settings, checked: {"host", "port", "tls_port", "pin", "secret", "turn"}. Raises
+    ValueError, in words, for anything that cannot be right."""
+    if not isinstance(config, dict):
+        raise ValueError("The relay settings were not understood.")
+    host = str(config.get("host") or "").strip().strip("[]")
+    if not host or len(host) > 253 or any(c.isspace() or c in "/@?#" for c in host):
+        raise ValueError("Enter the relay server's address (a name like relay.example.net, or numbers).")
+    try:
+        port = int(config.get("port") if config.get("port") not in (None, "") else relayproto.DEFAULT_UDP_PORT)
+        tls_port = int(config.get("tls_port") if config.get("tls_port") not in (None, "") else relayproto.DEFAULT_TLS_PORT)
+    except (TypeError, ValueError):
+        raise ValueError("The relay's ports must be numbers.") from None
+    if not 0 < port < 65536 or not 0 <= tls_port < 65536:
+        raise ValueError("The relay's ports must be from 1 to 65535.")
+    secret = str(config.get("secret") or "").strip()
+    if len(secret) < 16 or len(secret) > 200:
+        raise ValueError("The relay secret is 16 to 200 characters (the setup script prints it).")
+    pin = str(config.get("pin") or "").strip().lower().replace(":", "")
+    if pin and (len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin)):
+        raise ValueError("The certificate fingerprint is 64 letters and digits (the setup script prints it), or empty.")
+    return {"host": host, "port": port, "tls_port": tls_port, "pin": pin, "secret": secret,
+            "turn": config.get("turn", True) is not False}
+
+
 def certificate_fingerprint_file(certfile):
     import ssl as _ssl
 
@@ -253,7 +281,7 @@ class Party:
 
     def __init__(self, passcode, port, certfile, keyfile, party_name, host_name,
                  failed_login_delay=1.0, heartbeat=15.0, grabber=None, theme="system",
-                 store=None, server_id=None, host_user_id=None, trust_local=True):
+                 store=None, server_id=None, host_user_id=None, trust_local=True, signer=None):
         self.trust_local = trust_local  # people on this network ask without the password (they still wait for a yes)
         # Addresses that look local but must not be trusted as such: the router, because some routers hand on
         # connections from the internet under their own address once a port is forwarded.
@@ -286,6 +314,14 @@ class Party:
         self._net = None  # the router, made when the first person joins the game network
         self._net_links = {}  # member id -> event that ends their game network link
         self._invite_secrets = [dict(i) for i in record.get("invites") or [] if isinstance(i, dict)]
+        # The relay server the owner set (relay/README.md), kept with the server in the encrypted store. Its secret stays
+        # on this PC: members get tokens and TURN credentials made from it, never the secret.
+        self._relay = record.get("relay") if isinstance(record.get("relay"), dict) else None
+        # The key friend relays check members' tokens with (pathway.py): made once, handed to members only.
+        self._relay_key = record.get("relay_key") if isinstance(record.get("relay_key"), str) else secrets.token_hex(32)
+        self.signer = signer  # identity.sign of the owner, which signs the relay settings members receive
+        self.friend_relays = lambda: []  # (address, port) of members who relay for others, from the app's paths
+        self.relay_listeners = []  # called with no arguments when the relay settings change
         self._fails = {}  # address -> times of wrong passwords
         self._fails_all = deque()  # times of wrong passwords from anywhere
         self._log = {}  # channel id -> deque of the newest HISTORY messages, as sent to members
@@ -294,7 +330,8 @@ class Party:
         self._answers = {}  # ticket -> the answer to a request that has been decided, until the person picks it up
         self._last_ts = 0.0
         # True once someone joined from outside this network. From then on every party page gives its peer connections
-        # public STUN servers, so screens and voice can reach that person through their router (no relay is used).
+        # public STUN servers, so screens and voice can reach that person through their router, and the TURN server
+        # beside the group's relay when the owner set one, for two routers that let nothing through.
         self.remote = False
         self._blobs = {}  # image hash -> bytes, used only when there is no store
         self._image_times = {}  # member id -> times of their recent uploads
@@ -449,7 +486,7 @@ class Party:
             if self.remote:
                 return False
             self.remote = True
-            self._broadcast_locked({"type": "ice", "stun": True})
+            self._broadcast_ice_locked()
         return True
 
     def role_for(self, token):
@@ -473,7 +510,7 @@ class Party:
             member["online"] = True
             listener.put({"type": "hello", "you": self._public(member), "party": self.party_name, "host": self._host_id,
                           "theme": self.theme, "server": self.server_id, "channels": self._channels_public(),
-                          "stun": self.remote})
+                          "stun": self.remote, "turn": self._turn_locked(member)})
             for channel in self._channels:
                 if channel["kind"] == "text":
                     listener.put({"type": "history", "channel": channel["id"],
@@ -804,6 +841,119 @@ class Party:
             self._broadcast_roster_locked()
             return True
 
+    # --- the relay server ------------------------------------------------------------------------------------
+
+    def set_relay(self, actor_id, config):
+        """The owner sets the group's relay server (relay/README.md), or removes it with None. Members' pages get new
+        TURN credentials at once, and the app hands members new relay settings (relay_listeners)."""
+        with self._lock:
+            actor = self._members.get(actor_id)
+            if actor is None or actor["role"] != "host":
+                raise Forbidden("only the owner can set the relay server")
+        try:
+            cleaned = clean_relay(config) if config is not None else None
+        except ValueError as error:
+            raise Forbidden(str(error)) from None
+        with self._lock:
+            self._relay = cleaned
+            self._save_locked()
+            self._broadcast_ice_locked()
+            listeners = list(self.relay_listeners)
+        for listener in listeners:
+            try:
+                listener()
+            except Exception:
+                logging.getLogger("privatepartynet.server").exception("A relay settings listener failed")
+        return True
+
+    def relay_view(self):
+        """The relay settings for the owner's control panel, without the secret."""
+        with self._lock:
+            relay = self._relay
+        if relay is None:
+            return None
+        return {"host": relay["host"], "port": relay["port"], "tls_port": relay["tls_port"], "pin": relay["pin"],
+                "turn": relay["turn"]}
+
+    def path_relay_for(self, user_id, now=None):
+        """What member `user_id`'s paths may use (pathway.PathManager.set_relay_config), signed by the owner when the
+        party has a signer: {"relay": {"vps": [...], "friend_key", "expires"}, "sig"}. The VPS token is the member's own
+        and lasts a day; the app asks again before then."""
+        now = time.time() if now is None else now
+        with self._lock:
+            relay, key = self._relay, self._relay_key
+        config = {"vps": [], "friend_key": key, "expires": int(now + relayproto.TOKEN_SECONDS)}
+        if relay is not None:
+            config["vps"].append({"host": relay["host"], "port": relay["port"], "tls_port": relay["tls_port"],
+                                  "pin": relay["pin"],
+                                  "token": relayproto.mint_token(relay["secret"], user_id, now=now).hex()})
+        if self.signer is None:
+            return {"relay": config, "sig": ""}
+        from privatepartynet.pathway import sign_relay_config
+
+        return sign_relay_config(config, self.signer)
+
+    def _relay_user(self):
+        """The 16-byte id the host's own relay tokens carry: the owner's user id, or one made from the server's."""
+        try:
+            raw = bytes.fromhex(self._host_user_id or "")
+        except ValueError:
+            raw = b""
+        if len(raw) == 16:
+            return raw
+        return hashlib.sha256(b"PrivatePartyNet host|" + self.server_id.encode("ascii", "replace")).digest()[:16]
+
+    def invite_relays(self, secret, now=None):
+        """The relays an invite carries, so its holder can reach the party through one when no direct way works
+        (punch.py): the group's relay server and up to three members who relay for others, each with a token for the
+        invite's own id. The tokens last as long as the invite."""
+        now = time.time() if now is None else now
+        joiner = hashlib.sha256(b"PrivatePartyNet invite relay|" + bytes(secret)).digest()[:16]
+        lifetime = self.INVITE_DAYS * 86400
+        with self._lock:
+            relay, key = self._relay, self._relay_key
+        found = []
+        if relay is not None:
+            found.append(["vps", relay["host"], relay["port"], relay["tls_port"], relay["pin"],
+                          relayproto.mint_token(relay["secret"], joiner, lifetime, now).hex()])
+        friend_token = relayproto.mint_token(bytes.fromhex(key), joiner, lifetime, now).hex()
+        for address, port in list(self.friend_relays())[:3]:
+            found.append(["friend", address, port, 0, "", friend_token])
+        return found
+
+    def host_relays(self, now=None):
+        """The relays the host keeps the invites' channels bound on, with the host's own tokens: the same ones
+        invite_relays hands out, so a joiner and the host meet on each."""
+        now = time.time() if now is None else now
+        me = self._relay_user()
+        with self._lock:
+            relay, key = self._relay, self._relay_key
+        found = []
+        if relay is not None:
+            found.append({"host": relay["host"], "port": relay["port"], "tls_port": relay["tls_port"], "pin": relay["pin"],
+                          "token": relayproto.mint_token(relay["secret"], me, now=now)})
+        for address, port in list(self.friend_relays())[:3]:
+            found.append({"host": address, "port": port, "tls_port": 0, "pin": "",
+                          "token": relayproto.mint_token(bytes.fromhex(key), me, now=now)})
+        return found
+
+    def _turn_locked(self, member):
+        """TURN servers with credentials for one member's page (coturn beside the relay server), or []."""
+        relay = self._relay
+        if relay is None or not relay.get("turn"):
+            return []
+        host = f"[{relay['host']}]" if ":" in relay["host"] else relay["host"]
+        username, credential = relayproto.turn_credentials(relay["secret"], member.get("user") or member["id"],
+                                                           TURN_SECONDS)
+        return [{"urls": [f"turn:{host}:{TURN_PORT}?transport=udp", f"turn:{host}:{TURN_PORT}?transport=tcp"],
+                 "username": username, "credential": credential}]
+
+    def _broadcast_ice_locked(self):
+        """Tell every open page how its connections may cross routers: STUN, and TURN with its own credentials."""
+        for member in self._members.values():
+            if member["queue"] is not None:
+                member["queue"].put({"type": "ice", "stun": self.remote, "turn": self._turn_locked(member)})
+
     # --- the game network ------------------------------------------------------------------------------------
 
     def net_router(self):
@@ -1007,7 +1157,7 @@ class Party:
             "name": self.party_name, "channels": self._channels, "roles": self._roles, "banned": sorted(self._banned),
             "known": self._known, "created": self._created, "password": self.passcode,
             "net": self._net_subnet, "vips": self._net.assignments() if self._net else self._net_vips,
-            "invites": self._invite_secrets})
+            "invites": self._invite_secrets, "relay": self._relay, "relay_key": self._relay_key})
 
     def chat(self, member_id, text, channel=None, image=None):
         """Post a chat message in a text channel (the first one when none is named) and save it. Returns the message,

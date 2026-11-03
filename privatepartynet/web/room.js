@@ -233,7 +233,7 @@
       el.partyName.textContent = msg.party;
       el.myName.value = me.name;
       document.title = "PrivatePartyNet: " + msg.party;
-      RTC.setStun(!!msg.stun);
+      RTC.setStun(!!msg.stun, msg.turn);
       chat.hello(msg);
       var savedName = readPref(PREFS.name);
       if (savedName && savedName !== me.name) post("/name", { name: savedName }).catch(function () {});
@@ -251,7 +251,7 @@
     } else if (msg.type === "chat") {
       chat.message(msg);
     } else if (msg.type === "ice") {
-      RTC.setStun(!!msg.stun); // connections made from now on can cross routers; the ones already up are fine
+      RTC.setStun(!!msg.stun, msg.turn); // connections made from now on can cross routers; the ones already up are fine
     } else if (msg.type === "channels") {
       chat.setChannels(msg.channels);
     } else if (msg.type === "role") {
