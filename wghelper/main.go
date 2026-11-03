@@ -43,9 +43,24 @@ import (
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 )
 
+// The adapter's largest packet. The largest packet any path then puts on the wire, a full-size broadcast wrapped for
+// fan-out and sealed by WireGuard, carried by a relay over IPv6, is MaxOnWire:
+//
+//	MTU + fan-out wrapper 32 + WireGuard 32 + path and relay header 18 + UDP 8 + IPv6 40 = 1270 + 130 = 1400
+//
+// (WireGuard pads to a multiple of 16 but never past the adapter's size, so a wrapped packet gains no padding beyond
+// its 32-byte wrapper; engine_test.go measures it.)
+const (
+	MaxOnWire   = 1400
+	IPv6Header  = 40
+	UDPHeader   = 8
+	PathHeader  = 18 // the most the app's paths add (pathway.py and its relays)
+	WireGuardOv = 32 // WireGuard's own header and seal on each data packet
+	MTU         = MaxOnWire - IPv6Header - UDPHeader - PathHeader - WireGuardOv - fanoutExtra
+)
+
 const (
 	AdapterName   = "PrivatePartyNet"
-	MTU           = 1320 // a broadcast wrapped for fan-out, then sealed by WireGuard, stays within the 1400 bytes a path carries
 	MaxLifetime   = 24 * time.Hour
 	ConfigSeconds = 30 // the app sends the first config at once; a helper that never gets one gives up
 )

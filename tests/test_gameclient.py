@@ -132,7 +132,7 @@ class GameNetworkTests(unittest.TestCase):
 
     def test_datagrams_fit_every_path_even_for_a_full_size_broadcast(self):
         host, alex = self.mesh(2)
-        big = b"x" * (1320 - 20)  # the adapter's largest packet
+        big = b"x" * (gameclient.GAME_MTU - 20)  # the adapter's largest packet
         alex.send("10.77.12.255", big)
         self.assertTrue(host.got(big))
         self.assertEqual((host.paths.oversized, alex.paths.oversized), (0, 0))
@@ -292,6 +292,12 @@ class SessionPieceTests(unittest.TestCase):
         mesh.on_datagram(200, b"\x01" + bytes(147))  # nobody at all
         old_path._deliver(b"\x04" + bytes(40))  # a late datagram on Sam's closed path
         self.assertEqual(session.delivered, [])
+
+    def test_the_app_and_the_helper_agree_on_the_adapters_packet_size(self):
+        import re
+
+        pinned = (Path(__file__).resolve().parent.parent / "wghelper" / "engine_test.go").read_text(encoding="utf-8")
+        self.assertEqual(int(re.search(r"if MTU != (\d+)", pinned).group(1)), gameclient.GAME_MTU)
 
     def test_a_member_is_named_by_the_last_byte_of_their_address(self):
         self.assertEqual(member_byte("10.77.12.7"), 7)

@@ -373,3 +373,46 @@ func TestOnlyKnownGroupsCanBeOpened(t *testing.T) {
 		t.Fatal("an unknown group was accepted")
 	}
 }
+
+func TestTheLargestDatagramFitsEveryPathOverIPv6(t *testing.T) {
+	if MTU != 1270 {
+		t.Fatalf("MTU %d: change it on purpose, with its arithmetic, and the app's GAME_MTU with it", MTU)
+	}
+	m, ms := startMesh(t, "10.77.12.1", "10.77.12.2", "10.77.12.3")
+	largest := 0
+	m.lock.Lock()
+	for _, p := range ms {
+		p := p
+		last := netip.MustParseAddr(p.address).As4()[3]
+		send := m.sender(last)
+		p.engine.bind.send = func(to byte, data []byte) error {
+			m.lock.Lock()
+			if len(data) > largest {
+				largest = len(data)
+			}
+			m.lock.Unlock()
+			return send(to, data)
+		}
+	}
+	m.lock.Unlock()
+	for size := MTU - 40; size <= MTU; size++ { // around every padding boundary up to the adapter's largest packet
+		packet := udpPacket("10.77.12.1", "10.77.12.255", make([]byte, size-ipHeader-udpHeader))
+		ms[0].tun.Outbound <- packet
+		ms[0].tun.Outbound <- udpPacket("10.77.12.1", "10.77.12.2", make([]byte, size-ipHeader-udpHeader))
+		for _, other := range ms[1:] {
+			if got := receive(t, other, 5*time.Second); got == nil {
+				t.Fatalf("a %d-byte packet did not arrive", size)
+			}
+		}
+		receive(t, ms[1], 5*time.Second)
+	}
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	if largest+PathHeader+UDPHeader+IPv6Header > MaxOnWire {
+		t.Fatalf("the largest WireGuard datagram is %d bytes: %d on the wire over IPv6", largest,
+			largest+PathHeader+UDPHeader+IPv6Header)
+	}
+	if largest != MTU+fanoutExtra+WireGuardOv {
+		t.Fatalf("the largest WireGuard datagram is %d, not the %d the arithmetic says", largest, MTU+fanoutExtra+WireGuardOv)
+	}
+}

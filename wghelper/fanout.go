@@ -58,11 +58,14 @@ func NewFanout(inner tun.Device, mesh *Mesh) *Fanout {
 func (f *Fanout) SetMesh(mesh *Mesh) { f.mesh.Store(mesh) }
 
 func (f *Fanout) File() *os.File           { return f.inner.File() }
-func (f *Fanout) MTU() (int, error)        { return f.inner.MTU() }
 func (f *Fanout) Name() (string, error)    { return f.inner.Name() }
 func (f *Fanout) Events() <-chan tun.Event { return f.inner.Events() }
 func (f *Fanout) Close() error             { return f.inner.Close() }
 func (f *Fanout) BatchSize() int           { return f.inner.BatchSize() }
+
+// MTU is the game network's packet size whatever the adapter underneath says: WireGuard pads each packet up to a
+// multiple of 16 but not past it, so a wrapped broadcast gains nothing beyond its wrapper (see MTU in main.go).
+func (f *Fanout) MTU() (int, error) { return MTU, nil }
 
 // IsGroup is true for a packet to everyone: the network's broadcast address, 255.255.255.255, or multicast.
 func IsGroup(destination netip.Addr, network netip.Prefix) bool {

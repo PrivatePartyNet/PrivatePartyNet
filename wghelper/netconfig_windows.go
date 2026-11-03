@@ -28,7 +28,7 @@ func Configure(luid winipcfg.LUID, address netip.Addr, network netip.Prefix) err
 	if err != nil {
 		return fmt.Errorf("the adapter could not be read: %w", err)
 	}
-	row.NLMTU = MTU
+	row.NLMTU = uint32(MTU)
 	row.UseAutomaticMetric = false
 	row.Metric = 1
 	if err := row.Set(); err != nil {

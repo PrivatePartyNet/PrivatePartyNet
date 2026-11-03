@@ -38,6 +38,7 @@ SW_HIDE = 0
 HELPER = "PrivatePartyNetGameNet.exe"
 FRAME = struct.Struct(">HB")
 OUTBOX = 2048  # frames waiting for the helper; more are dropped (WireGuard copes with lost datagrams)
+GAME_MTU = 1270  # the adapter's largest packet (wghelper/main.go MTU, with its arithmetic)
 HANDSHAKE_START = b"\x01"  # the first byte of WireGuard's handshake initiation
 
 
