@@ -48,6 +48,13 @@ removes that library from the installer (`opencv_videoio_ffmpeg*.dll`) and the a
 | [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) 0.50.0, [x/net](https://pkg.go.dev/golang.org/x/net) 0.53.0, [x/sys](https://pkg.go.dev/golang.org/x/sys) 0.43.0 | BSD-3-Clause | Come with wireguard-go and winipcfg. |
 | [The Go standard library](https://go.dev) | BSD-3-Clause | Built into the helper. |
 
+## The relay server (on a group's own rented server, not in the app)
+
+| Component | License | Note |
+| --- | --- | --- |
+| [coturn](https://github.com/coturn/coturn) (Ubuntu's package, or the coturn/coturn 4.6 Docker image) | BSD-3-Clause | The TURN server beside `relay/ppn_relay.py`, for voice and screens when nothing else gets through. Installed on the rented server by `relay/setup-ubuntu.sh` or `relay/docker-compose.yml`; configured by `relay/turnserver.conf`. Not shipped with PrivatePartyNet. |
+| [Python](https://www.python.org) 3.12 (Ubuntu's package, or the python:3.12-slim Docker image) | PSF License | Runs `relay/ppn_relay.py`, which uses its standard library only. |
+
 ## Used to build
 
 | Tool | License | Note |

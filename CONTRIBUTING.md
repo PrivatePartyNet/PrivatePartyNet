@@ -5,7 +5,8 @@ Pull requests and issues are welcome. A contribution is licensed under the Apach
 
 ## Set up
 
-You need Windows 10 or 11, Python 3.12, and Node 24 or later for the JavaScript tests and the browser test.
+You need Windows 10 or 11, Python 3.12, Node 24 or later for the JavaScript tests and the browser test, and Go 1.27 for
+the game network helper in `wghelper\` (`go test ./...` and `go build` there).
 
     py -m pip install -r requirements.txt
     py -m unittest discover -s tests

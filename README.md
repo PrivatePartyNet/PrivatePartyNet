@@ -1,4 +1,4 @@
-# PrivatePartyNet 3.0.0
+# PrivatePartyNet 3.1.0
 
 A private place for a group of friends to chat, talk, share screens and play LAN games together. One person hosts a server, PCs on the same network find it by themselves, and friends elsewhere join with an invite code. There is no company server and no account to make. Traffic goes through someone else's machine only when two routers let nothing through, and then only through a relay the group chose, encrypted end to end.
 
@@ -10,10 +10,10 @@ A private place for a group of friends to chat, talk, share screens and play LAN
 - Pictures in chat: paste, drop or pick a picture. It is sent at its own size and its pixel dimensions are never reduced. It is saved again first, which removes what the file recorded about where and when it was taken, and a large file is saved at a slightly lower quality if it needs to fit. PNG, JPEG, GIF and WebP up to 12 MB.
 - Voice: join a voice channel (six people at most). Echo cancellation, noise suppression, mute, deafen, push to talk (hold V while the window is in front), microphone and speaker choice, a volume slider for each person, and a speaking light. Voice runs on the same direct connections as the screens, at 32 kbps with silence not sent.
 - Direct messages: write to anyone on your network with no party open. Each message is sealed to the other person's key and signed, kept on both PCs, and sent again until it arrives if they are away. A safety number lets two people check that nobody is in between.
-- Joining from outside: the host copies an invite code (name, password, where to try, and the host's certificate to check). The guest pastes it, the owner or an admin sees the request and lets them in. The app asks the router to open the port where it can. When nothing can reach the host directly (carrier-grade NAT, as on Starlink), the two PCs swap their public addresses through signed records on the BitTorrent DHT and open both routers by sending at the same moment (hole punching), then carry the party over QUIC. Two routers that both give a new port per destination cannot be crossed that way; then the invite goes through a relay, if the group has one, and the app says so plainly if it has none.
-- IPv6 first: where both PCs have IPv6 (most carrier-grade NAT providers give it), the game network, the join and voice and screens go over it directly, ahead of every IPv4 way except the local network. Games still see their IPv4 game addresses.
-- Relays: when two members cannot reach each other directly, a member whose PC others can reach may let them go through it (off until that person turns it on, with a limit they choose), and the group may run a relay server of its own on a small rented server (`relay\README.md`). A relay only passes on what is already encrypted, and a connection on one moves to a direct way as soon as one opens. The relay server also carries voice and screens (TURN) when nothing else can. The owner sets it once; its secret stays on the owner's PC and members get credentials that last six hours.
-- Game network: each server is also a private network, so games that play over a LAN work between its members. Pick a server under Game network and press Use for games; this PC gets that server's game address (a green light shows which one), and games see an ordinary network card. Members reach each other directly over WireGuard, not through the host, and someone who is removed or banned is cut off by everyone at once. Only game traffic for that server goes over it, never internet traffic. Windows asks for permission once each time it is turned on, because adding a network adapter needs it.
+- Joining from outside: the host copies an invite code (name, password, where to try, and the host's certificate to check). The guest pastes it, the owner or an admin sees the request and lets them in. The app asks the router to open the port where it can. When nothing can reach the host directly (carrier-grade NAT, as on Starlink), the two PCs swap their addresses through signed records on the BitTorrent DHT, IPv6 included, and open both routers or firewalls by sending at the same moment (hole punching), then carry the party over QUIC. Where that cannot work (two routers that both give a new port for every destination), the invite goes through a relay instead, if the group has one; without one the app says so.
+- How members reach each other: every pair tries every way at once and uses the best that works, in this order: the same network, IPv6, a port the router opened, hole punching through both routers, a member's PC that relays for others (only if that person turned it on, up to a limit they choose), and last a relay server the group runs itself. A connection keeps checking and moves to a better way as soon as one answers. IPv6 has no shared addresses, so it gets past carrier-grade NAT where both PCs have it, as most such providers give. A way is used only once it has carried a full-size packet.
+- Relays: a relay only ever passes on what is already encrypted (WireGuard, QUIC, DTLS-SRTP) and cannot read or change it. The group's own relay server runs on a small rented Linux server: `relay\setup-ubuntu.sh` sets it up on Ubuntu 24.04 (`relay\README.md` says how, from renting the server on). It also carries voice and screens (TURN) when nothing else can. The owner enters its address, secret and certificate fingerprint once; the secret stays on the owner's PC and members get credentials of their own that last six hours.
+- Game network: each server is also a private network, so games that play over a LAN work between its members. Pick a server under Game network and press Use for games; this PC gets that server's game address (a green light shows which one), and games see an ordinary network card, marked as a Private network. Packets go straight from member to member, sealed by WireGuard, over the best way between them (above), not through the host; someone who is removed or banned is cut off by everyone at once. Broadcasts and multicast, which many games use to find each other, reach every member. Windows' own services (file and printer sharing, Remote Desktop, remote management, network discovery) are closed to members until you open a group under What party members can reach on this PC. The adapter's packets are at most 1270 bytes, so that one carried by a relay over IPv6 still fits a 1400-byte path. Only game traffic for that server goes over it, never internet traffic. Windows asks for permission once each time it is turned on, because adding a network adapter needs it.
 - Encrypted storage: chats, pictures, contacts and keys live in your PrivatePartyNet folder, encrypted with a key that Windows protects for your sign-in; a password can be added. Backups are one compressed file sealed with a passphrase you choose, and importing only adds what is missing.
 - Go Live: share a screen with the whole party. Each person can share up to four screens at once, chosen from the Screen menu. Choose the quality ceiling (Source, 1080p, 720p, 480p) and the frame rate (15, 30, 60) first. The mouse pointer is drawn into the picture by default and can be hidden.
 - Receive size: each viewer picks how large each picture is. Fit my window follows the window, including maximized and minimized. The 100%, 75%, 50% and 25% choices set the tile to that share of the sender's own size and ask the sender for a picture of that size.
@@ -27,23 +27,23 @@ A private place for a group of friends to chat, talk, share screens and play LAN
 - Picture in picture, fullscreen, Light, Dark or Match Windows appearance.
 - An Info menu with an About page (versions and folders) and a How PrivatePartyNet works page, which is updated with every version.
 
-At run time nothing is sent to a company server. The only calls outside your network are a check of your public address (public STUN servers), the router port-open while a party is running, once an invite has been made, small signed address records on the BitTorrent DHT, and, when the group set one up or a member turned it on, a relay. The feature set was designed from Discord's screen share and server features.
+At run time nothing is sent to a company server. The only calls outside your network are a check of your public address (public STUN servers), the router port-open while a party or the game network is running, once an invite has been made, small signed address records on the BitTorrent DHT, the direct connections between members, and a relay: the group's own relay server once the owner sets one, or a member's PC that relays for others. The feature set was designed from Discord's screen share and server features.
 
 ## Release information
 
 | Field | Value |
 |---|---|
-| Version | 3.0.0 |
+| Version | 3.1.0 |
 | Platform | Windows 10 or 11, 64-bit |
 | License | [Apache License 2.0](LICENSE) |
-| Installer | `PrivatePartyNetSetup-3.0.0.exe`, per user, no administrator rights. It updates an existing PrivatePartyNet in place. |
-| Portable | `PrivatePartyNet-3.0.0-portable.zip`, run from any folder, including a USB stick |
+| Installer | `PrivatePartyNetSetup-3.1.0.exe`, per user, no administrator rights. It updates an existing PrivatePartyNet in place. |
+| Portable | `PrivatePartyNet-3.1.0-portable.zip`, run from any folder, including a USB stick |
 
 ## System requirements and compatibility
 
 - Windows 10 or 11, 64-bit. The installer carries the Microsoft Edge WebView2 runtime, the Visual C++ 2015-2022 runtime and .NET Framework 4.8, and installs only the ones a PC is missing.
 - The PCs must be on the same network: a cable through a switch, a phone hotspot, or a home Wi-Fi network. Some Wi-Fi networks stop devices from seeing each other (client isolation). A cable or a hotspot avoids that.
-- Ports: TCP 8765 (the party, changeable in the control panel) and UDP 8766 (finding nearby PCs). Windows Firewall asks once; allow PrivatePartyNet on Private networks.
+- Ports: TCP 8765 (the party, changeable in the control panel), UDP 8766 (finding nearby PCs), and one UDP port of the system's choosing for the game network's paths, which the app asks the router to open where it can. Windows Firewall asks once; allow PrivatePartyNet on Private networks. A group's relay server uses UDP 3479 and TCP 443, and its coturn UDP and TCP 3478 and UDP 49160-49400, on the rented server only.
 - A party has room for up to 16 people, including the host. Screens are sent directly between members, so the network needs room for them. Several 1080p screens to many people is a lot of traffic on Wi-Fi; a wired network works best.
 
 ## The windows
@@ -60,11 +60,11 @@ The Options menu sets the appearance (Match Windows, the default, Light, or Dark
 
 ## Installation and deployment
 
-1. Run `PrivatePartyNetSetup-3.0.0.exe`. It installs for your user account only.
+1. Run `PrivatePartyNetSetup-3.1.0.exe`. It installs for your user account only.
 2. Choose a desktop shortcut and whether to start with Windows. A Start menu entry is always made.
 3. Start PrivatePartyNet.
 
-Portable: unzip `PrivatePartyNet-3.0.0-portable.zip` and run `PrivatePartyNet.exe` in the folder. Nothing is written to the registry.
+Portable: unzip `PrivatePartyNet-3.1.0-portable.zip` and run `PrivatePartyNet.exe` in the folder. Nothing is written to the registry.
 
 Uninstall from Settings, Apps, or the Start menu. Setup asks whether to delete PrivatePartyNet's data folder (settings, certificate, log). The default is to keep it. A silent uninstall always keeps it.
 
@@ -107,8 +107,9 @@ Host only:
 - `launcher.py`: entry point of the packaged build.
 - `privatepartynet\app.py`: the control panel and the windows. `server.py`: the party server (members, chat, connection setup). `discovery.py`: finds nearby PCs. `feed.py` and `frames.py`: screen capture for the windows on this PC (dxcam, with mss as the fallback). `cpu.py`: the CPU readout. `paths.py`: where files live.
 - `privatepartynet\web\`: the control panel (`control.html`), the party room (`room.html`, `room.js`, with the tile layout in `layout.js` and the connection numbers in `netstats.js`), the join message page (`login.html`), the WebRTC helpers (`rtc.js`), the About and How pages (`about.html`, `how.html`, `info.js`), and the styles.
-- `privatepartynet\pathway.py`: the paths between members (direct ways and relays) that the game network uses. `relayproto.py` and `relayclient.py`: the relay protocol and a PC's side of it.
-- `relay\`: the relay server a group can run on a rented Linux server, with its setup script, Docker files and coturn configuration.
+- `privatepartynet\pathway.py`: the paths between members (direct ways and relays) that the game network uses. `relayproto.py` and `relayclient.py`: the relay protocol and a PC's side of it. `punch.py`: the join through both routers, and through a relay. `gamenet.py`, `gameclient.py` and `netlink.py`: the game network's members, its helper and the member's link to the host.
+- `wghelper\`: the game network helper (Go, built on wireguard-go and Wintun), `PrivatePartyNetGameNet.exe`, which holds the adapter with Windows' permission and carries WireGuard over the app's paths.
+- `relay\`: the relay server a group can run on a rented Linux server, with its setup script, systemd units, Docker files, coturn configuration and firewall, and `verify_memory.py`.
 - `installer\PrivatePartyNet.iss`: the installer.
 - `tests\`: Python tests; `tests\js\` holds the JavaScript tests for the layout and stats code, which a Python test runs when Node is installed. `tests\browser\e2e_call.mjs`: the three-person party test in headless Edge. `tests\browser\rtc_selftest.html`: the WebRTC self-test.
 

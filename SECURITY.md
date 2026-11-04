@@ -26,8 +26,9 @@ Who can read what:
   connection setup. When two PCs cannot reach each other and the group runs a relay server, the media goes through the
   coturn beside it, still encrypted end to end.
 - A relay (a member who turned relaying on, or the group's relay server) passes on WireGuard and QUIC traffic that is
-  encrypted end to end, and cannot read or change it. It sees the public addresses of the members using it, how much
-  they send and when. Only members can use it: the owner's PC gives each one credentials that last six hours, and what a
+  encrypted end to end, and cannot read or change it: not the game network's addresses, not what games send, not the
+  party's pages. It sees the public addresses of the members using it, how much they send and when. A member's PC
+  relays for others only if that person turned it on, and only up to the limit they set. Only members can use it: the owner's PC gives each one credentials that last six hours, and what a
   member sends to a relay proves they hold them without showing them. Anyone with the relay server's secret can use
   that server, so the owner keeps it to themselves and changes it if it may have got out (relay/README.md).
 
