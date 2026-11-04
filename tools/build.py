@@ -1,14 +1,16 @@
 """Builds the release. Run from the project root: py tools\\build.py
 
 Steps, and each one stops the build on failure:
-  1. Unit tests.
-  2. Packages the app with PyInstaller into dist\\PrivatePartyNet\\ (no console window).
+  1. Unit tests (these build the game network helper and run its own Go tests too).
+  2. Builds the game network helper (wghelper\\, in Go) into assets\\, next to wintun.dll, and packages the app with
+     PyInstaller into dist\\PrivatePartyNet\\ (no console window).
   3. Runs PrivatePartyNet.exe --smoke-test, which serves every page over HTTPS and checks them.
   4. Builds dist\\PrivatePartyNetSetup-<version>.exe with Inno Setup.
   5. Builds dist\\PrivatePartyNet-<version>-portable.zip, for carrying on a USB stick.
   6. With --publish [FOLDER], copies both release files and their SHA-256 sums into FOLDER (default: release).
 
-Nothing here needs the internet, once the packages from requirements.txt and the build tools are installed.
+Nothing here needs the internet, once the packages from requirements.txt, the build tools, Go and the Go modules in
+wghelper\\go.sum are installed.
 """
 
 import hashlib
@@ -23,6 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from privatepartynet import __version__  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "tools"))
+import gohelper  # noqa: E402
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 RELEASE = ROOT / "release"
@@ -191,9 +196,14 @@ def main():
     step("1. Unit tests")
     run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], timeout=900)
 
-    step("2. Package the app with PyInstaller")
+    step("2. Build the game network helper and package the app with PyInstaller")
     shutil.rmtree(ROOT / "build", ignore_errors=True)
     shutil.rmtree(DIST, ignore_errors=True)
+    try:
+        helper = gohelper.build(ROOT / "assets" / gohelper.PROGRAM)  # assets\ goes into the package whole, below
+    except RuntimeError as exc:
+        sys.exit(str(exc))
+    print(f"  game network helper: {helper.name} ({helper.stat().st_size:,} bytes)")
     run([
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
         "--collect-all", "webview", "--collect-all", "clr_loader", "--collect-all", "pythonnet",
@@ -214,6 +224,9 @@ def main():
     ], timeout=900)
 
     trim_opencv()
+    for name in (gohelper.PROGRAM, "wintun.dll"):
+        if not list(APP_DIR.rglob(name)):
+            sys.exit(f"{name} did not make it into the package: the game network would not work.")
 
     step("3. Smoke test the packaged app")
     run([APP_DIR / "PrivatePartyNet.exe", "--smoke-test"], timeout=120)

@@ -25,8 +25,8 @@ from urllib.parse import quote, urlsplit
 import webview
 
 from privatepartynet import APP_NAME, __version__
-from privatepartynet import backup, connect
-from privatepartynet.gameclient import GameSession
+from privatepartynet import backup, connect, gamenet
+from privatepartynet.gameclient import GameMesh, GameSession
 from privatepartynet.netlink import NetLink
 from privatepartynet.cert import ensure_certificate
 from privatepartynet.discovery import DEFAULT_PORT as DISCOVERY_PORT
@@ -319,8 +319,11 @@ class Controller:
         self._reach_lock = threading.Lock()
         self._joiner = None
         self._joiner_opened = False
-        self._game = None  # the game network in use: {key, session, link, stop}
+        self._game = None  # the game network in use: {key, session, link, mesh, paths, stop, public}
+        self.path_manager = None  # the game network's paths (pathway.PathManager) while it is on
         self._game_launch = None  # tests replace how the elevated helper is started
+        self._game_helper = {}  # tests: where the helper is and its in-memory adapter (GameSession's keywords)
+        self._game_paths = None  # tests: make(identity) -> a path manager in place of pathway.PathManager
         self._game_note = ""
         self._host_punch = None  # while the party is open: reachable through the routers by invite (punch.py)
         self._tunnels = {}  # joined server key -> the punch-through tunnel it is reached by
@@ -725,42 +728,62 @@ class Controller:
         game = self._game
         view = {"networks": self._game_networks(), "active": game["key"] if game else "",
                 "chosen": self._settings.get("game_server") or "", "state": "off", "message": self._game_note,
-                "address": "", "network": ""}
+                "address": "", "network": "", "members": []}
         if game is not None:
-            session, link = game.get("session"), game.get("link")
+            session, link, mesh = game.get("session"), game.get("link"), game.get("mesh")
             if session is not None:
                 view.update(state=session.status["state"], message=session.status["message"], address=session.address,
                             network=session.network)
+                if link is not None and link.status["state"] == "retrying":
+                    view["message"] = (view["message"] + " The host is out of reach; members already on keep playing."
+                                       ).strip()
             elif link is not None:
                 view.update(state="connecting", message=link.status["message"] or "Connecting to the host...")
+            if mesh is not None:
+                view["members"] = [{"address": m["address"], "way": m["kind"]} for m in mesh.members()]
         return view
 
+    def _make_paths(self):
+        """The paths to the other members: straight, through a hole punched in both routers, through a friend's PC,
+        or through the relay (pathway.py)."""
+        if self._game_paths is not None:
+            return self._game_paths(self._identity)
+        from privatepartynet import pathway
+
+        return pathway.PathManager(self._identity, self._settings)
+
+    @staticmethod
+    def _use_relay(paths, relay, host_sign):
+        """Hand the path manager the relay settings that came with the list, signed by the host."""
+        if not relay or not hasattr(paths, "set_relay_config"):
+            return
+        try:
+            from privatepartynet import pathway
+
+            paths.set_relay_config(pathway.open_relay_config(relay, host_sign))
+        except Exception:
+            log.warning("The relay settings from the host could not be used", exc_info=True)
+
+    def _game_session(self, game, address, network):
+        session = GameSession(address, network, game["private"], self._data_dir / "keys", launch=self._game_launch,
+                              open_services=self._open_services(), **self._game_helper)
+        game["session"] = session
+        game["mesh"] = GameMesh(self._identity.user_id, game["paths"], session)
+        session.start()
+
     def game_use(self, key):
-        """Use one server's game network: this PC gets that server's address on an adapter Windows and games see. Only
-        one at a time; switching turns the other off. Windows asks for permission to add the adapter."""
+        """Use one server's game network: this PC gets that server's address on an adapter Windows and games see, and
+        reaches each member over WireGuard. Only one at a time; switching turns the other off. Windows asks for
+        permission to add the adapter."""
         key = str(key or "")
         self.game_off()
-        if self._identity is None:
+        if self._identity is None or self._vault is None:
             return {"ok": False, "message": self._secure_error or "Enter the password for your saved chats first."}
         stop = threading.Event()
         if key == "own":
             if self._party is None:
                 return {"ok": False, "message": "Start your party first: your server's game network runs while it is open."}
-            address, inbox, send = self._party.net_host()
-            session = GameSession(address, self._party.net_router().network, send, self._data_dir / "keys",
-                                  launch=self._game_launch)
-            self._game = {"key": key, "session": session, "link": None, "stop": stop}
-
-            def drain():
-                while not stop.is_set():
-                    try:
-                        packet = inbox.get(timeout=0.5)
-                    except queue.Empty:
-                        continue
-                    session.deliver(packet)
-
-            threading.Thread(target=drain, name="privatepartynet-game-host", daemon=True).start()
-            session.start()
+            server_key = self._party.server_id
         else:
             record = self._store.server(key) if self._store is not None and key.startswith("joined-") else None
             if not record or not record.get("fingerprint"):
@@ -769,42 +792,112 @@ class Controller:
             ordered = [["punch", "127.0.0.1", tunnel.port]] if tunnel is not None else connect._order(record.get("candidates") or [])
             if not ordered:
                 return {"ok": False, "message": "No address is known for that server."}
+            server_key = key
+        try:
+            private = gamenet.load_key(self._vault, self._data_dir / "identity", server_key)
+            paths = self._make_paths()
+        except Exception as exc:
+            log.exception("The game network could not start")
+            return {"ok": False, "message": f"The game network could not start: {exc}"}
+        public = gamenet.public_key(private)
+        game = {"key": key, "session": None, "link": None, "mesh": None, "paths": paths, "stop": stop,
+                "private": private, "public": public}
+        self._game = game
+        self.path_manager = paths
+        if key == "own":
+            party = self._party
+            try:
+                address = party.net_host(public, paths.local_candidates())
+            except gamenet.NetError as exc:
+                self.game_off()
+                return {"ok": False, "message": f"The game network could not start: {exc}"}
+            paths.set_on_candidates(lambda candidates: party.net_candidates(party.net_host_user, candidates))
+            self._game_session(game, address, party.net_directory().network)
+
+            def follow():
+                version, sent = None, 0.0
+                while not stop.is_set():
+                    current = party.net_wait(version, 0.5)
+                    stale = time.monotonic() - sent >= gamenet.RELAY_REFRESH_SECONDS  # fresh relay settings
+                    if (current == version and not stale) or stop.is_set():
+                        continue
+                    version, sent = current, time.monotonic()
+                    signed = party.net_roster(party.net_host_user, self._identity.sign_public.hex())
+                    self._use_relay(paths, signed.get("relay"), self._identity.sign_public.hex())
+                    game["mesh"].apply(gamenet.open_roster(signed))
+
+            threading.Thread(target=follow, name="privatepartynet-game-host", daemon=True).start()
+        else:
             _, address, port = ordered[0]
-            game = {"key": key, "session": None, "link": None, "stop": stop}
-            link = NetLink(address, port, record["fingerprint"], self._identity,
-                           on_packet=lambda packet: game["session"].deliver(packet) if game["session"] else None)
+            host_sign = record.get("host_sign", "")
+
+            def on_roster(roster, relay):
+                if stop.is_set():
+                    return
+                if game["session"] is None:
+                    self._game_session(game, link.status["address"], link.status["network"])
+                self._use_relay(paths, relay, host_sign)
+                game["mesh"].apply(roster)
+
+            link = NetLink(address, port, record["fingerprint"], self._identity, public, on_roster,
+                           candidates=paths.local_candidates(), host_sign=host_sign,
+                           server_id=record.get("server_id", ""))
             game["link"] = link
-            self._game = game
+            paths.set_on_candidates(link.set_candidates)
             link.start()
 
-            def when_connected():
-                while not stop.is_set():
-                    state = link.status["state"]
-                    if state == "connected":
-                        session = GameSession(link.status["address"], link.status["network"], link.send,
-                                              self._data_dir / "keys", launch=self._game_launch)
-                        game["session"] = session
-                        session.start()
-                        return
-                    if state == "refused":
+            def watch():
+                while not stop.wait(0.2):
+                    if link.status["state"] == "refused":  # not a member any more, or a guest now
                         self._game_note = link.status["message"]
+                        if self._game is game:
+                            self.game_off()
                         return
-                    stop.wait(0.2)
 
-            threading.Thread(target=when_connected, name="privatepartynet-game-wait", daemon=True).start()
+            threading.Thread(target=watch, name="privatepartynet-game-wait", daemon=True).start()
         self._game_note = ""
         self._save(game_server=key)
         return {"ok": True, "message": "Turning the game network on. Windows will ask for permission."}
+
+    def _open_services(self):
+        return [g for g in self._settings.get("game_open") or [] if g in gamenet.SERVICE_IDS]
+
+    def game_services(self):
+        """What party members can reach on this PC besides games: each group of Windows services, all closed unless the
+        owner of this PC opened them. A setting of this PC only; it is never sent to the party."""
+        opened = set(self._open_services())
+        return {"ok": True, "groups": [{**group, "open": group["id"] in opened} for group in gamenet.SERVICE_GROUPS]}
+
+    def game_set_service(self, group, open_it):
+        """Open or close one group. A game network that is on takes it at once, with no new permission prompt."""
+        if group not in gamenet.SERVICE_IDS:
+            return {"ok": False, "message": "There is no such group of services."}
+        opened = set(self._open_services())
+        if open_it:
+            opened.add(group)
+        else:
+            opened.discard(group)
+        self._save(game_open=sorted(opened))
+        game = self._game
+        if game is not None and game.get("session") is not None:
+            game["session"].set_open_services(sorted(opened))
+        return self.game_services()
 
     def game_off(self):
         game, self._game = self._game, None
         if game is None:
             return {"ok": True, "message": ""}
+        self.path_manager = None
         game["stop"].set()
-        if game.get("session") is not None:
-            game["session"].stop()
         if game.get("link") is not None:
             game["link"].stop()
+        if game["key"] == "own" and self._party is not None:
+            self._party.net_host_off(game["public"])
+        if game.get("session") is not None:
+            game["session"].stop()
+        if game.get("mesh") is not None:
+            game["mesh"].stop()
+        game["paths"].stop()
         return {"ok": True, "message": "The game network is off."}
 
     # --- backup and import ---------------------------------------------------------------------------------
@@ -1010,7 +1103,8 @@ class Controller:
                 self._save(server_id=secrets.token_hex(8))  # this PC's server keeps one id, so its chat is the same each run
             party = Party(passcode, port, certfile, keyfile, party_name=name, host_name=name, grabber=self._grabber,
                           theme=self._settings.get("theme", "system"), store=self._store,
-                          server_id=self._settings["server_id"], host_user_id=self._identity.user_id)
+                          server_id=self._settings["server_id"], host_user_id=self._identity.user_id,
+                          signer=self._identity.sign)
         except OSError as exc:
             log.exception("Could not listen on port %s", port)
             return {"ok": False, "message": f"Could not listen on port {port}: {exc}"}
@@ -1253,12 +1347,6 @@ def window_test(seconds=45):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if "--net-helper" in argv:
-        # The game network helper, started elevated by the app (gameclient.py). It touches no data, takes no lock,
-        # shows no window, and ends with the app.
-        from privatepartynet import nethelper
-
-        return nethelper.main(argv)
     configure_logging()
     # Private app: the party's own self-signed certificate is accepted in every window, so none shows a warning.
     os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--ignore-certificate-errors")

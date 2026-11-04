@@ -6,7 +6,7 @@ from pathlib import Path
 from privatepartynet.paths import data_dir
 
 THEMES = ("system", "light", "dark")
-DEFAULTS = {"port": 8765, "name": None, "theme": "system", "server_id": None, "game_server": None}  # name None means: use this PC's name; server_id is made on the first party
+DEFAULTS = {"port": 8765, "name": None, "theme": "system", "server_id": None, "game_server": None, "game_open": []}  # name None means: use this PC's name; server_id is made on the first party
 SETTINGS_FILE = "settings.json"
 MAX_SAVED_NAME = 200  # the window trims names properly; this only stops a damaged file from growing huge
 
@@ -37,6 +37,9 @@ def load_settings(folder=None):
         game = saved.get("game_server")
         if isinstance(game, str) and (game == "own" or game.startswith("joined-")) and len(game) <= 80:
             settings["game_server"] = game
+        opened = saved.get("game_open")
+        if isinstance(opened, list):  # Windows services party members may reach on this PC (gamenet.SERVICE_GROUPS)
+            settings["game_open"] = sorted({g for g in opened if isinstance(g, str) and g.isidentifier() and len(g) <= 32})
         if isinstance(saved.get("name"), str) and saved["name"].strip():
             settings["name"] = saved["name"][:MAX_SAVED_NAME]
     return settings

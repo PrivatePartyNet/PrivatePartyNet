@@ -1,259 +1,328 @@
-"""The app and the helper together, with an in-memory adapter in place of Wintun (which needs administrator rights).
+"""The app and the real game network helper together, with the helper's adapter in memory (Wintun needs administrator
+rights) and the paths between members in memory.
 
-The launch the app would do with Windows' permission prompt is replaced by starting the helper's own serve() in a
-thread, connected exactly as the real helper connects: to the loopback port, with the secret read from the file."""
+The launch the app would do with Windows' permission prompt is replaced by starting the built helper as a normal
+process, connected exactly as the real one connects: to the loopback port, with the secret read from the file. These
+tests build the helper from wghelper/ and are skipped when Go is not installed."""
 
 import ipaddress
 import queue
 import socket
+import struct
+import subprocess
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 
-from privatepartynet import nethelper
-from privatepartynet.gameclient import GameSession, helper_command
-from privatepartynet.gamenet import MemoryTun, make_packet, parse
+from gamehelper import FakePaths, Hub, helper_program, launch_plain
+from privatepartynet import gameclient
+from privatepartynet.gameclient import GameMesh, GameSession, helper_command, member_byte
+from privatepartynet.gamenet import make_packet, new_private_key, public_key
 
 NET = "10.77.12.0/24"
 
 
-class FakeLaunch:
-    """Starts the helper's serve() in a thread instead of an elevated process, reading the same arguments."""
+class Member:
+    """One PC on the game network: its session with the helper, its paths, and what reached its "Windows"."""
 
-    def __init__(self, tun, secret_override=None, answer=None, parent_alive=lambda pid: True):
-        self.tun = tun
-        self.secret_override = secret_override
-        self.answer = answer
-        self.alive = parent_alive
-        self.why = queue.Queue()
-        self.arguments = None
+    def __init__(self, test, user, address, hub, kind="lan"):
+        self.user, self.address = user, address
+        self.private = new_private_key()
+        self.key = public_key(self.private)
+        self.arrived = queue.Queue()
+        self.paths = FakePaths(user, hub, kind=kind)
+        self.session = GameSession(address, NET, self.private, test.folder, launch=launch_plain, program=test.program,
+                                   memory_adapter=True, on_packet=self.arrived.put)
+        self.mesh = GameMesh(user, self.paths, self.session)
+        self.session.start()
+        test.addCleanup(self.session.stop)
+        test.addCleanup(self.paths.stop)
 
-    def __call__(self, program, arguments, cwd):
-        self.arguments = arguments
-        if self.answer:
-            return self.answer
-        values = dict(zip(arguments[::2], arguments[1::2])) if arguments[0] != "-m" else dict(zip(arguments[3::2], arguments[4::2]))
-        port = int(values["--port"])
-        secret = self.secret_override or Path(values["--secret-file"]).read_text(encoding="ascii").strip()
+    def entry(self):
+        return {"user": self.user, "address": self.address, "key": self.key, "candidates": []}
 
-        def run():
-            sock = nethelper.connect_to_app(port, secret)
-            self.why.put(nethelper.serve(self.tun, sock, values["--network"], parent=int(values["--parent"]), alive=self.alive))
+    def send(self, destination, payload):
+        """A UDP packet from a game on port 5000 (with a real UDP header: the helper drops one too short for its ports)."""
+        udp = struct.pack(">HHHH", 5000, 5000, 8 + len(payload), 0) + payload
+        self.session.put_packet(make_packet(self.address, destination, udp))
 
-        threading.Thread(target=run, daemon=True).start()
-        return None
+    def got(self, payload, seconds=8):
+        """True when a packet ending in `payload` reached this PC's "Windows" within `seconds`."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                if self.arrived.get(timeout=0.1).endswith(payload):
+                    return True
+            except queue.Empty:
+                continue
+        return False
 
 
-class GameSessionTests(unittest.TestCase):
+class GameNetworkTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.program = helper_program()
+        if cls.program is None:
+            raise unittest.SkipTest("Go is not installed, so the game network helper cannot be built")
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.folder = Path(temp.name)
-        self.sent = queue.Queue()
+        self.hub = Hub()
 
-    def session(self, launch, accept_seconds=5):
-        session = GameSession("10.77.12.2", NET, self.sent.put, self.folder, launch=launch, accept_seconds=accept_seconds)
-        session.start()
-        self.addCleanup(session.stop)
-        return session
-
-    def wait(self, session, state, seconds=8):
+    def wait_on(self, *members, seconds=10):
         deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline and session.status["state"] != state:
+        while time.monotonic() < deadline and any(m.session.status["state"] != "on" for m in members):
             time.sleep(0.05)
-        return session.status["state"] == state
+        return [m.session.status["state"] for m in members]
 
-    def test_packets_go_both_ways_and_only_game_network_traffic_passes(self):
-        tun = MemoryTun()
-        session = self.session(FakeLaunch(tun))
-        self.assertTrue(self.wait(session, "on"))
-        self.assertIn("10.77.12.2", session.status["message"])
-        tun.outgoing.put(make_packet("10.77.12.2", "8.8.8.8", b"to the internet"))
-        tun.outgoing.put(make_packet("10.77.12.2", "10.77.12.3", b"to sam"))
-        self.assertEqual(self.sent.get(timeout=3)[-6:], b"to sam", "the internet packet never left the adapter")
-        self.assertTrue(session.deliver(make_packet("10.77.12.3", "10.77.12.2", b"from sam")))
-        self.assertEqual(tun.incoming.get(timeout=3)[-8:], b"from sam")
-        session.deliver(make_packet("10.77.12.3", "192.168.0.10", b"into the home network"))
-        with self.assertRaises(queue.Empty):
-            tun.incoming.get(timeout=0.5)
+    def mesh(self, count, kind="lan"):
+        members = [Member(self, f"u{n}", f"10.77.12.{n}", self.hub, kind) for n in range(1, count + 1)]
+        self.assertEqual(self.wait_on(*members), ["on"] * count)
+        self.roster = {"peers": [m.entry() for m in members]}
+        for m in members:
+            m.mesh.apply(self.roster)
+        return members
+
+    def test_members_reach_each_other_one_to_one_and_all_at_once(self):
+        host, alex, sam = self.mesh(3)
+        alex.send(sam.address, b"your move")
+        self.assertTrue(sam.got(b"your move"))
+        self.assertFalse(host.got(b"your move", seconds=0.5), "a packet for one member goes to that member only")
+        sam.send("10.77.12.255", b"anyone hosting?")
+        self.assertTrue(alex.got(b"anyone hosting?") and host.got(b"anyone hosting?"))
+        host.send("239.255.255.250", b"multicast lobby")
+        self.assertTrue(alex.got(b"multicast lobby") and sam.got(b"multicast lobby"))
+
+    def test_only_game_network_traffic_leaves_and_nothing_else_comes_in(self):
+        host, alex = self.mesh(2)
+        alex.send("8.8.8.8", b"to the internet")
+        alex.send("192.168.1.20", b"into a home network")
+        alex.session.put_packet(make_packet("10.77.12.9", host.address, b"from another address"))
+        alex.send(host.address, b"marker")
+        self.assertTrue(host.got(b"marker"))
+        self.assertFalse(host.got(b"internet", seconds=0.3) or host.got(b"home network", seconds=0.1)
+                         or host.got(b"another address", seconds=0.1))
+
+    def test_someone_removed_from_the_list_is_cut_off_at_once(self):
+        host, alex, sam = self.mesh(3)
+        sam.send(host.address, b"before")
+        self.assertTrue(host.got(b"before"))
+        without_sam = {"peers": [host.entry(), alex.entry()]}
+        host.mesh.apply(without_sam)
+        alex.mesh.apply(without_sam)
+        self.assertNotIn("u3", host.paths.paths, "the path to them is closed")
+        sam.send(host.address, b"after")
+        sam.send("10.77.12.255", b"after, to everyone")
+        self.assertFalse(host.got(b"after", seconds=1) or alex.got(b"to everyone", seconds=0.3))
+        alex.send(host.address, b"still here")
+        self.assertTrue(host.got(b"still here"))
+
+    def test_a_path_that_starts_working_later_starts_the_handshake_at_once(self):
+        host, alex = self.mesh(2, kind="")  # no way to each other yet: what WireGuard sends is dropped
+        alex.send(host.address, b"too early")
+        self.assertFalse(host.got(b"too early", seconds=0.5))
+        started = time.monotonic()
+        for member in (host, alex):
+            member.paths.switch("punch")
+        alex.send(host.address, b"now")
+        self.assertTrue(host.got(b"now", seconds=4))
+        self.assertLess(time.monotonic() - started, 4, "not after WireGuard's own five-second retry")
+        self.assertEqual([m["kind"] for m in alex.mesh.members()], ["punch"])
+
+    def test_datagrams_fit_every_path_even_for_a_full_size_broadcast(self):
+        host, alex = self.mesh(2)
+        big = b"x" * (gameclient.GAME_MTU - 20)  # the adapter's largest packet
+        alex.send("10.77.12.255", big)
+        self.assertTrue(host.got(big))
+        self.assertEqual((host.paths.oversized, alex.paths.oversized), (0, 0))
 
     def test_the_secret_file_is_gone_once_used_and_never_on_the_command_line(self):
-        launch = FakeLaunch(MemoryTun())
-        session = self.session(launch)
-        self.assertTrue(self.wait(session, "on"))
-        self.assertNotIn("secret", " ".join(a for a in launch.arguments if not a.endswith(".key")).replace("--secret-file", ""))
-        session.stop()
-        time.sleep(0.3)
-        self.assertEqual(list(self.folder.glob("net-*.key")), [])
+        seen = {}
+
+        def launch(program, arguments, cwd):
+            seen["arguments"] = arguments
+            return launch_plain(program, arguments, cwd)
+
+        session = GameSession("10.77.12.2", NET, new_private_key(), self.folder, launch=launch, program=self.program,
+                              memory_adapter=True)
+        session.start()
+        self.addCleanup(session.stop)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and session.status["state"] != "on":
+            time.sleep(0.05)
+        self.assertEqual(session.status["state"], "on")
+        secret_file = Path(seen["arguments"][seen["arguments"].index("--secret-file") + 1])
+        self.assertFalse(secret_file.exists())
+        self.assertFalse(any(len(a) == 64 and all(c in "0123456789abcdef" for c in a) for a in seen["arguments"]))
+
+    def test_no_other_program_can_share_the_helpers_port(self):
+        def squatter(program, arguments, cwd):
+            port = int(arguments[arguments.index("--port") + 1])
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", port))
+                seen["bound"] = True
+            except OSError:
+                seen["bound"] = False
+            finally:
+                sock.close()
+            return "declined"
+
+        seen = {}
+        session = GameSession("10.77.12.2", NET, new_private_key(), self.folder, launch=squatter, program=self.program)
+        session.start()
+        session._thread.join(timeout=5)
+        self.assertEqual(seen, {"bound": False})
 
     def test_a_process_without_the_secret_is_turned_away(self):
-        tun = MemoryTun()
-        launch = FakeLaunch(tun, secret_override="0" * 64)
-        session = self.session(launch, accept_seconds=2)
-        self.assertTrue(self.wait(session, "failed", seconds=6))
-        self.assertIn("did not start in time", session.status["message"])
+        def impostor(program, arguments, cwd):
+            port = int(arguments[arguments.index("--port") + 1])
+            sock = socket.create_connection(("127.0.0.1", port))
+            sock.sendall(b"0" * 64 + b"\n")
+            threading.Timer(2.0, sock.close).start()
+            return None
 
-    def test_saying_no_to_the_permission_prompt_leaves_it_off(self):
-        session = self.session(FakeLaunch(MemoryTun(), answer="declined"))
-        self.assertTrue(self.wait(session, "declined"))
-        self.assertIn("Permission was not given", session.status["message"])
+        session = GameSession("10.77.12.2", NET, new_private_key(), self.folder, launch=impostor, program=self.program,
+                              accept_seconds=2)
+        session.start()
+        self.addCleanup(session.stop)
+        time.sleep(3.5)
+        self.assertEqual(session.status["state"], "failed")
+
+    def test_settings_outside_the_game_network_are_refused_by_the_helper(self):
+        session = GameSession("192.168.1.5", "192.168.1.0/24", new_private_key(), self.folder, launch=launch_plain,
+                              program=self.program, memory_adapter=True)
+        session.start()
+        self.addCleanup(session.stop)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and session.status["state"] != "failed":
+            time.sleep(0.05)
+        self.assertEqual(session.status["state"], "failed")
+        self.assertIn("not a game network", session.status["message"])
 
     def test_turning_it_off_ends_the_helper(self):
-        launch = FakeLaunch(MemoryTun())
-        session = self.session(launch)
-        self.assertTrue(self.wait(session, "on"))
+        started = []
+
+        def launch(program, arguments, cwd):
+            started.append(subprocess.Popen([program, *arguments], cwd=cwd,
+                                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)))
+            return None
+
+        session = GameSession("10.77.12.2", NET, new_private_key(), self.folder, launch=launch, program=self.program,
+                              memory_adapter=True)
+        session.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and session.status["state"] != "on":
+            time.sleep(0.05)
+        self.assertIsNone(started[0].poll(), "running while on")
         session.stop()
-        self.assertEqual(launch.why.get(timeout=5), "the app closed the connection")
+        self.assertEqual(started[0].wait(timeout=10), 0, "it ends, on its own, when the app's link closes")
 
-    def test_the_helper_quits_when_the_app_is_gone(self):
-        alive = {"yes": True}
-        launch = FakeLaunch(MemoryTun(), parent_alive=lambda pid: alive["yes"])
-        session = self.session(launch)
-        self.assertTrue(self.wait(session, "on"))
-        alive["yes"] = False
-        self.assertEqual(launch.why.get(timeout=6), "the app is gone")
 
-    def test_the_helper_has_a_time_limit(self):
-        tun = MemoryTun()
+class SessionPieceTests(unittest.TestCase):
+    def test_what_windows_would_not_do_is_said_in_plain_words(self):
+        import json
+
+        session = GameSession("10.77.12.2", NET, new_private_key(), ".")
         a, b = socket.socketpair()
         self.addCleanup(a.close)
-        started = time.monotonic()
-        why = nethelper.serve(tun, b, NET, max_seconds=0.5)
-        self.assertEqual(why, "the time limit was reached")
-        self.assertLess(time.monotonic() - started, 5)
+        self.addCleanup(b.close)
+        warning = "Windows kept this network Public, so games hosted on this PC may be blocked by the firewall."
+        b.sendall(gameclient.frame("S", json.dumps({"state": "on", "warnings": []}).encode()))
+        b.sendall(gameclient.frame("S", json.dumps({"state": "on", "warnings": [warning, 7]}).encode()))
+        b.close()
+        session._pump(a)
+        self.assertEqual(session.status["state"], "on")
+        self.assertEqual(session.status["message"], f"Game network on: this PC is 10.77.12.2. {warning}")
+        self.assertEqual(session.status["warnings"], [warning])
 
+    def test_saying_no_to_the_permission_prompt_leaves_it_off(self):
+        with tempfile.TemporaryDirectory() as folder:
+            program = Path(folder) / gameclient.HELPER
+            program.write_bytes(b"")
+            session = GameSession("10.77.12.2", NET, new_private_key(), folder, launch=lambda *a: "declined",
+                                  program=program)
+            session.start()
+            session._thread.join(timeout=5)
+            self.assertEqual(session.status["state"], "declined")
 
-class HelperPieceTests(unittest.TestCase):
-    def test_the_adapter_gets_an_address_and_a_low_metric_and_no_gateway(self):
-        calls = []
+    def test_a_missing_helper_is_said_plainly(self):
+        with tempfile.TemporaryDirectory() as folder:
+            session = GameSession("10.77.12.2", NET, new_private_key(), folder, program=Path(folder) / "none.exe",
+                                  launch=lambda *a: self.fail("nothing to start"))
+            session.start()
+            session._thread.join(timeout=5)
+            self.assertEqual(session.status["state"], "failed")
+            self.assertIn("missing", session.status["message"])
 
-        class Done:
-            returncode, stdout, stderr = 0, "", ""
+    def test_the_helper_is_started_from_next_to_wintun(self):
+        program, arguments, folder = helper_command(1234, "C:/x/net.key", 99)
+        self.assertTrue(program.endswith(gameclient.HELPER))
+        self.assertEqual(Path(folder), Path(program).parent)
+        self.assertTrue((Path(folder) / "wintun.dll").exists(), "wintun.dll is loaded from the helper's own folder")
+        self.assertEqual(arguments, ["--port", "1234", "--secret-file", "C:/x/net.key", "--parent", "99"])
 
-        nethelper.configure("PrivatePartyNet", "10.77.12.2", NET, run=lambda command, **kw: calls.append((command, kw)) or Done())
-        first, second = calls[0][0], calls[1][0]
-        self.assertIn("address=10.77.12.2", first)
-        self.assertIn("mask=255.255.255.0", first)
-        self.assertIn("gateway=none", first)
-        self.assertIn("metric=1", second)
-        self.assertTrue(all(kw.get("creationflags") == nethelper.NO_WINDOW for _, kw in calls), "no console windows")
-        self.assertTrue(all(kw.get("timeout") for _, kw in calls), "every command is bounded")
+    def test_datagrams_for_someone_removed_or_unknown_are_dropped_quietly(self):
+        class Session:
+            address = "10.77.12.1"
 
-    def test_the_network_is_made_private_and_retried_until_windows_has_made_it(self):
-        calls = []
+            def __init__(self):
+                self.delivered, self.peers = [], None
 
-        class Result:
-            def __init__(self, code):
-                self.returncode, self.stdout, self.stderr = code, "", ""
+            def deliver(self, member, datagram):
+                self.delivered.append(member)
 
-        answers = iter([1, 1, 0])
-        ok = nethelper.make_private("PrivatePartyNet", run=lambda command, **kw: calls.append((command, kw)) or Result(next(answers)),
-                                    sleep=lambda s: None)
-        self.assertTrue(ok)
-        self.assertEqual(len(calls), 3)
-        self.assertIn("-NetworkCategory Private", calls[0][0][-1])
-        self.assertTrue(all(kw.get("creationflags") == nethelper.NO_WINDOW and kw.get("timeout") for _, kw in calls))
-        never = nethelper.make_private("PrivatePartyNet", run=lambda command, **kw: Result(1), tries=3, sleep=lambda s: None)
-        self.assertFalse(never, "gives up after its tries, without raising")
+            def path_up(self, member):
+                pass
 
-    def fake_powershell(self, interfaces):
-        """A stand-in for PowerShell that keeps adapters' metrics and answers the helper's three kinds of command."""
-        import json as json_module
-        import re as re_module
+            def set_peers(self, peers):
+                self.peers = peers
 
-        state = {i["InterfaceIndex"]: dict(i) for i in interfaces}
-        calls = []
+        session, paths = Session(), FakePaths("u1", Hub())
+        mesh = GameMesh("u1", paths, session)
+        sam = {"user": "u3", "address": "10.77.12.3", "key": public_key(new_private_key()), "candidates": []}
+        mesh.apply({"peers": [sam]})
+        old_path = paths.paths["u3"]
+        mesh.apply({"peers": []})  # Sam was removed
+        self.assertEqual(session.peers, [])
+        self.assertTrue(old_path.closed)
+        mesh.on_datagram(3, b"\x04" + bytes(40))  # WireGuard still had something queued for Sam
+        mesh.on_datagram(200, b"\x01" + bytes(147))  # nobody at all
+        old_path._deliver(b"\x04" + bytes(40))  # a late datagram on Sam's closed path
+        self.assertEqual(session.delivered, [])
 
-        class Result:
-            def __init__(self, out=""):
-                self.returncode, self.stdout, self.stderr = 0, out, ""
+    def test_the_app_and_the_helper_agree_on_the_adapters_packet_size(self):
+        import re
 
-        def run(command, **kw):
-            script = command[-1]
-            calls.append(script)
-            if script.startswith("Get-NetIPInterface"):
-                low = [i for i in state.values() if i["InterfaceMetric"] <= 1 and i["InterfaceAlias"] != "PrivatePartyNet"]
-                return Result(json_module.dumps(low[0] if len(low) == 1 else low) if low else "")
-            index = int(re_module.search(r"-InterfaceIndex (\d+)", script).group(1))
-            if "-AutomaticMetric Enabled" in script:
-                state[index]["Automatic"], state[index]["InterfaceMetric"] = "Enabled", 25
-            else:
-                state[index]["InterfaceMetric"] = int(re_module.search(r"-InterfaceMetric (\d+)", script).group(1))
-            return Result()
+        pinned = (Path(__file__).resolve().parent.parent / "wghelper" / "engine_test.go").read_text(encoding="utf-8")
+        self.assertEqual(int(re.search(r"if MTU != (\d+)", pinned).group(1)), gameclient.GAME_MTU)
 
-        return state, calls, run
-
-    def test_radmin_steps_aside_while_on_and_gets_exactly_its_setting_back(self):
-        state, calls, run = self.fake_powershell([
-            {"InterfaceIndex": 7, "InterfaceAlias": "Radmin VPN", "InterfaceMetric": 1, "Automatic": "Disabled"},
-            {"InterfaceIndex": 9, "InterfaceAlias": "Wi-Fi", "InterfaceMetric": 35, "Automatic": "Enabled"}])
-        state_file = Path(tempfile.mkdtemp()) / "net-metrics.json"
-        moved = nethelper.take_priority("PrivatePartyNet", state_file, run=run)
-        self.assertEqual([m["alias"] for m in moved], ["Radmin VPN"])
-        self.assertEqual(state[7]["InterfaceMetric"], 2)
-        self.assertEqual(state[9]["InterfaceMetric"], 35, "adapters above 1 are not touched")
-        self.assertTrue(state_file.exists(), "what to give back is on disk before anything changes")
-        nethelper.give_back(moved, state_file, run=run)
-        self.assertEqual(state[7]["InterfaceMetric"], 1)
-        self.assertEqual(state[7]["Automatic"], "Disabled")
-        self.assertFalse(state_file.exists())
-
-    def test_an_automatic_metric_is_given_back_as_automatic(self):
-        state, calls, run = self.fake_powershell([
-            {"InterfaceIndex": 4, "InterfaceAlias": "Other VPN", "InterfaceMetric": 1, "Automatic": "Enabled"}])
-        state_file = Path(tempfile.mkdtemp()) / "net-metrics.json"
-        moved = nethelper.take_priority("PrivatePartyNet", state_file, run=run)
-        nethelper.give_back(moved, state_file, run=run)
-        self.assertIn("-AutomaticMetric Enabled", calls[-1])
-
-    def test_after_a_crash_the_next_start_gives_the_metrics_back_first(self):
-        state, calls, run = self.fake_powershell([
-            {"InterfaceIndex": 7, "InterfaceAlias": "Radmin VPN", "InterfaceMetric": 1, "Automatic": "Disabled"}])
-        state_file = Path(tempfile.mkdtemp()) / "net-metrics.json"
-        nethelper.take_priority("PrivatePartyNet", state_file, run=run)  # ...and then the helper is killed: no give_back
-        self.assertEqual(state[7]["InterfaceMetric"], 2)
-        restored = nethelper.restore_leftovers(state_file, run=run)
-        self.assertEqual([r["alias"] for r in restored], ["Radmin VPN"])
-        self.assertEqual(state[7]["InterfaceMetric"], 1)
-        self.assertFalse(state_file.exists())
-
-    def test_nothing_at_metric_one_means_nothing_changes(self):
-        state, calls, run = self.fake_powershell([
-            {"InterfaceIndex": 9, "InterfaceAlias": "Wi-Fi", "InterfaceMetric": 35, "Automatic": "Enabled"}])
-        state_file = Path(tempfile.mkdtemp()) / "net-metrics.json"
-        self.assertEqual(nethelper.take_priority("PrivatePartyNet", state_file, run=run), [])
-        self.assertFalse(state_file.exists())
-        self.assertEqual(len(calls), 1, "only the look")
-
-    def test_a_failing_netsh_is_reported(self):
-        class Failed:
-            returncode, stdout, stderr = 1, "The filename, directory name, or volume label syntax is incorrect.", ""
-
-        with self.assertRaises(OSError):
-            nethelper.configure("PrivatePartyNet", "10.77.12.2", NET, run=lambda command, **kw: Failed())
-
-    def test_the_helper_is_started_windowless_from_source(self):
-        program, arguments, folder = helper_command(1234, "C:/x/net.key", "10.77.12.2", NET, 99)
-        self.assertTrue(program.lower().endswith("pythonw.exe") or program.lower().endswith("python.exe"))
-        self.assertEqual(arguments[:2], ["-m", "privatepartynet.nethelper"])
-        self.assertIn("--parent", arguments)
-
-    def test_a_dead_process_is_seen_as_gone(self):
-        import subprocess
-        process = subprocess.Popen(["cmd", "/c", "exit 0"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        process.wait(timeout=10)
-        self.assertFalse(nethelper.parent_alive(process.pid))
-        import os
-        self.assertTrue(nethelper.parent_alive(os.getpid()))
+    def test_a_member_is_named_by_the_last_byte_of_their_address(self):
+        self.assertEqual(member_byte("10.77.12.7"), 7)
+        self.assertEqual(member_byte(ipaddress.ip_address("10.77.12.254")), 254)
 
     def test_the_bundled_wintun_is_the_signed_original(self):
-        path = nethelper.wintun_path()
+        from privatepartynet.paths import asset_path
+
+        path = asset_path("wintun.dll")
         if not path.exists():
             self.skipTest("wintun.dll is not in assets yet")
         import hashlib
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), WINTUN_AMD64_SHA256)
+
+
+class HelperTests(unittest.TestCase):
+    def test_the_helpers_own_go_tests_pass(self):
+        import gohelper
+
+        if gohelper.find_go() is None:
+            self.skipTest("Go is not installed")
+        gohelper.test()
 
 
 WINTUN_AMD64_SHA256 = "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce"  # bin/amd64 of wintun-0.14.1.zip, whose hash matched wintun.net

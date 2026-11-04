@@ -120,6 +120,12 @@
   <p id="gameNone" class="muted">Start your party or join one to use its game network.</p>
   <p id="gameStatus" class="muted"></p>
   <div class="row"><button id="gameOff" class="secondary" hidden>Turn the game network off</button></div>
+  <!-- What party members can reach on this PC: gamereach.js fills it in. A setting of this PC only. -->
+  <details id="gameReach">
+    <summary>What party members can reach on this PC</summary>
+    <p class="muted">Games always work. Windows' own services are closed to party members unless you open them here. This is for this PC only and takes effect at once. Bonjour (mDNS), which some games use to find each other, always stays open.</p>
+    <div id="gameReachList"></div>
+  </details>
 </section>
 
 <section id="messagesBox">
@@ -169,5 +175,6 @@
 </section>
 
 <script src="control.js"></script>
+<script src="gamereach.js"></script>
 </body>
 </html>
