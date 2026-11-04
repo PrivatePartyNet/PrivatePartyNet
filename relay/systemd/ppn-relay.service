@@ -33,7 +33,8 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 ReadOnlyPaths=/etc/ppn-relay /opt/ppn-relay
-MemoryMax=256M
+MemoryMax=512M
+LimitNOFILE=8192
 TasksMax=64
 
 [Install]

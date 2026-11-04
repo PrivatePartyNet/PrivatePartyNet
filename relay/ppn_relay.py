@@ -8,8 +8,9 @@ end of a channel has its own rate limit.
 
     python3 ppn_relay.py --secret-file /etc/ppn-relay/secret [--udp-port 3479] [--tls-port 443 --cert C --key K]
 
-Standard library only (Python 3.10 or later; 3.11 or later counts TLS connections from the moment they open). The rules
-live in privatepartynet/relayproto.py, the same file the app uses. Send it SIGHUP after changing the secret file.
+Standard library only. Python 3.12, as on Ubuntu 24.04 LTS, is what it is made and tested for: from 3.11 on, a TLS
+connection counts against the limits from the moment it opens, its handshake included. The rules live in
+privatepartynet/relayproto.py, the same file the app uses. Send it SIGHUP after changing the secret file.
 """
 
 import argparse
@@ -35,7 +36,10 @@ from privatepartynet import relayproto as rp  # noqa: E402
 log = logging.getLogger("ppn-relay")
 LENGTH = struct.Struct("!H")
 TCP_BUFFER = 64 * 1024  # bytes waiting for one TCP member before more for them is dropped
-MAX_TCP = 1024  # TCP connections in all; with TCP_BUFFER that is 64 MB at worst, well inside the service's memory limit
+# TLS connections in all. Each costs about 320-400 KiB at worst (asyncio's TLS layer keeps a 256 KiB buffer per
+# connection, plus TCP_BUFFER of output; measured with verify_memory.py), so 512 of them stay near 200 MiB, well inside
+# the service's MemoryMax of 512M.
+MAX_TCP = 512
 MAX_TCP_PER_ADDRESS = 8
 HANDSHAKE_SECONDS = 10.0  # for the TLS handshake, for each frame once its length has arrived, and for a first BIND
 STATS_SECONDS = 300
@@ -47,12 +51,13 @@ class RelayServer:
     def __init__(self, secrets_, host="::", udp_port=rp.DEFAULT_UDP_PORT, tls_port=None, certfile=None,
                  keyfile=None, rate=rp.DEFAULT_RATE, burst=rp.DEFAULT_BURST, user_rate=rp.DEFAULT_USER_RATE,
                  total_rate=rp.DEFAULT_TOTAL_RATE, max_channels=rp.MAX_CHANNELS, handshake_seconds=HANDSHAKE_SECONDS,
-                 max_per_address=MAX_TCP_PER_ADDRESS):
+                 max_per_address=MAX_TCP_PER_ADDRESS, max_tcp=MAX_TCP):
         self.core = rp.RelayCore([rp.HmacVerifier(secrets_)], rate=rate, burst=burst, user_rate=user_rate,
                                  total_rate=total_rate, max_channels=max_channels)
         self.host, self.udp_port, self.tls_port = host, udp_port, tls_port
         self.certfile, self.keyfile = certfile, keyfile
-        self.handshake_seconds, self.max_per_address = handshake_seconds, max_per_address
+        self.handshake_seconds, self.max_per_address, self.max_tcp = handshake_seconds, max_per_address, max_tcp
+        self.refused_tcp = 0
         self._udp = None
         self._udp_v6 = False
         self._tls = None
@@ -111,7 +116,8 @@ class RelayServer:
 
     async def _serve_tcp(self, reader, writer):
         address = (writer.get_extra_info("peername") or ("?",))[0]
-        if len(self._tcp) >= MAX_TCP or self._addresses.get(address, 0) >= self.max_per_address:
+        if len(self._tcp) >= self.max_tcp or self._addresses.get(address, 0) >= self.max_per_address:
+            self.refused_tcp += 1
             writer.close()
             return
         self._next += 1
@@ -247,12 +253,16 @@ def main(argv=None):
     parser.add_argument("--total-mbps", type=int, default=rp.DEFAULT_TOTAL_RATE * 8 // 1_000_000,
                         help="the most the relay forwards for everyone together, in megabits a second (0: no limit)")
     parser.add_argument("--max-channels", type=int, default=rp.MAX_CHANNELS)
+    parser.add_argument("--max-tcp", type=int, default=MAX_TCP, help="TLS connections at once, from everyone together")
     parser.add_argument("--new-secret", action="store_true", help="print a new random secret and stop")
     arguments = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if arguments.new_secret:
         print(rp.new_secret())
         return 0
+    if sys.version_info < (3, 12):
+        log.warning("Python %d.%d: the relay is made for 3.12 (Ubuntu 24.04). Before 3.11, connections still in their "
+                    "TLS handshake do not count against the connection limits.", *sys.version_info[:2])
     secrets_ = read_secrets(arguments)
     if not secrets_:
         parser.error("no secret: give --secret-file or set PPN_RELAY_SECRET (make one with --new-secret)")
@@ -261,7 +271,8 @@ def main(argv=None):
     server = RelayServer(secrets_, host=arguments.host, udp_port=arguments.udp_port, tls_port=tls,
                          certfile=arguments.cert, keyfile=arguments.key, rate=rate,
                          burst=max(rp.DEFAULT_BURST, rate // 4), user_rate=max(8, arguments.user_kbps) * 1000 // 8,
-                         total_rate=arguments.total_mbps * 125_000 or None, max_channels=arguments.max_channels)
+                         total_rate=arguments.total_mbps * 125_000 or None, max_channels=arguments.max_channels,
+                         max_tcp=arguments.max_tcp)
 
     async def run():
         await server.start()

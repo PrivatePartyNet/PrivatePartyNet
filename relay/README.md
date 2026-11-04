@@ -31,7 +31,8 @@ Any provider's smallest Linux server is enough: 1 CPU, 512 MB to 1 GB of memory,
 friends playing and talking uses a few Mbit/s while someone needs the relay, and nothing otherwise. Pick a region near
 most of the group, since every relayed datagram goes there and back.
 
-1. Make an Ubuntu 24.04 server and sign in with SSH.
+1. Make an Ubuntu 24.04 LTS server and sign in with SSH. The relay is made for its Python 3.12; the setup script
+   refuses an older Python.
 2. Get PrivatePartyNet's source onto it and run the setup script:
 
        sudo apt-get install -y git
@@ -79,6 +80,12 @@ Anyone with the secret can use the relay, so change it if it may have got out (a
 - `setup-ubuntu.sh`: the installer for a plain Ubuntu or Debian server.
 - `systemd/ppn-relay.service`: the relay's service, running as its own user with only the right to use port 443.
 - `systemd/coturn-ppn.conf`: a drop-in that starts Ubuntu's coturn with this configuration.
+- `turn-firewall.sh` and `systemd/ppn-turn-firewall.service`: firewall rules, set again at every boot, that let what
+  coturn relays reach the VPS itself only on coturn's own media ports (so two members who both relay there can meet),
+  never SSH, the relay's ports or loopback. With Docker, run it yourself with the image's user:
+  `sudo TURN_USER=65534 sh turn-firewall.sh`.
+- `verify_memory.py`: measures the relay's memory at its worst on the machine it runs on (`python3 verify_memory.py`);
+  it should stay well under the service's 512 MB limit (about 200 MB with 512 TLS members, measured).
 - `turnserver.conf`: coturn's configuration (TURN REST credentials from the same secret, limits, no relaying to private
   networks). The installer adds the secret and the public address to its own copy.
 - `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `env.example`: the same with Docker.

@@ -1,6 +1,7 @@
 # The PrivatePartyNet relay server. Build from the repository's top folder:
 #   docker build -f relay/Dockerfile -t ppn-relay .
 # (docker-compose.yml in this folder does that for you.)
+# Python 3.12, as on Ubuntu 24.04 LTS, which the relay is made and tested for.
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/* \

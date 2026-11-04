@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep coturn's relayed traffic away from this machine (PrivatePartyNet)
+After=network-online.target ufw.service
+Wants=network-online.target
+Before=coturn.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /opt/ppn-relay/turn-firewall.sh
+
+[Install]
+WantedBy=multi-user.target

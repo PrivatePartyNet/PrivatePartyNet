@@ -10,7 +10,8 @@ from privatepartynet import relayproto as rp
 
 RELAY = Path(__file__).resolve().parents[1] / "relay"
 LINUX_FILES = ["setup-ubuntu.sh", "docker-entrypoint.sh", "turnserver.conf", "docker-compose.yml", "Dockerfile",
-               "systemd/ppn-relay.service", "systemd/coturn-ppn.conf"]
+               "systemd/ppn-relay.service", "systemd/coturn-ppn.conf", "turn-firewall.sh",
+               "systemd/ppn-turn-firewall.service"]
 
 
 class RelayFileTests(unittest.TestCase):
@@ -47,10 +48,49 @@ class RelayFileTests(unittest.TestCase):
         self.assertNotIn("ports:", compose, "host networking, so members keep their real IPv6 addresses")
         self.assertNotIn("--host", self.read("systemd/ppn-relay.service"), "the server's own default: both families")
 
+    def test_the_service_has_room_for_the_relay_at_its_worst(self):
+        import sys
+
+        sys.path.insert(0, str(RELAY))
+        import ppn_relay
+
+        unit = self.read("systemd/ppn-relay.service")
+        self.assertIn("MemoryMax=512M", unit)
+        self.assertIn("LimitNOFILE=8192", unit)
+        self.assertEqual(ppn_relay.MAX_TCP, 512)
+        measured = 400 * 1024  # bytes a TLS member costs at worst, by verify_memory.py (354-397 KiB here)
+        self.assertLess(ppn_relay.MAX_TCP * measured + 64 * 2 ** 20, 512 * 2 ** 20)
+        self.assertLess(ppn_relay.MAX_TCP * 2 + 64, 8192, "a socket for each, and room to spare")
+
+    def test_setup_targets_ubuntu_24_04_and_refuses_an_older_python(self):
+        setup = self.read("setup-ubuntu.sh")
+        self.assertIn("Ubuntu 24.04", setup)
+        self.assertIn("sys.version_info < (3, 12)", setup)
+        self.assertIn("python:3.12", self.read("Dockerfile"))
+        self.assertIn("24.04", self.read("README.md"))
+
+    def test_coturn_is_kept_away_from_the_vps_itself(self):
+        firewall, setup = self.read("turn-firewall.sh"), self.read("setup-ubuntu.sh")
+        text = self.read("turnserver.conf")
+        low, high = re.search(r"min-port=(\d+)", text).group(1), re.search(r"max-port=(\d+)", text).group(1)
+        self.assertIn(f"MIN_PORT:-{low}", firewall)
+        self.assertIn(f"MAX_PORT:-{high}", firewall)
+        self.assertIn("-m owner --uid-owner", firewall)
+        self.assertIn("apply iptables 4 127.0.0.0/8", firewall)
+        self.assertIn("apply ip6tables 6 ::1/128", firewall)
+        # Running it again replaces its rules: the chain is made or emptied, and the jump to it added only once.
+        self.assertIn('-N "$CHAIN" 2>/dev/null || "$tool" -F "$CHAIN"', firewall)
+        self.assertIn('-C OUTPUT -m owner --uid-owner "$TURN_USER" -j "$CHAIN"', firewall)
+        # Kept across reboots, and in place before coturn relays anything.
+        self.assertIn("ExecStart=/bin/sh /opt/ppn-relay/turn-firewall.sh", self.read("systemd/ppn-turn-firewall.service"))
+        self.assertIn("Before=coturn.service", self.read("systemd/ppn-turn-firewall.service"))
+        self.assertIn("/opt/ppn-relay/turn-firewall.sh", setup)
+        self.assertLess(setup.index("restart ppn-turn-firewall"), setup.index("enable --now coturn"))
+
     def test_coturn_does_not_relay_to_private_networks(self):
         text = self.read("turnserver.conf")
         for start in ("10.0.0.0", "127.0.0.0", "169.254.0.0", "172.16.0.0", "192.168.0.0", "100.64.0.0", "192.0.0.0",
-                      "198.18.0.0", "224.0.0.0", "::ffff:0.0.0.0", "64:ff9b::"):
+                      "198.18.0.0", "224.0.0.0", "::ffff:0.0.0.0", "64:ff9b::", "::", "fc00::", "fe80::"):
             self.assertIn(f"denied-peer-ip={start}-", text)
 
     def test_the_media_ports_agree_everywhere(self):
@@ -81,7 +121,7 @@ class RelayFileTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("sh"), "no POSIX shell on this PC")
     def test_the_scripts_parse(self):
-        for name in ("setup-ubuntu.sh", "docker-entrypoint.sh"):
+        for name in ("setup-ubuntu.sh", "docker-entrypoint.sh", "turn-firewall.sh"):
             run = subprocess.run([shutil.which("sh"), "-n", str(RELAY / name)], capture_output=True, text=True,
                                  timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             self.assertEqual(run.returncode, 0, name + run.stderr)

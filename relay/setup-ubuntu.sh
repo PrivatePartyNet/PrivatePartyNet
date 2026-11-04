@@ -1,12 +1,13 @@
 #!/bin/sh
-# Set up a PrivatePartyNet relay on a fresh Ubuntu 22.04 or 24.04 VPS (Debian 12 works too). Run as root from this
-# folder of the repository:
+# Set up a PrivatePartyNet relay on a fresh Ubuntu 24.04 LTS VPS (Python 3.12). Run as root from this folder of the
+# repository:
 #
 #     sudo sh setup-ubuntu.sh
 #
 # It installs Python and coturn from Ubuntu, puts the relay in /opt/ppn-relay, makes a secret and a certificate in
 # /etc/ppn-relay (kept if they are already there), opens the firewall if ufw is on, and starts both services. Running
-# it again updates the relay and keeps the secret. At the end it prints what to type into PrivatePartyNet.
+# it again updates the relay and keeps the secret. At the end it prints what to type into PrivatePartyNet. It also keeps
+# what coturn relays away from the VPS itself (turn-firewall.sh, run again at every boot).
 #
 # Set PUBLIC_IP first if the VPS's public address is not on its own network card (some providers use 1:1 NAT). The
 # relay and coturn listen on IPv6 as well when the VPS has it (PUBLIC_IP6, found by itself), so members with only IPv6
@@ -30,7 +31,12 @@ fi
 echo "Installing python3, openssl and coturn..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q python3 openssl coturn
+apt-get install -y -q python3 openssl coturn iptables
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+    echo "The relay needs Python 3.12 or later (Ubuntu 24.04 LTS has it); this system has $(python3 -V 2>&1)." >&2
+    echo "Before 3.11, connections still in their TLS handshake would not count against its limits." >&2
+    exit 1
+fi
 
 id ppn-relay >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin ppn-relay
 
@@ -90,6 +96,8 @@ fi
 install -d -m 755 /etc/systemd/system/coturn.service.d
 install -m 644 "$HERE/systemd/coturn-ppn.conf" /etc/systemd/system/coturn.service.d/ppn.conf
 install -m 644 "$HERE/systemd/ppn-relay.service" /etc/systemd/system/ppn-relay.service
+install -m 644 "$HERE/turn-firewall.sh" /opt/ppn-relay/turn-firewall.sh
+install -m 644 "$HERE/systemd/ppn-turn-firewall.service" /etc/systemd/system/ppn-turn-firewall.service
 
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
     echo "Opening the firewall (ufw)..."
@@ -102,6 +110,8 @@ fi
 systemctl daemon-reload
 systemctl enable --now ppn-relay
 systemctl restart ppn-relay
+systemctl enable ppn-turn-firewall
+systemctl restart ppn-turn-firewall  # before coturn starts relaying: it may then reach this machine only on its media ports
 systemctl enable --now coturn
 systemctl restart coturn
 
