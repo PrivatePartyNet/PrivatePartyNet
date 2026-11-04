@@ -115,7 +115,7 @@ Host only:
 
 ## Building the installer
 
-Put the official offline prerequisites in `installer\prereq` before you build: the WebView2 Evergreen Standalone Installer (x64), the Visual C++ 2015-2022 x64 runtime and the .NET Framework 4.8 offline installer. The build checks each file's Microsoft signature and carries them into the installer and the portable zip. Without them, `py tools\build.py` stops; `--allow-missing-prereqs` builds anyway, and then the installer needs those components already on the PC.
+Put the official offline prerequisites in `installer\prereq` before you build: the WebView2 Evergreen Standalone Installer (x64), the Visual C++ 2015-2022 x64 runtime and the .NET Framework 4.8 offline installer. The build checks each file's Microsoft signature and carries them into the installer and the portable zip. Without them, `py tools\build.py` stops; `--allow-missing-prereqs` builds anyway, and then the installer needs those components already on the PC. Build from a folder with a short path: Inno Setup cannot read a packaged file whose full path passes Windows' 260 characters, and the build stops and says so (`subst` gives a deep folder a drive letter of its own).
 
 ## Build and test
 
