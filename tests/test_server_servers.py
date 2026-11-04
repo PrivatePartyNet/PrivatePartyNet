@@ -540,6 +540,13 @@ class ImageTests(ServerTestCase):
         self.assertEqual(self.upload(party, guest, PNG)[0], 403)
         self.assertEqual(self.upload(party, "not-a-session", PNG)[0], 401)
 
+    def test_a_refused_upload_always_gets_its_answer(self):
+        """The body of a refused upload is read before the answer, or the connection's reset could beat the answer to
+        the client (seen as "Remote end closed connection without response")."""
+        party = self.party()
+        picture = PNG + bytes(512 * 1024)
+        self.assertEqual([self.upload(party, "not-a-session", picture)[0] for _ in range(20)], [401] * 20)
+
     def test_uploads_are_limited_per_minute(self):
         party = self.party()
         _, session = self.member(party, "Alex")

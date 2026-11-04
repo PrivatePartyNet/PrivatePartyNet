@@ -80,6 +80,7 @@ MAX_REQUESTS = 20  # people waiting to be let in at once; more are refused until
 MAX_REQUESTS_PER_ADDRESS = 3
 MAX_FORM_BYTES = 1024
 MAX_BODY_BYTES = 256 * 1024  # an SDP with every candidate is a few kilobytes
+MAX_DRAIN = 1024 * 1024  # what is read of a refused upload so the answer reaches the client; past it the connection closes
 SIGNAL_KINDS = {"offer", "answer", "quality"}
 TURN_PORT = 3478  # coturn beside the relay server (relay/turnserver.conf)
 TURN_SECONDS = 24 * 3600  # how long the TURN credentials a page is given last; a page that reconnects gets new ones
@@ -1610,12 +1611,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _blob_put(self):
         """An image upload: the raw bytes of one picture. Members only. The answer names it by hash."""
         member = self._identity()
-        if member is None:
-            self._send(401, TEXT, b"Sign in first.")
-            return
         length = self._length()
+        if member is None:
+            self._refuse_body(length, 401, b"Sign in first.")
+            return
         if length > MAX_IMAGE or length <= 0:
-            self._send(413, TEXT, f"Pictures can be up to {MAX_IMAGE_TEXT}.".encode())
+            self._refuse_body(length, 413, f"Pictures can be up to {MAX_IMAGE_TEXT}.".encode())
             return
         data = self.rfile.read(length)
         try:
@@ -1918,6 +1919,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _from_host_pc(self):
         return self.client_address[0] == LOOPBACK
+
+    def _refuse_body(self, length, status, text):
+        """Answer a request whose body will not be used. The body is read first (up to MAX_DRAIN): a socket closed with
+        unread data in it is reset, and the reset can reach the client before the answer does, so it never sees why.
+        A longer body is not read at all; the connection closes after the answer instead."""
+        if 0 < length <= MAX_DRAIN:
+            try:
+                self.rfile.read(length)
+            except OSError:
+                pass
+        elif length > MAX_DRAIN:
+            self.close_connection = True
+        self._send(status, TEXT, text)
 
     def _length(self):
         """The request's Content-Length, or 0 when it is missing, not a number, or negative (a negative length would
