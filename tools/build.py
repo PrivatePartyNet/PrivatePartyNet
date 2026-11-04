@@ -21,7 +21,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(os.path.abspath(__file__)).parent.parent  # not resolve(), which would undo a subst drive (see check_path_lengths)
 sys.path.insert(0, str(ROOT))
 
 from privatepartynet import __version__  # noqa: E402
@@ -101,6 +101,17 @@ def find_prerequisites(allow_missing):
         print(f"  verified {what}: {name} ({path.stat().st_size:,} bytes)")
         found.append(path)
     return found
+
+
+def check_path_lengths(limit=259):
+    r"""Inno Setup reads the package through installer\..\dist\, and fails with "The system cannot find the path
+    specified" on a file whose path that way is longer than Windows' 260 characters. Stop first, saying what to do."""
+    via = len(str(ROOT / "installer")) + len(r"\..")  # and the separator before dist, counted in relative_to below
+    longest = max(DIST.rglob("*"), key=lambda p: len(str(p.relative_to(ROOT))), default=None)
+    if longest is not None and via + len(str(longest.relative_to(ROOT))) > limit:
+        sys.exit(f"This folder's path is too long for Inno Setup ({via + len(str(longest.relative_to(ROOT)))} characters "
+                 f"to {longest.name}, over {limit}). Build from a shorter path, for example: subst P: \"{ROOT}\", "
+                 r"then from P:\ run py tools\build.py (and subst P: /D afterwards).")
 
 
 def find_iscc():
@@ -244,6 +255,7 @@ def main():
     run([APP_DIR / "PrivatePartyNet.exe", "--window-test"], timeout=120)
 
     step("4. Build the installer")
+    check_path_lengths()
     prereqs = find_prerequisites(allow_missing="--allow-missing-prereqs" in sys.argv[1:])
     defines = [f"/DAppVersion={__version__}", f"/DPrereqDir={ROOT / 'installer' / 'prereq'}"]
     run([find_iscc(), *defines, ROOT / "installer" / "PrivatePartyNet.iss"], timeout=900)
