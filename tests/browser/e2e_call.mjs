@@ -535,7 +535,7 @@ async function main() {
   await sam.evaluate(`document.querySelector('${tileSel(alexKey)} .tool.fullscreen').click()`);
   check("the fullscreen button fullscreens that stream", await waitFor(() => sam.evaluate(`!!document.fullscreenElement && document.fullscreenElement.dataset.key === '${alexKey}'`)));
   check("the stream fills the window", await waitFor(() => sam.evaluate(`(function () { const r = document.fullscreenElement.getBoundingClientRect(); return Math.abs(r.width - innerWidth) < 2 && Math.abs(r.height - innerHeight) < 2; })()`)));
-  check("its button now leaves fullscreen", await sam.evaluate(`document.querySelector('${tileSel(alexKey)} .tool.fullscreen').title === 'Leave fullscreen'`));
+  check("its button now leaves fullscreen", await waitFor(() => sam.evaluate(`document.querySelector('${tileSel(alexKey)} .tool.fullscreen').title === 'Leave fullscreen'`)));
   await sam.evaluate(`document.querySelector('${tileSel(alexKey)} .tool.fullscreen').click()`);
   check("pressing it again returns to the grid", await waitFor(() => sam.evaluate("!document.fullscreenElement && document.querySelectorAll('#tiles .tile').length >= 2")));
 
@@ -545,7 +545,7 @@ async function main() {
   await sam.evaluate(`document.querySelector('${tileSel(alexKey)} .tool.fullscreen').click()`);
   check("in the app the stream's fullscreen asks for the whole window to go fullscreen", await waitFor(() => sam.evaluate("window.__fs.length > 0 && window.__fs[window.__fs.length - 1] === true")));
   check("the stream fills the window and the bars step aside", await sam.evaluate(`(function () { const t = document.querySelector('${tileSel(alexKey)}'); const r = t.getBoundingClientRect(); return t.classList.contains('in-window-fullscreen') && r.left === 0 && r.top === 0 && Math.abs(r.width - innerWidth) < 2 && Math.abs(r.height - innerHeight) < 2 && getComputedStyle(document.getElementById('top')).display === 'none' && getComputedStyle(document.getElementById('side')).display === 'none' && getComputedStyle(document.getElementById('statsbar')).display === 'none'; })()`));
-  check("its button now leaves fullscreen", await sam.evaluate(`document.querySelector('${tileSel(alexKey)} .tool.fullscreen').title === 'Leave fullscreen'`));
+  check("its button now leaves fullscreen", await waitFor(() => sam.evaluate(`document.querySelector('${tileSel(alexKey)} .tool.fullscreen').title === 'Leave fullscreen'`)));
   await sam.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
   check("Escape asks for the window to come back", await waitFor(() => sam.evaluate("window.__fs[window.__fs.length - 1] === false")));
   check("and the bars return", await sam.evaluate("getComputedStyle(document.getElementById('top')).display !== 'none' && !document.querySelector('.in-window-fullscreen')"));
