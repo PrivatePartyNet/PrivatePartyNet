@@ -68,6 +68,16 @@ PREREQUISITES = [
 ]
 
 
+def signed_by(path, who):
+    """True when the file's Authenticode signature is valid and its signer's name contains `who`."""
+    script = (f"$s = Get-AuthenticodeSignature -LiteralPath '{path}'; "
+              "Write-Output $s.Status; Write-Output $s.SignerCertificate.Subject")
+    result = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True,
+                            creationflags=NO_WINDOW, timeout=300)
+    lines = result.stdout.strip().splitlines()
+    return bool(lines) and lines[0].strip() == "Valid" and who in " ".join(lines[1:])
+
+
 def find_prerequisites(allow_missing):
     """Every prerequisite the installer carries, each checked for a valid Microsoft signature.
 
@@ -86,12 +96,7 @@ def find_prerequisites(allow_missing):
                 continue
             sys.exit(f"Missing prerequisite: {what}\n  Save the official file as {path}\n"
                      "  or pass --allow-missing-prereqs to build without it (the installer is then not offline-ready).")
-        script = (f"$s = Get-AuthenticodeSignature -LiteralPath '{path}'; "
-                  "Write-Output $s.Status; Write-Output $s.SignerCertificate.Subject")
-        result = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True,
-                                creationflags=NO_WINDOW, timeout=300)
-        lines = result.stdout.strip().splitlines()
-        if not lines or lines[0].strip() != "Valid" or "Microsoft" not in " ".join(lines[1:]):
+        if not signed_by(path, "Microsoft"):
             sys.exit(f"{what} at {path} does not carry a valid Microsoft signature. Not bundling it.")
         print(f"  verified {what}: {name} ({path.stat().st_size:,} bytes)")
         found.append(path)
@@ -227,6 +232,10 @@ def main():
     for name in (gohelper.PROGRAM, "wintun.dll"):
         if not list(APP_DIR.rglob(name)):
             sys.exit(f"{name} did not make it into the package: the game network would not work.")
+    wintun = next(APP_DIR.rglob("wintun.dll"))
+    if not signed_by(wintun, "WireGuard LLC"):
+        sys.exit(f"{wintun} does not carry a valid WireGuard LLC signature. Not shipping it.")
+    print(f"  wintun.dll: signed by WireGuard LLC ({wintun.stat().st_size:,} bytes)")
 
     step("3. Smoke test the packaged app")
     run([APP_DIR / "PrivatePartyNet.exe", "--smoke-test"], timeout=120)
