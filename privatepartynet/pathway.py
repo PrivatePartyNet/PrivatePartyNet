@@ -158,12 +158,21 @@ class PassCredential:
 
 
 class PassVerifier:
-    """Checks BIND_PASS for a friend relay: a pass the owner (`owner_public`, hex) signed, and the member's signature."""
+    """Checks BIND_PASS for a friend relay: a pass the owner (`owner_public`, hex) signed, and the member's signature.
+
+    Signatures cost real CPU on a member's gaming PC, so a pass the owner's signature was checked on is remembered
+    while it lasts (each BIND then costs only the member's signature), and a BIND seen already is answered from memory
+    for as long as it is fresh, so a copied one sent again and again costs one hash. RelayCore also limits how many BINDs
+    one address may have checked a second."""
 
     kind = rp.BIND_PASS
+    CACHE = 4096
 
     def __init__(self, owner_public):
         self.owner = bytes.fromhex(owner_public) if isinstance(owner_public, str) else bytes(owner_public)
+        self._passes = {}  # hash of a pass the owner signed -> its expiry
+        self._seen = {}  # hash of a whole BIND that checked out -> (until, result)
+        self.signatures = 0  # how many were checked, for the tests
 
     def tags(self):
         return {hashlib.sha256(self.owner).digest()[:8]}
@@ -175,13 +184,30 @@ class PassVerifier:
             return None
         pass_, stamp, signature, cookie = body[:116], body[116:120], body[120:184], body[184:]
         expiry, user, member = struct.unpack("!I", pass_[:4])[0], pass_[4:20], pass_[20:52]
-        if expiry < now or abs(struct.unpack("!I", stamp)[0] - now) > rp.FRESH_SECONDS:
+        sent = struct.unpack("!I", stamp)[0]
+        if expiry < now or abs(sent - now) > rp.FRESH_SECONDS:
             return None
-        if not verify(self.owner, pass_[52:], PASS_LABEL + pass_[:52]):
-            return None
+        whole = hashlib.sha256(bytes(channel) + bytes(body)).digest()
+        seen = self._seen.get(whole)
+        if seen is not None and seen[0] >= now:
+            return seen[1]
+        known = hashlib.sha256(pass_).digest()
+        if self._passes.get(known, 0) < now:
+            self.signatures += 1
+            if not verify(self.owner, pass_[52:], PASS_LABEL + pass_[:52]):
+                return None
+            self._remember(self._passes, known, expiry)
+        self.signatures += 1
         if not verify(member, signature, _pass_message(rp.BIND_PASS, channel, stamp, cookie, pass_)):
             return None
-        return user.hex(), expiry, hashlib.sha256(self.owner).digest()[:8], cookie
+        result = (user.hex(), expiry, hashlib.sha256(self.owner).digest()[:8], cookie)
+        self._remember(self._seen, whole, (sent + rp.FRESH_SECONDS, result))
+        return result
+
+    def _remember(self, cache, key, value):
+        if len(cache) >= self.CACHE:
+            cache.pop(next(iter(cache)))  # the oldest goes
+        cache[key] = value
 
 
 def invite_key(secret):

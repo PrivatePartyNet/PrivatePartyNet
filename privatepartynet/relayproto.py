@@ -36,7 +36,8 @@ Messages (one per UDP datagram; on the TCP fallback each is preceded by its leng
 A PC sends BIND again every REBIND_SECONDS. A relay keeps at most two ends per channel, one per user id. Each end has
 its own rate limit, each user one more over all their channels, and the relay one over everything; an end whose
 credentials expire, or whose key the relay no longer has, goes at once, and a channel nobody has used for IDLE_SECONDS
-is forgotten.
+is forgotten. Checking a BIND costs an HMAC or a signature, so each address may have only BIND_RATE of them checked a
+second; past that they are dropped unanswered.
 """
 
 import base64
@@ -71,6 +72,8 @@ DEFAULT_USER_RATE = 2_000_000  # bytes a second for one user over all their chan
 DEFAULT_TOTAL_RATE = 12_500_000  # bytes a second for the whole relay (100 Mbit/s)
 MAX_CHANNELS = 4096
 MAX_CHANNELS_PER_USER = 32  # a party has 16 people: one channel to each of the others, and room for joins
+BIND_RATE = 20.0  # BINDs a second one address may have checked (a member sends one per channel every 15 s)
+BIND_BURST = 60.0
 DEFAULT_UDP_PORT = 3479  # coturn keeps 3478
 DEFAULT_TLS_PORT = 443
 
@@ -261,7 +264,9 @@ class RelayCore:
         self.set_total_rate(total_rate)
         self.channels = {}  # channel -> {user: {"end", "bucket", "seen", "expiry", "tag", "stamp"}}
         self.users = {}  # user -> their bucket over all channels
-        self.stats = {"forwarded": 0, "bytes": 0, "limited": 0, "refused": 0, "dropped": 0, "checked": 0}
+        self.stats = {"forwarded": 0, "bytes": 0, "limited": 0, "refused": 0, "dropped": 0, "checked": 0,
+                      "throttled": 0}
+        self._bind_buckets = {}  # source address -> its bucket of BIND checks
         self._cookie_key = os.urandom(32)
         self._swept = clock()
 
@@ -294,6 +299,9 @@ class RelayCore:
             return []
         kind, channel, rest = message
         if kind in (BIND, BIND_PASS):
+            if not self._may_check(end, now):
+                self.stats["throttled"] += 1
+                return []  # a flood of BINDs (the signature of a friend relay pass costs real CPU): no answer at all
             return [(end, self._bind(kind, channel, rest, end, routable, now))]
         if kind != SEND:
             self.stats["dropped"] += 1
@@ -322,6 +330,17 @@ class RelayCore:
         self.stats["forwarded"] += 1
         self.stats["bytes"] += size
         return [(other["end"], deliver(channel, rest))]
+
+    def _may_check(self, end, now):
+        """True while the address `end` comes from has BIND checks left this moment. For UDP that is its IP address,
+        so changing ports gains nothing; a TCP connection counts on its own."""
+        source = end[1][0] if isinstance(end, tuple) and end[0] == "udp" else end
+        bucket = self._bind_buckets.get(source)
+        if bucket is None:
+            if len(self._bind_buckets) > 65536:
+                self._bind_buckets.clear()  # a spread-out flood: start again rather than grow without end
+            bucket = self._bind_buckets[source] = Bucket(BIND_RATE, BIND_BURST, now)
+        return bucket.take(1, now)
 
     def _bind(self, kind, channel, body, end, routable, now):
         wall = self._wall()
@@ -380,6 +399,8 @@ class RelayCore:
         wall = self._wall()
         self._swept = now
         self._drop(lambda e: now - e["seen"] > self.idle or e["expiry"] < wall)
+        for source in [s for s, b in self._bind_buckets.items() if now - b.stamp > self.idle]:
+            del self._bind_buckets[source]
 
     def drop_end(self, end):
         """A TCP connection closed: its ends go at once instead of waiting to be idle."""

@@ -100,6 +100,24 @@ class PassTests(unittest.TestCase):
         _, channel, body = rp.parse(message)
         return self.verifier.check(channel, body, time.time())
 
+    def test_a_copied_bind_sent_again_and_again_costs_no_more_signatures(self):
+        """A friend relay is someone's gaming PC: a flood of one captured BIND_PASS must not burn its CPU."""
+        credential = PassCredential(make_pass(self.owner.sign, self.member.user_id, self.member.sign_public),
+                                    self.member.sign)
+        message = credential.bind(CHANNEL)
+        for _ in range(200):
+            self.assertEqual(self.check(message)[0], self.member.user_id)
+        self.assertEqual(self.verifier.signatures, 2, "the owner's and the member's, once each")
+        self.check(credential.bind(CHANNEL, now=time.time() + 1))  # the next BIND of the same member
+        self.assertEqual(self.verifier.signatures, 3, "the pass is remembered: only the member's signature again")
+
+    def test_forged_signatures_on_a_captured_pass_cost_one_check_each_and_are_refused(self):
+        credential = PassCredential(make_pass(self.owner.sign, self.member.user_id, self.member.sign_public),
+                                    Identity.create().sign)  # someone else's key: every signature is wrong
+        for second in range(5):
+            self.assertIsNone(self.check(credential.bind(CHANNEL, now=time.time() + second)))
+        self.assertEqual(self.verifier.signatures, 6, "the owner's signature once, then only the member's")
+
     def test_a_pass_from_the_owner_used_with_the_members_key_is_accepted(self):
         credential = PassCredential(make_pass(self.owner.sign, self.member.user_id, self.member.sign_public),
                                     self.member.sign)
@@ -254,6 +272,16 @@ class CoreTests(unittest.TestCase):
         self.bind(BOB, "b")
         self.assertEqual(self.core.handle(rp.send(CHANNEL, b"x" * (rp.MAX_PAYLOAD + 1)), "a"), [])
 
+    def test_one_address_has_only_so_many_binds_checked_a_second(self):
+        message = rp.bind(CHANNEL, rp.member_credential("wrong", ALICE))  # a flood of BINDs that all fail their check
+        answered = sum(1 for port in range(200) if self.core.handle(message, ("udp", ("198.51.100.7", port))))
+        self.assertEqual(answered, int(rp.BIND_BURST), "changing ports gains nothing")
+        self.assertEqual(self.core.stats["throttled"], 200 - int(rp.BIND_BURST))
+        self.assertTrue(self.core.handle(message, ("udp", ("198.51.100.8", 1))), "another address is still answered")
+        self.now[0] += 1.0
+        answered = sum(1 for _ in range(50) if self.core.handle(message, ("udp", ("198.51.100.7", 1))))
+        self.assertEqual(answered, int(rp.BIND_RATE), "a second later, a second's worth more")
+
     def test_answers_are_never_bigger_than_what_was_asked(self):
         """No amplification: a BIND (the smallest is 57 bytes) gets at most a BOUND with a cookie (34)."""
         out = self.core.handle(rp.bind(CHANNEL, rp.member_credential("secret", ALICE)), "a")
@@ -382,6 +410,23 @@ class ServerTests(unittest.TestCase):
         sock = self.tls()
         sock.sendall(b"\xff\xff")
         self.assertTrue(self.closed(sock, 3))
+
+    def test_connections_beyond_the_relays_limit_are_closed_at_once(self):
+        """MAX_TCP holds the relay's memory under the service's limit (see relay/verify_memory.py)."""
+        relay = ThreadedRelay(["new secret"], host="127.0.0.1", udp_port=0, tls_port=0, certfile=str(self.certfile),
+                              keyfile=str(self.keyfile), max_tcp=3, handshake_seconds=5)
+        self.addCleanup(relay.close)
+        held = []
+        for number in range(3):
+            raw = socket.create_connection(("127.0.0.1", relay.tls_port), timeout=5, source_address=(f"127.0.9.{number + 1}", 0))
+            self.addCleanup(raw.close)
+            held.append(raw)
+        time.sleep(0.3)
+        extra = socket.create_connection(("127.0.0.1", relay.tls_port), timeout=5, source_address=("127.0.9.9", 0))
+        self.addCleanup(extra.close)
+        self.assertTrue(self.closed(extra, 3))
+        self.assertEqual(relay.server.refused_tcp, 1)
+        self.assertFalse(self.closed(held[0], 0.5), "the ones within the limit are kept")
 
     def test_one_address_cannot_hold_many_connections(self):
         """H1: a cap per address, counted from the moment a connection opens (before its TLS handshake)."""
