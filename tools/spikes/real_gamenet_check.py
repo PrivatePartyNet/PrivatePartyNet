@@ -121,7 +121,7 @@ def main():
     certfile, keyfile = ensure_certificate(folder, ["localhost", "127.0.0.1"])
     owner = Identity.create()
     party = Party("check-only", 0, certfile, keyfile, party_name="Game network check", host_name="Host",
-                  failed_login_delay=0, server_id="c0ffee00c0ffee00", host_user_id=owner.user_id, signer=owner.sign)
+                  failed_login_delay=0, server_id="c0ffee00c0ffee00", host_user_id=owner.user_id, owner=owner)
     party.start()
     hub = Hub()
 

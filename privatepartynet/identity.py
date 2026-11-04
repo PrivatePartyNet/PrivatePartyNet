@@ -115,6 +115,15 @@ class Identity:
     def sign(self, data):
         return self._sign.sign(data)
 
+    # a key two installs share
+    def shared_key(self, peer_dh_public, info):
+        """32 bytes that only this install and the holder of `peer_dh_public` can work out, the same on both PCs: X25519,
+        then HKDF with `info` saying what the key is for (the paths between members use it to prove their probes)."""
+        peer = _raw(peer_dh_public)
+        shared = self._dh.exchange(X25519PublicKey.from_public_bytes(peer))
+        return HKDF(algorithm=hashes.SHA256(), length=32, salt=b"".join(sorted([self.dh_public, peer])),
+                    info=b"PrivatePartyNet " + info).derive(shared)
+
     # sealing to a recipient
     def seal_to(self, recipient_dh_public, plaintext, aad=b""):
         """Encrypt `plaintext` so only the holder of `recipient_dh_public` can read it, and sign the result.

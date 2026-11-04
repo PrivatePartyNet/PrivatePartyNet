@@ -22,7 +22,7 @@ class GameNetworkLinkTests(unittest.TestCase):
         self.owner = Identity.create()
         self.party = Party("428617", 0, certfile, keyfile, party_name="Heroes night", host_name="Host",
                            failed_login_delay=0, heartbeat=0.2, server_id="feedfacecafebeef",
-                           host_user_id=self.owner.user_id, signer=self.owner.sign)
+                           host_user_id=self.owner.user_id, owner=self.owner)
         self.party.start()
         self.addCleanup(self.party.stop)
 

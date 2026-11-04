@@ -71,10 +71,21 @@ test("the stats counters include voice", () => {
   assert.equal(sample.bytes["down-video"], 9000);
 });
 
-test("STUN is off on one network and on once someone joined from outside, with no relay", () => {
+test("STUN is off on one network and on once someone joined from outside", () => {
   assert.equal(RTC.stunOn(), false);
   RTC.setStun(true);
   assert.equal(RTC.stunOn(), true);
+  assert.equal(RTC.iceServers().length, 1, "no TURN unless the party hands some out");
   RTC.setStun(false);
   assert.equal(RTC.stunOn(), false);
+});
+
+test("TURN credentials from the party are added beside STUN, and only well-formed ones", () => {
+  const turn = { urls: ["turn:relay.example.net:3478?transport=udp"], username: "1700000000:ab", credential: "c2VjcmV0" };
+  RTC.setStun(true, [turn, { urls: ["http://elsewhere"], username: "x", credential: "y" }, { urls: "turn:x" }, null]);
+  const servers = RTC.iceServers();
+  assert.equal(servers.length, 2);
+  assert.deepEqual(servers[1], turn);
+  RTC.setStun(false, [turn]);
+  assert.deepEqual(RTC.iceServers(), [], "on one network nothing is used, TURN included");
 });

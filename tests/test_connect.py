@@ -86,6 +86,16 @@ class StunTests(unittest.TestCase):
         self.assertEqual(result["answers"], 2)
 
 
+    def test_an_answer_is_read_without_its_socket(self):
+        request, transaction = connect.stun_request()
+        attribute = struct.pack("!HHBBH", 0x0020, 8, 0, 1, 40000 ^ (MAGIC >> 16)) +             struct.pack("!I", struct.unpack("!I", socket.inet_aton("203.0.113.7"))[0] ^ MAGIC)
+        answer = struct.pack("!HHI", 0x0101, len(attribute), MAGIC) + transaction + attribute
+        self.assertEqual(connect.parse_stun(answer, transaction), ("203.0.113.7", 40000))
+        self.assertEqual(connect.parse_stun(answer), ("203.0.113.7", 40000))
+        self.assertIsNone(connect.parse_stun(answer, b"x" * 12))
+        self.assertIsNone(connect.parse_stun(answer[:10]))
+
+
 class AddressTests(unittest.TestCase):
     def test_carrier_grade_nat_addresses_are_recognised(self):
         self.assertEqual(classify_public_ip("100.64.12.3"), "shared")
@@ -102,10 +112,29 @@ class AddressTests(unittest.TestCase):
 
         def fake(host, port, family):
             return [(family, 0, 0, "", (a, 0, 0, 0)) for a in
-                    ("fe80::1%12", "fd00::5", "::1", "2001:0:14c9:dc04::1", "2002:c000:204::1", "2603:6011:abcd::10", "2603:6011:abcd::10")]
+                    ("fe80::1%12", "fd00::5", "::1", "2001:0:14c9:dc04::1", "2002:808:808::1", "2603:6011:abcd::10", "2603:6011:abcd::10")]
 
-        with mock.patch.object(connect.socket, "getaddrinfo", fake):
-            self.assertEqual(connect.global_ipv6_addresses(), ["2603:6011:abcd::10"])
+        from privatepartynet import netinfo
+
+        with mock.patch.object(connect.socket, "getaddrinfo", fake), mock.patch.object(netinfo, "ipv6_unicast", lambda: None):
+            self.assertEqual(connect.global_ipv6_addresses(), ["2603:6011:abcd::10", "2002:808:808::1"],
+                             "6to4 is kept, but last")
+
+    def test_stable_ipv6_addresses_come_before_temporary_ones(self):
+        entries = [("2603:6011:abcd::7e1", 86400), ("2002:808:808::1", 604800), ("2603:6011:abcd::10", 604800),
+                   ("fe80::1", 604800)]
+        self.assertEqual(connect.global_ipv6_addresses(entries),
+                         ["2603:6011:abcd::10", "2603:6011:abcd::7e1", "2002:808:808::1"])
+        self.assertEqual(connect.global_ipv6_addresses([("2002:c0a8:101::1", 0)]), [], "6to4 of a private IPv4")
+
+    def test_windows_own_address_list_can_be_read(self):
+        from privatepartynet import netinfo
+
+        found = netinfo.ipv6_unicast()
+        if found is None:
+            self.skipTest("not Windows")
+        self.assertTrue(all(isinstance(a, str) and isinstance(t, int) for a, t in found))
+        self.assertIn("::1", [a for a, _ in found], "loopback is always there")
 
 
 class GatherTests(unittest.TestCase):
@@ -136,7 +165,10 @@ class GatherTests(unittest.TestCase):
         report = gather(8765, upnp=self.NO, stun={"public": "100.66.1.2", "nat": "hard"}, ipv6=["2603:6011:abcd::10"], lan=["192.168.1.9"])
         self.assertEqual(report["reachable"], "yes")
         self.assertIn(["ipv6", "2603:6011:abcd::10", 8765], report["candidates"])
-        self.assertIn("bypass", report["advice"])
+        self.assertIn("carrier-grade NAT", report["advice"], "it says plainly that IPv6 is what gets past the shared address")
+        self.assertIn("goes over IPv6", report["advice"])
+        no_cgnat = gather(8765, upnp=self.NO, stun={"public": "9.9.9.9", "nat": "easy"}, ipv6=["2603:6011:abcd::10"], lan=[])
+        self.assertIn("bypass", no_cgnat["advice"])
 
     def test_an_easy_router_that_did_not_open_the_port_is_a_maybe(self):
         report = gather(8765, upnp=self.NO, stun={"public": "9.9.9.9", "nat": "easy"}, ipv6=[], lan=["192.168.0.5"])
@@ -159,6 +191,7 @@ DESCRIPTION = """<?xml version="1.0"?>
 class FakeRouter:
     def __init__(self, accept_timed_leases=True, refuse=False, external="9.9.9.9"):
         self.mappings = {}
+        self.protocols = []
         self.calls = []
         self.accept_timed_leases = accept_timed_leases
         self.refuse = refuse
@@ -184,6 +217,7 @@ class FakeRouter:
                 if action == "AddPortMapping":
                     lease = int(body.split("<NewLeaseDuration>")[1].split("<")[0])
                     port = int(body.split("<NewExternalPort>")[1].split("<")[0])
+                    router.protocols.append(body.split("<NewProtocol>")[1].split("<")[0])
                     if router.refuse or (lease and not router.accept_timed_leases):
                         status = 500
                     else:
@@ -246,6 +280,13 @@ class UpnpTests(unittest.TestCase):
         result = self.mapping(router).map()
         self.assertEqual((result["ok"], result["external_ip"], result["external_port"]), (True, "9.9.9.9", 8765))
         self.assertIn(8765, router.mappings)
+
+    def test_a_udp_port_can_be_asked_for_too(self):
+        router = self.router()
+        mapping = UpnpMapping(8766, search_address=router.search_address, timeout=1.0, protocol="UDP")
+        self.addCleanup(mapping.unmap)
+        self.assertTrue(mapping.map()["ok"])
+        self.assertEqual(router.protocols, ["UDP"])
 
     def test_the_router_address_is_known_after_it_answers(self):
         router = self.router()

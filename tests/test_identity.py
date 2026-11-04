@@ -68,6 +68,13 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(first.user_id, second.user_id)
         self.assertEqual(second.open_from(first.sign_public, first.seal_to(second.dh_public, b"me")), b"me")
 
+    def test_two_identities_work_out_the_same_shared_key(self):
+        one = self.alice.shared_key(self.bob.dh_public, b"path")
+        self.assertEqual(one, self.bob.shared_key(self.alice.dh_public.hex(), b"path"))
+        self.assertEqual(len(one), 32)
+        self.assertNotEqual(one, self.alice.shared_key(self.bob.dh_public, b"other use"))
+        self.assertNotEqual(one, self.alice.shared_key(Identity.create().dh_public, b"path"))
+
     def test_an_identity_can_move_with_its_private_bundle(self):
         moved = Identity.from_private_bundle(self.alice.private_bundle())
         self.assertEqual(moved.user_id, self.alice.user_id)

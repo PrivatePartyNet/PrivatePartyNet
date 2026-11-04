@@ -2,8 +2,8 @@
 
 A game's IPv4 packets on the game network are sealed by WireGuard, and the datagrams that carry them may travel over
 IPv6. IPv6 has no carrier-grade NAT, only firewalls, so two members who both have IPv6 reach each other directly even
-when both are behind symmetric CGNAT on IPv4. These tests prove that, and the cases around it. The ones marked
-expectedFailure show what pathway.py does not do yet; each says why.
+when both are behind symmetric CGNAT on IPv4. These tests prove that, and the cases around it: a relay reached on
+whichever of its addresses answers, and a way that carries small packets but not large ones left for one that does.
 
 They need pathway.py and the relay server, and are skipped where those are not in the tree yet."""
 
@@ -179,7 +179,6 @@ class RelayTests(Base):
         mesh(a, b)
         self.connects(a, b, "vps")
 
-    @unittest.expectedFailure
     def test_a_relay_named_once_reaches_an_ipv6_only_member(self):
         """Today relayclient.resolve() takes the first IPv4 address of a name and never tries its IPv6 one, so a member
         whose network carries no IPv4 UDP cannot reach a relay the owner gave by name (as a VPS usually is). Fix: try
@@ -219,7 +218,6 @@ class RelayTests(Base):
         arrived = sum(1 for d in b.got if d.startswith(b"tick "))
         self.assertGreater(arrived, sent * 0.9, f"{arrived} of {sent} arrived")
 
-    @unittest.expectedFailure
     def test_a_full_size_datagram_crosses_an_ipv6_path_with_the_smallest_mtu(self):
         """IPv6 links may be as small as 1280 bytes (tunnels, some mobile networks), and IPv6 routers never split a
         packet. A MAX_DATAGRAM of 1400 bytes needs 1448. Today the 41-byte probes get through, so the path settles on

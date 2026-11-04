@@ -64,6 +64,24 @@
     <div class="row"><button id="saveServerPassword" class="secondary">Change password</button></div>
   </details>
   <p id="reach" class="muted"></p>
+  <details id="relayBox">
+    <summary>Relay server</summary>
+    <p class="muted">For members whose routers let nothing through, on both sides. Your group runs it on a small rented server (relay/README.md says how). What passes through it is encrypted and it cannot read it. The secret stays on this PC: members get short-lived credentials from it, signed by this PC.</p>
+    <p id="relayNow" class="muted"></p>
+    <label class="field">Address (with :port if it is not 3479; for IPv4 and IPv6, both with a comma between)
+      <input id="relayAddress" autocomplete="off" spellcheck="false" placeholder="relay.example.net">
+    </label>
+    <label class="field">Secret
+      <input id="relaySecret" type="password" autocomplete="off">
+    </label>
+    <label class="field">Certificate fingerprint (printed by the setup script; without it members never use the relay over TCP port 443)
+      <input id="relayPin" autocomplete="off" spellcheck="false" maxlength="95">
+    </label>
+    <div class="row">
+      <button id="saveRelay" class="secondary">Save relay server</button>
+      <button id="clearRelay" class="secondary" hidden>Remove</button>
+    </div>
+  </details>
   <div class="row">
     <button id="copyInvite" class="secondary">Copy invite</button>
     <span id="inviteNote" class="muted"></span>
@@ -120,6 +138,13 @@
   <p id="gameNone" class="muted">Start your party or join one to use its game network.</p>
   <p id="gameStatus" class="muted"></p>
   <div class="row"><button id="gameOff" class="secondary" hidden>Turn the game network off</button></div>
+  <p id="pathWays" class="muted" hidden></p>
+  <p id="pathProblems" class="muted" hidden></p>
+  <label class="check"><input id="friendRelay" type="checkbox"> Let party members who can't reach each other go through this PC (encrypted; uses your upload)</label>
+  <label class="field small">At most (Mbit/s)
+    <input id="friendRelayMbps" inputmode="numeric" maxlength="4" autocomplete="off">
+  </label>
+  <p id="friendRelayNow" class="muted" hidden></p>
   <!-- What party members can reach on this PC: gamereach.js fills it in. A setting of this PC only. -->
   <details id="gameReach">
     <summary>What party members can reach on this PC</summary>

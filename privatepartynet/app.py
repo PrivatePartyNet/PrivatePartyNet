@@ -38,7 +38,7 @@ from privatepartynet.identity import Identity, safety_number
 from privatepartynet.netinfo import LOOPBACK, address_for, lan_addresses
 from privatepartynet.paths import data_dir, web_dir
 from privatepartynet.server import Forbidden, NotFound, Party, generate_password
-from privatepartynet.settings import THEMES, load_settings, save_settings, valid_port
+from privatepartynet.settings import THEMES, load_settings, save_settings, valid_mbps, valid_port
 from privatepartynet.store import Store
 from privatepartynet.vault import Locked, Vault, VaultError, WrongPassword
 
@@ -326,6 +326,9 @@ class Controller:
         self._game_paths = None  # tests: make(identity) -> a path manager in place of pathway.PathManager
         self._game_note = ""
         self._host_punch = None  # while the party is open: reachable through the routers by invite (punch.py)
+        # The game network's PathManager (pathway.py) while it runs, set by whoever starts it; with .names, a dict of
+        # user id -> name, when it knows them. The control panel shows its relaying and its problems from it.
+        self.path_manager = None
         self._tunnels = {}  # joined server key -> the punch-through tunnel it is reached by
 
     # --- the key, the identity and the chat store ----------------------------------------------------------
@@ -572,7 +575,8 @@ class Controller:
 
             try:
                 host = punch.HostPunch(self._identity._sign, party.server_id, str(certfile), str(keyfile), party.port,
-                                       party.invite_secrets, poll=15.0)
+                                       party.invite_secrets, poll=15.0, relays=party.host_relays,
+                                       ipv6=connect.global_ipv6_addresses)
             except Exception:
                 log.exception("Could not get ready to be reached through the routers")
                 return
@@ -603,10 +607,11 @@ class Controller:
         if self._reach and self._reach.get("state") == "done":
             candidates = self._reach["candidates"]
         self._start_host_punch()
+        secret = self._party.new_invite_secret()
         return connect.encode_invite(self._name, self._party.passcode, candidates, connect.certificate_fingerprint(self._cert_pem),
                                      server_id=self._settings.get("server_id") or "",
                                      host_sign=self._identity.sign_public.hex() if self._identity else "",
-                                     secret=self._party.new_invite_secret())
+                                     secret=secret, relays=self._party.invite_relays(bytes.fromhex(secret)))
 
     def invite(self):
         """The invite code for this party: the name, the password, where to try and the certificate to check."""
@@ -750,7 +755,7 @@ class Controller:
             return self._game_paths(self._identity)
         from privatepartynet import pathway
 
-        return pathway.PathManager(self._identity, self._settings)
+        return pathway.PathManager(self._identity, self.path_settings())
 
     @staticmethod
     def _use_relay(paths, relay, host_sign):
@@ -1026,6 +1031,9 @@ class Controller:
             "dm_unread": self._dm_unread(),
             "reach": self._reach_view(),
             "game": self.game_state(),
+            "relay": party.relay_view() if party else None,
+            "friend_relay": {"on": self._settings.get("friend_relay") is True,
+                             "mbps": self._settings.get("friend_relay_mbps", 8), **self._paths_view()},
         }
 
     def _all_requests(self):
@@ -1104,11 +1112,13 @@ class Controller:
             party = Party(passcode, port, certfile, keyfile, party_name=name, host_name=name, grabber=self._grabber,
                           theme=self._settings.get("theme", "system"), store=self._store,
                           server_id=self._settings["server_id"], host_user_id=self._identity.user_id,
-                          signer=self._identity.sign)
+                          owner=self._identity)
         except OSError as exc:
             log.exception("Could not listen on port %s", port)
             return {"ok": False, "message": f"Could not listen on port {port}: {exc}"}
         party.start()
+        party.friend_relays = self._friend_relays  # members who relay for others, for the invites' relays
+        party.relay_listeners.append(lambda: party.net_directory().touch())  # members get new relay settings at once
         self._party = party
         self._passcode = party.passcode
         self._check_reach(party.port)
@@ -1146,6 +1156,83 @@ class Controller:
             return {"ok": False, "message": str(exc)}
         self._passcode = self._party.passcode
         return {"ok": True, "message": "Password changed. Copy a new invite for anyone new."}
+
+    def set_relay(self, address, secret, pin=""):
+        """The owner sets the group's relay server (relay/README.md): its address (a name or numbers, with :port when it
+        is not 3479; or its IPv4 and IPv6 addresses with a comma between), the secret the setup script printed, and its
+        certificate fingerprint. Kept with the server; the
+        secret never leaves this PC. Returns {ok, message}."""
+        if self._party is None:
+            return {"ok": False, "message": "Start the party first."}
+        parts = [_split_address(part) for part in str(address or "").split(",") if part.strip()] or [("", None)]
+        host = ", ".join(h for h, _ in parts)
+        port = next((p for _, p in parts if p), None)
+        try:
+            self._party.set_relay(self._party.host_id, {"host": host, "port": port, "secret": secret, "pin": pin})
+        except (Forbidden, NotFound) as exc:
+            return {"ok": False, "message": str(exc)}
+        return {"ok": True, "message": "Relay server saved. Members get it the next time they connect."}
+
+    def clear_relay(self):
+        if self._party is None:
+            return {"ok": False, "message": "Start the party first."}
+        self._party.set_relay(self._party.host_id, None)
+        return {"ok": True, "message": "Relay server removed."}
+
+    def set_friend_relay(self, on, mbps=None):
+        """Allow or stop forwarding for other members who cannot reach each other, and how much at most."""
+        changes = {"friend_relay": bool(on)}
+        if mbps is not None:
+            try:
+                mbps = int(mbps)
+            except (TypeError, ValueError):
+                mbps = 0
+            if not valid_mbps(mbps):
+                return {"ok": False, "message": "The limit is a whole number of megabits a second, from 1 to 1000."}
+            changes["friend_relay_mbps"] = mbps
+        self._save(**changes)
+        manager = self.path_manager
+        if manager is not None:
+            manager.set_friend_relay(changes["friend_relay"], changes.get("friend_relay_mbps"))
+        return {"ok": True, "message": "Saved." if on else "This PC will not relay for others."}
+
+    def path_settings(self):
+        """What a PathManager (pathway.py) on this PC is given as its settings."""
+        return {"friend_relay": self._settings.get("friend_relay") is True,
+                "friend_relay_mbps": self._settings.get("friend_relay_mbps", 8)}
+
+    def _friend_relays(self):
+        manager = self.path_manager
+        try:
+            return manager.friend_offers() if manager is not None else []
+        except Exception:
+            log.exception("Reading the members who relay for others failed")
+            return []
+
+    def _name_of(self, user_id):
+        party = self._party
+        for member in (party.roster() if party is not None else []):
+            if member.get("user") == user_id:
+                return member["name"]
+        names = getattr(self.path_manager, "names", None) or {}
+        return names.get(user_id) or "a member"
+
+    def _paths_view(self):
+        """Who is going through this PC now, and whom this PC cannot reach and why (from the game network's paths)."""
+        from privatepartynet.pathway import WAY_TEXT
+
+        manager = self.path_manager
+        if manager is None:
+            return {"through": [], "problems": [], "ways": []}
+        try:
+            state, problems = manager.state(), manager.problems()
+        except Exception:
+            log.exception("Reading the paths failed")
+            return {"through": [], "problems": [], "ways": []}
+        ways = sorted(f"{self._name_of(peer)}, {WAY_TEXT.get(info.get('kind') or '', 'not connected yet')}"
+                      for peer, info in (state.get("peers") or {}).items())
+        return {"through": [self._name_of(u) for u in state.get("through") or []],
+                "problems": [f"{self._name_of(p['peer'])}: {p['why']}" for p in problems], "ways": ways}
 
     def rename(self, name):
         name = clean_name(name)
@@ -1301,6 +1388,19 @@ class Controller:
         save_settings(self._settings, self._data_dir)
 
 
+
+
+def _split_address(text):
+    """(host, port) from "relay.example.net", "203.0.113.5:4000" or "[2001:db8::1]:4000"; the port is None if not given."""
+    text = str(text or "").strip()
+    if text.startswith("["):
+        host, _, rest = text[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    elif text.count(":") == 1:
+        host, port = text.split(":")
+    else:
+        host, port = text, ""
+    return host, (port or None)
 
 
 def window_test(seconds=45):

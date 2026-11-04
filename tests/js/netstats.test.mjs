@@ -130,3 +130,20 @@ test("the most detailed level that fits is chosen, and the last one when none do
   assert.equal(N.highestFitting(levels, () => true), 3);
   assert.equal(N.highestFitting(levels, () => false), 0);
 });
+
+test("the hover card says which way a connection goes, IPv6 and the relay server included", () => {
+  const pair = (local, remote) => [
+    { type: "candidate-pair", nominated: true, state: "succeeded", localCandidateId: "L", remoteCandidateId: "R" },
+    { type: "local-candidate", id: "L", ...local },
+    { type: "remote-candidate", id: "R", ...remote },
+  ];
+  assert.equal(N.way(pair({ candidateType: "host" }, { candidateType: "srflx", address: "2001:db8::7" })), "ipv6");
+  assert.equal(N.way(pair({ candidateType: "relay" }, { candidateType: "srflx", address: "203.0.113.5" })), "relay");
+  assert.equal(N.way(pair({ candidateType: "host" }, { candidateType: "host", address: "192.168.1.20" })), "lan");
+  assert.equal(N.way(pair({ candidateType: "srflx" }, { candidateType: "prflx", address: "203.0.113.5" })), "direct");
+  assert.equal(N.way([]), null, "nothing chosen yet");
+  assert.equal(N.wayText("ipv6"), "Direct over IPv6");
+  assert.equal(N.wayText("relay"), "Through the relay server");
+  const sample = N.normalize(pair({ candidateType: "host" }, { candidateType: "host", address: "2001:db8::7" }), [], 0);
+  assert.equal(N.diff(null, sample).way, "ipv6");
+});

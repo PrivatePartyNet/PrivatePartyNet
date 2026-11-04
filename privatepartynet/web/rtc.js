@@ -9,12 +9,29 @@
 
   // On one network the browsers reach each other directly and need no STUN server. Once someone has joined from outside,
   // the page turns STUN on (setStun) so each side learns the public address its router gives it and the two can reach
-  // each other through their routers. There is no TURN server: nothing relays the media.
+  // each other through their routers. When the owner set up the group's relay server, the party also hands each page
+  // TURN credentials for the coturn beside it (short-lived, made for this member): media between two routers that let
+  // nothing through goes there, still encrypted end to end. A direct way is always preferred when one works.
   var STUN_SERVERS = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] }];
   var CONFIG = { iceServers: [] };
 
-  function setStun(on) {
-    CONFIG = { iceServers: on ? STUN_SERVERS : [] };
+  function cleanTurn(list) {
+    return (Array.isArray(list) ? list : []).filter(function (server) {
+      return server && Array.isArray(server.urls) && typeof server.username === "string" &&
+        typeof server.credential === "string" && server.urls.every(function (url) {
+          return typeof url === "string" && /^turns?:/.test(url);
+        });
+    }).map(function (server) {
+      return { urls: server.urls.slice(), username: server.username, credential: server.credential };
+    });
+  }
+
+  function setStun(on, turn) {
+    CONFIG = { iceServers: on ? STUN_SERVERS.concat(cleanTurn(turn)) : [] };
+  }
+
+  function iceServers() {
+    return CONFIG.iceServers;
   }
 
   function stunOn() {
@@ -305,6 +322,7 @@
     addSlots: addSlots,
     setStun: setStun,
     stunOn: stunOn,
+    iceServers: iceServers,
     addAudio: addAudio,
     setMicTrack: setMicTrack,
     remoteAudioTrack: remoteAudioTrack,

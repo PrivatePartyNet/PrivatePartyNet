@@ -43,6 +43,7 @@ STUN_SERVERS = (("stun.l.google.com", 19302), ("stun1.l.google.com", 19302), ("s
 STUN_MAGIC = 0x2112A442
 INVITE_PREFIX = "ppn1-"
 MAX_CANDIDATES = 8
+MAX_RELAYS = 5  # the relay server at two addresses, and three members who relay for others
 ASK_TIMEOUT = 5.0
 ANSWER_WAIT = 300.0
 POLL_SECONDS = 1.5
@@ -56,16 +57,22 @@ class ConnectError(Exception):
 # --- STUN: the address the outside world sees -----------------------------------------------------------------
 
 
-def _stun_binding(sock, host, port, family):
-    infos = socket.getaddrinfo(host, port, family, socket.SOCK_DGRAM)
+def stun_request():
+    """(request bytes, transaction id) for one STUN binding request."""
     transaction = os.urandom(12)
-    sock.sendto(struct.pack("!HHI", 0x0001, 0, STUN_MAGIC) + transaction, infos[0][4])
-    data, _ = sock.recvfrom(2048)
-    _, length, _ = struct.unpack("!HHI", data[:8])
-    if data[4:8] != struct.pack("!I", STUN_MAGIC) or data[8:20] != transaction:
+    return struct.pack("!HHI", 0x0001, 0, STUN_MAGIC) + transaction, transaction
+
+
+def parse_stun(data, transaction=None):
+    """(address, port) from a STUN binding answer, or None. With `transaction`, only the answer to that request."""
+    if len(data) < 20 or data[4:8] != struct.pack("!I", STUN_MAGIC):
+        return None
+    if transaction is not None and data[8:20] != transaction:
         return None  # not the answer to our question
+    _, length, _ = struct.unpack("!HHI", data[:8])
+    transaction = data[8:20]
     position = 20
-    while position + 4 <= 20 + length:
+    while position + 4 <= min(20 + length, len(data)):
         kind, size = struct.unpack("!HH", data[position:position + 4])
         body = data[position + 4:position + 4 + size]
         if kind == 0x0020 and len(body) >= 8:
@@ -73,10 +80,20 @@ def _stun_binding(sock, host, port, family):
             if body[1] == 1:
                 address = struct.unpack("!I", body[4:8])[0] ^ STUN_MAGIC
                 return socket.inet_ntoa(struct.pack("!I", address)), port_x
+            if len(body) < 20:
+                return None
             raw = bytes(a ^ b for a, b in zip(body[4:20], struct.pack("!I", STUN_MAGIC) + transaction))
             return socket.inet_ntop(socket.AF_INET6, raw), port_x
         position += 4 + size + (-size % 4)
     return None
+
+
+def _stun_binding(sock, host, port, family):
+    infos = socket.getaddrinfo(host, port, family, socket.SOCK_DGRAM)
+    request, transaction = stun_request()
+    sock.sendto(request, infos[0][4])
+    data, _ = sock.recvfrom(2048)
+    return parse_stun(data, transaction)
 
 
 def stun_probe(servers=STUN_SERVERS, timeout=2.0, family=socket.AF_INET, local_port=0):
@@ -111,24 +128,45 @@ def stun_probe(servers=STUN_SERVERS, timeout=2.0, family=socket.AF_INET, local_p
 # --- addresses of this PC -------------------------------------------------------------------------------------
 
 
-def global_ipv6_addresses():
-    """This PC's IPv6 addresses that other networks can in principle reach. Link-local, unique-local, loopback and the
-    old Teredo and 6to4 tunnel ranges (which are not native connectivity) are left out."""
-    found = []
-    try:
-        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6)
-    except OSError:
-        return found
-    for info in infos:
-        text = info[4][0].split("%")[0]
+TEREDO = ipaddress.ip_network("2001::/32")
+SIX_TO_FOUR = ipaddress.ip_network("2002::/16")
+
+
+def global_ipv6_addresses(entries=None):
+    """This PC's IPv6 addresses that other networks can in principle reach, best first: stable addresses before
+    temporary (privacy) ones, which are kept since they are often all a network leaves, and the old 6to4 tunnel range
+    last, since it rarely works. Link-local, unique-local, loopback and Teredo are left out. Most carrier-grade NAT
+    providers give real IPv6 with no NAT at all, so these are how two members behind CGNAT usually reach each other.
+
+    `entries` is [(address, preferred lifetime)], from Windows' own list when it can be read, else the host name's."""
+    from privatepartynet.netinfo import ipv6_unicast
+
+    if entries is None:
+        entries = ipv6_unicast()
+    if entries is None:
+        try:
+            infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6)
+        except OSError:
+            infos = []
+        entries = [(info[4][0], 0) for info in infos]
+    ranked = []
+    for position, (text, lifetime) in enumerate(entries):
+        text = text.split("%")[0]
         try:
             address = ipaddress.IPv6Address(text)
         except ValueError:
             continue
-        if address.is_link_local or address.is_loopback or address.is_private or address.is_multicast:
+        six_to_four = address in SIX_TO_FOUR
+        if six_to_four:
+            if not address.sixtofour.is_global:  # (Python counts all of 6to4 as private) a 6to4 of a private IPv4
+                continue
+        elif address.is_link_local or address.is_loopback or address.is_private or address.is_multicast:
             continue
-        if address in ipaddress.ip_network("2001::/32") or address in ipaddress.ip_network("2002::/16"):
+        if address in TEREDO or address.ipv4_mapped:
             continue
+        ranked.append((six_to_four, -lifetime, position, text))
+    found = []
+    for *_, text in sorted(ranked):
         if text not in found:
             found.append(text)
     return found
@@ -233,13 +271,15 @@ def _local_address_towards(host):
 
 
 class UpnpMapping:
-    """Ask the router to forward one TCP port to this PC, and take the request back when asked.
+    """Ask the router to forward one port (TCP, or UDP for the paths between members) to this PC, and take the request
+    back when asked.
 
     `map()` returns {"ok", "external_ip", "external_port", "reason"}. The mapping has a lease, which a background
     thread renews until `unmap()`; the thread ends with unmap() or after `max_seconds`, whichever comes first."""
 
-    def __init__(self, port, search_address=SSDP_ADDRESS, timeout=2.0, lease=3600, max_seconds=24 * 3600):
+    def __init__(self, port, search_address=SSDP_ADDRESS, timeout=2.0, lease=3600, max_seconds=24 * 3600, protocol="TCP"):
         self.port = port
+        self.protocol = protocol
         self._search = search_address
         self._timeout = timeout
         self._lease = lease
@@ -258,7 +298,7 @@ class UpnpMapping:
     def _add(self, lease):
         url, service = self._gateway[0], self._gateway[1]
         status, _ = _soap(url, service, "AddPortMapping", [
-            ("NewRemoteHost", ""), ("NewExternalPort", self.port), ("NewProtocol", "TCP"),
+            ("NewRemoteHost", ""), ("NewExternalPort", self.port), ("NewProtocol", self.protocol),
             ("NewInternalPort", self.port), ("NewInternalClient", self._internal), ("NewEnabled", 1),
             ("NewPortMappingDescription", "PrivatePartyNet"), ("NewLeaseDuration", lease)], self._timeout)
         return status == 200
@@ -306,7 +346,7 @@ class UpnpMapping:
             return
         try:
             _soap(self._gateway[0], self._gateway[1], "DeletePortMapping",
-                  [("NewRemoteHost", ""), ("NewExternalPort", self.port), ("NewProtocol", "TCP")], self._timeout)
+                  [("NewRemoteHost", ""), ("NewExternalPort", self.port), ("NewProtocol", self.protocol)], self._timeout)
         except (OSError, http.client.HTTPException):
             log.debug("Removing the router port-open failed", exc_info=True)
         self.result = {**self.result, "ok": False, "reason": "closed"}
@@ -346,6 +386,12 @@ def gather(port, upnp=None, stun=None, ipv6=None, lan=None):
 
 
 def _advice(upnp, ipv6, cgnat, stun):
+    if ipv6 and cgnat:
+        return "yes", ("This internet connection shares one IPv4 address between many customers (carrier-grade NAT), but "
+                       "it also has IPv6, which has no such sharing: members with IPv6 reach this PC directly over it, "
+                       "and the game network goes over IPv6 whenever both ends have it. If your router has a firewall for "
+                       "IPv6 (the standard Starlink router blocks it and cannot be changed), the invite still gets through "
+                       "it, because both PCs send at the same moment.")
     if ipv6:
         return "yes", ("People with IPv6 can reach this PC directly. If your router has a firewall for IPv6 (the standard "
                        "Starlink router blocks it and cannot be changed), allow this port or put the router in bypass mode.")
@@ -354,13 +400,14 @@ def _advice(upnp, ipv6, cgnat, stun):
     if cgnat:
         return "no", ("This internet connection shares one public address between many customers (carrier-grade NAT, as on "
                       "Starlink), and no router setting can open it. People on your own network can join. People outside "
-                      "can join only with a way around it: IPv6, or the direct-connection step that PrivatePartyNet is still "
-                      "getting. Their side matters too.")
+                      "join with the invite through both routers, which works unless their router is of the same strict "
+                      "kind; then only IPv6 or a relay helps (a member who relays for others, or your group's relay "
+                      "server).")
     if stun.get("public") is None:
         return "maybe", "No public address could be found. Check the internet connection."
     if stun.get("nat") == "easy":
-        return "maybe", ("Your router did not open the port by itself. Forward the port in the router, or wait for the "
-                         "direct-connection step, which suits routers like yours.")
+        return "maybe", ("Your router did not open the port by itself, but the invite still works through it: both PCs "
+                         "send at the same moment, which suits routers like yours. Forwarding the port is faster.")
     return "maybe", "Your router did not open the port by itself. Forward the port in the router."
 
 
@@ -372,10 +419,13 @@ def certificate_fingerprint(pem_text):
     return hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem_text)).hexdigest()
 
 
-def encode_invite(name, password, candidates, fingerprint, server_id="", host_sign="", secret=""):
-    """`secret` (hex) lets the joiner find the host through the DHT when no address answers (punch.py)."""
+def encode_invite(name, password, candidates, fingerprint, server_id="", host_sign="", secret="", relays=()):
+    """`secret` (hex) lets the joiner find the host through the DHT when no address answers (punch.py). `relays`
+    (Party.invite_relays) are where the two can meet when no direct way works at all."""
     data = {"v": 1, "n": str(name)[:40], "p": str(password), "c": [list(c) for c in candidates][:MAX_CANDIDATES],
             "f": fingerprint, "s": server_id, "k": host_sign, "r": secret}
+    if relays:
+        data["y"] = [list(r) for r in relays][:MAX_RELAYS]
     packed = zlib.compress(json.dumps(data, separators=(",", ":")).encode("utf-8"), 9)
     check = hashlib.sha256(packed).digest()[:3]
     return INVITE_PREFIX + base64.urlsafe_b64encode(packed + check).decode("ascii").rstrip("=")
@@ -413,7 +463,30 @@ def decode_invite(code):
     host_sign = data.get("k") if isinstance(data.get("k"), str) and re.fullmatch(r"[0-9a-f]{64}", data.get("k") or "") else ""
     return {"name": str(data.get("n") or "Party")[:40], "password": str(data.get("p") or ""), "candidates": candidates,
             "fingerprint": fingerprint, "server_id": str(data.get("s") or "")[:40], "host_sign": host_sign,
-            "secret": secret}
+            "secret": secret, "relays": _read_relays(data.get("y"))}
+
+
+def _read_relays(items):
+    """The relays in an invite, as punch.join_relayed takes them; anything malformed is left out."""
+    found = []
+    for item in (items if isinstance(items, list) else [])[:MAX_RELAYS]:
+        try:
+            kind, host, port, tls_port, pin, token = item
+            token = bytes.fromhex(token)
+            host, port, tls_port, pin = str(host), int(port), int(tls_port or 0), str(pin or "")
+        except (ValueError, TypeError):
+            continue
+        if kind not in ("vps", "friend") or not host or len(host) > 253 or len(token) != {"vps": 52, "friend": 116}.get(kind):
+            continue
+        if not 0 < port < 65536 or not 0 <= tls_port < 65536 or (pin and not re.fullmatch(r"[0-9a-f]{64}", pin)):
+            continue
+        if kind == "friend":
+            try:
+                ipaddress.ip_address(host)  # a member's PC is named by its address, never by a name to look up
+            except ValueError:
+                continue
+        found.append({"kind": kind, "host": host, "port": port, "tls_port": tls_port, "pin": pin, "token": token})
+    return found
 
 
 # --- asking to join ---------------------------------------------------------------------------------------------
@@ -515,16 +588,21 @@ class Joiner:
         """Reach the host through both routers (punch.py) when no address answered. True when it was tried to the end
         (joined, denied or failed with its own message); False when the invite cannot do it."""
         invite = self.invite
-        if not (invite.get("host_sign") and invite.get("secret") and invite.get("server_id") and invite["fingerprint"]):
+        relays = invite.get("relays") or []
+        findable = invite.get("host_sign") and invite.get("server_id")
+        if not (invite.get("secret") and invite["fingerprint"] and (findable or relays)):
             return False
         if self._cancel.is_set():
             return False
         from privatepartynet import punch
 
-        self._set("trying", "No address answered; trying a direct connection through both routers (this takes up to a minute)...")
+        self._set("trying", "No address answered; trying a direct connection through both routers, then a relay "
+                            "(this takes up to a minute)..." if relays else
+                            "No address answered; trying a direct connection through both routers (this takes up to a minute)...")
         try:
-            tunnel = punch.join_through(invite["host_sign"], invite["server_id"], bytes.fromhex(invite["secret"]),
-                                        invite["fingerprint"])
+            tunnel = punch.join_through(invite.get("host_sign", ""), invite.get("server_id", ""),
+                                        bytes.fromhex(invite["secret"]), invite["fingerprint"], relays=relays,
+                                        ipv6=global_ipv6_addresses)
         except Exception as exc:
             why = "; ".join(sorted(set(tried))[:2])
             self._set("failed", f"Could not reach the party ({why}). The connection through the routers did not work "
