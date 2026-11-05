@@ -5,6 +5,7 @@ import time
 import unittest
 from pathlib import Path
 
+from privatepartynet import app
 from privatepartynet.app import Controller, WindowApi, webview_options
 from privatepartynet.settings import load_settings
 
@@ -124,6 +125,25 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual([lib["name"] for lib in info["libraries"]][:2], ["pywebview", "mss"])
         self.assertTrue(all(lib["version"] for lib in info["libraries"]))
         self.assertEqual(self.controller.state()["app_name"], APP_NAME)
+
+    def test_a_message_the_panel_hid_is_logged_by_where_never_by_what(self):
+        with self.assertLogs("privatepartynet", "WARNING") as logged:
+            self.assertEqual(self.controller.hidden_message("join status", "a certificate or key"), {"ok": True})
+        self.assertIn("join status", logged.output[0])
+        self.assertIn("a certificate or key", logged.output[0])
+        with self.assertLogs("privatepartynet", "WARNING") as logged:
+            self.controller.hidden_message("-----BEGIN CERTIFICATE-----\nMIID", "x" * 500)
+        self.assertNotIn("BEGIN", logged.output[0], "only a short plain label reaches the log")
+        self.assertLess(len(logged.output[0]), 300)
+
+    def test_every_status_box_in_the_control_panel_goes_through_the_guard(self):
+        source = (Path(app.__file__).parent / "web" / "control.js").read_text(encoding="utf-8")
+        for unguarded in ("textContent = result.message", "textContent = status.message",
+                          "textContent = game.message", "textContent = state.join.message",
+                          "textContent = reach.advice", "notice.textContent = text"):
+            self.assertFalse(unguarded in source, unguarded)
+        html = (Path(app.__file__).parent / "web" / "control.html").read_text(encoding="utf-8")
+        self.assertLess(html.index("safetext.js"), html.index("control.js"))
 
     def test_state_carries_everything_the_panel_shows(self):
         state = self.controller.state()

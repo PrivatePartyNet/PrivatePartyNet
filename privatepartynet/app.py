@@ -44,6 +44,11 @@ from privatepartynet.updater import Updater
 from privatepartynet.vault import Locked, Vault, VaultError, WrongPassword
 
 LOG_FILE = "privatepartynet.log"
+# The control panel's boxes that hide a message looking like a certificate, key or token, and what kinds it tells apart
+# (web/safetext.js). Controller.hidden_message logs only these words.
+_HIDING_BOXES = frozenset({"notice", "ask note", "backup note", "reach", "invite note", "join status", "game network",
+                           "game network paths"})
+_HIDDEN_KINDS = frozenset({"a certificate or key", "a code or token"})
 DEFAULT_PORT = 8765
 REQUEST_LIFETIME = 30.0
 MUTEX_NAME = "Local\\PrivatePartyNet.HostWindow"
@@ -1387,6 +1392,14 @@ class Controller:
                 window.destroy()
             except Exception:
                 log.debug("A window would not close for the update", exc_info=True)
+
+    def hidden_message(self, where, kind):
+        """The control panel did not show a message because it looked like a certificate, key or token (safetext.js).
+        Only which box and what kind are logged, from fixed lists; never the message."""
+        where = where if where in _HIDING_BOXES else "another box"
+        kind = kind if kind in _HIDDEN_KINDS else "a secret"
+        log.warning("The control panel hid a message that looked like %s (in the %s)", kind, where)
+        return {"ok": True}
 
     def update_state(self):
         return self.updater.view()

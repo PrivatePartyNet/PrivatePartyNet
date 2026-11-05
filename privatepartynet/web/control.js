@@ -86,8 +86,21 @@
     return window.pywebview.api;
   }
 
+  var hidden = {};  // box -> the text last hidden there, so a message repeated by every poll is logged once
+
+  // Writes a status or error box, unless the text looks like a certificate, key, invite code or token (safetext.js):
+  // the box then says one was hidden, and the app logs where.
+  function put(node, text, where) {
+    var kind = window.PrivatePartyNetSafeText.secretLike(text);
+    if (kind && hidden[where] !== text) {
+      hidden[where] = text;
+      api().hidden_message(where, kind);
+    }
+    node.textContent = window.PrivatePartyNetSafeText.shown(text);
+  }
+
   function say(text) {
-    el.notice.textContent = text || "";
+    put(el.notice, text, "notice");
     el.notice.hidden = !text;
   }
 
@@ -120,7 +133,7 @@
     el.party.hidden = !state.running;
     el.serverPassword.textContent = state.passcode || "";
     if (state.join && state.join.message) {
-      el.askNote.textContent = state.join.message;
+      put(el.askNote, state.join.message, "ask note");
       if (state.join.state !== lastJoinState) {
         lastJoinState = state.join.state;
         if (state.join.state !== "trying" && state.join.state !== "waiting") loadJoined();
@@ -205,7 +218,7 @@
 
   el.ask.addEventListener("click", function () {
     if (!selectedPeer) return;
-    api().ask_join(selectedPeer).then(function (result) { el.askNote.textContent = result.message; });
+    api().ask_join(selectedPeer).then(function (result) { put(el.askNote, result.message, "ask note"); });
   });
 
   // --- the menu bar ------------------------------------------------------------------------------------------
@@ -326,7 +339,7 @@
   window.addEventListener("pywebviewready", poll);
 
   function backupSay(result) {
-    el.backupNote.textContent = result.message || "";
+    put(el.backupNote, result.message, "backup note");
   }
 
   el.openMessages.addEventListener("click", function () {
@@ -370,14 +383,14 @@
     } else if (reach.state === "failed") {
       el.reach.textContent = "Could not check how you can be reached from outside.";
     } else {
-      el.reach.textContent = reach.advice;
+      put(el.reach, reach.advice, "reach");
     }
   }
 
   el.copyInvite.addEventListener("click", function () {
     api().invite().then(function (result) {
       if (!result.ok) {
-        el.inviteNote.textContent = result.message;
+        put(el.inviteNote, result.message, "invite note");
         return;
       }
       var done = function () { el.inviteNote.textContent = "Copied. Send it to the person; it contains your party's password."; };
@@ -398,7 +411,7 @@
   function showJoin(status) {
     var busy = status.state === "trying" || status.state === "waiting";
     el.joinStatus.hidden = !status.message || status.state === "idle";
-    el.joinStatus.textContent = status.message || "";
+    put(el.joinStatus, status.message, "join status");
     el.joinCancel.hidden = !busy;
     el.joinInvite.disabled = el.joinAddressBtn.disabled = busy;
     if (!busy && joinTimer) {
@@ -501,7 +514,7 @@
       }
       el.gameList.append(li);
     });
-    el.gameStatus.textContent = game.message || "";
+    put(el.gameStatus, game.message, "game network");
     el.gameOff.hidden = !game.active;
   }
 
@@ -530,7 +543,7 @@
     el.pathWays.textContent = ways.length ? "Game network: " + ways.join("; ") + "." : "";
     el.pathWays.hidden = !ways.length;
     var problems = friend.problems || [];
-    el.pathProblems.textContent = problems.length ? "Cannot reach " + problems.join(" ") : "";
+    put(el.pathProblems, problems.length ? "Cannot reach " + problems.join(" ") : "", "game network paths");
     el.pathProblems.hidden = !problems.length;
   }
 
