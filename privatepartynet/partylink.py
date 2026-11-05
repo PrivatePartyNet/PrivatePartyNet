@@ -63,6 +63,7 @@ class PartyLink:
         self._way = None
         self.state, self.message, self.since = "ok", "", time.time()
         self.lost_since = None
+        self._ok_at = 0.0  # when the link was last found working again
         self._sock = None
         for _ in range(20):
             candidate = address or next_address()
@@ -114,6 +115,8 @@ class PartyLink:
         if state == self.state and message == self.message:
             return
         self.state, self.message, self.since = state, message, time.time()
+        if state == "ok":
+            self._ok_at = time.monotonic()
         self.lost_since = None if state == "ok" else (self.lost_since or time.monotonic())
         try:
             self._on_change(state, message)
@@ -133,6 +136,7 @@ class PartyLink:
         """A socket to the host by a way that works, finding the host again (with growing pauses) when the way it had
         fails. Raises LinkLost once the grace has run out."""
         failed = None
+        tried_at = time.monotonic()
         if self.state == "ok":
             try:
                 way = self._find(False)  # the current way, checked (a tunnel's local port answers even when it is dead)
@@ -143,6 +147,13 @@ class PartyLink:
             except Exception as exc:
                 log.info("%s did not answer by its way (%s); finding it again", self.name, exc)
         with self._finding:
+            if self.state == "ok" and self._ok_at > tried_at:
+                # Another connection found the host again while this one waited: use that way, quietly.
+                try:
+                    way = self._find(False)
+                    return socket.create_connection(way, timeout=self._connect_seconds), way
+                except Exception:
+                    pass
             started = self.lost_since or time.monotonic()
             self._set("reconnecting", f"Connection to {self.name} lost; reconnecting")
             for attempt in itertools.count():

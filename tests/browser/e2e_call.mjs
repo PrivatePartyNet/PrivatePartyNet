@@ -297,12 +297,21 @@ async function main() {
   const alex = await newMemberTab(browser);
   await alex.fakeScreen(800, 450);
   check("Alex joins by the join link", await joinParty(alex, "Alex"));
+  // The host pings a member whose app can keep its link every 2 s; the page answers and times it ("my link").
+  check("Alex's page answers the heartbeat and measures its own link", await waitFor(() => alex.evaluate(
+    "!!window.ppnMyLink && window.ppnMyLink.state === 'ok' && typeof window.ppnMyLink.rtt === 'number'"), 15_000));
+  check("Alex's page hears every member's link", await waitFor(() => alex.evaluate(`new Promise(function (done) {
+    window.addEventListener("ppn-links", function (e) { done(Object.keys(e.detail).length >= 2); }, { once: true });
+    setTimeout(function () { done(false); }, 5000);
+  })`), 15_000));
   check("host sees two people online", await waitFor(() => host.evaluate("document.getElementById('count').textContent.startsWith('2 people')")));
 
   const sam = await newMemberTab(browser);
   await sam.fakeScreen(640, 360);
   if (process.env.E2E_SHOTS) await sam.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
   check("Sam joins by the join link", await joinParty(sam, "Sam"));
+  await new Promise((done) => setTimeout(done, 5000));
+  check("Sam, an older app, gets no heartbeat (as with 3.2)", await sam.evaluate("window.ppnMyLink === null"));
   check("everyone sees three people online", await waitFor(async () =>
     (await host.evaluate("document.getElementById('count').textContent")).startsWith("3 people") &&
     (await alex.evaluate("document.getElementById('count').textContent")).startsWith("3 people") &&
