@@ -210,6 +210,17 @@ async function main() {
   check("a message while another view is shown marks the server unread", await waitFor(() => sam.top(
     "document.querySelector('#serverList .srv-item').classList.contains('unread')")));
   check("and plays the message sound", await waitFor(() => sam.top("PPNShell.played().indexOf('message') >= 0")));
+  // each sound file is there and Edge can decode it (the browser is muted, so nothing is heard)
+  const undecoded = await sam.top(`Promise.all([...new Set(Object.values(PPNShellParts.SOUND_FILES))].map(function (file) {
+    return new Promise(function (done) {
+      var audio = new Audio(file);
+      var timer = setTimeout(function () { done(file + " timed out"); }, 10000);
+      audio.oncanplaythrough = function () { clearTimeout(timer); done(audio.duration > 0 && audio.duration < 5 ? "" : file + " lasts " + audio.duration); };
+      audio.onerror = function () { clearTimeout(timer); done(file + " does not decode"); };
+      audio.load();
+    });
+  })).then(function (problems) { return problems.filter(Boolean).join("; "); })`);
+  check("every sound file decodes, and each is short", undecoded === "", undecoded);
   await sam.shot("shell-unread");
   await sam.top("document.querySelector('#serverList .srv').click(); true");
   check("showing it again reads it", await waitFor(() => sam.top("!document.querySelector('#serverList .srv-item').classList.contains('unread')")));

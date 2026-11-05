@@ -62,6 +62,9 @@ class ShellServerTests(unittest.TestCase):
         (self.web / "sound-join.ogg").write_bytes(b"OggS")
         response, body = self.get("/sound-join.ogg")
         self.assertEqual((response.status, response.getheader("Content-Type"), body), (200, "audio/ogg", b"OggS"))
+        (self.web / "sound-leave.mp3").write_bytes(b"ID3")
+        response, body = self.get("/sound-leave.mp3")
+        self.assertEqual((response.status, response.getheader("Content-Type"), body), (200, "audio/mpeg", b"ID3"))
 
     def test_the_real_web_folder_has_the_shell(self):
         real = ShellServer().start()

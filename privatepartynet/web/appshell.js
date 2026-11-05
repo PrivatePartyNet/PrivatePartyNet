@@ -22,11 +22,11 @@
   var POLL_MS = 1000;
   var READY_MS = 25000;
   var FRAME_ALLOW = "microphone; fullscreen; clipboard-write; autoplay; display-capture";
-  // The sound each event plays (public-domain sounds; About names where they come from), and the group in Settings that
-  // turns it off.
+  // The sound each event plays (public-domain sounds K picked on November 5th; About names where they come from), and
+  // the group in Settings that turns it off. Yours and other people's joins share a sound, as do mute and deafen.
   var SOUND_FILES = {
-    join: "sound-join.ogg", leave: "sound-leave.ogg", "peer-join": "sound-peer-join.ogg", "peer-leave": "sound-peer-leave.ogg",
-    mute: "sound-mute.ogg", unmute: "sound-unmute.ogg", deafen: "sound-deafen.ogg", undeafen: "sound-undeafen.ogg",
+    join: "sound-join.mp3", leave: "sound-leave.mp3", "peer-join": "sound-join.mp3", "peer-leave": "sound-leave.mp3",
+    mute: "sound-mute.ogg", unmute: "sound-mute.ogg", deafen: "sound-mute.ogg", undeafen: "sound-mute.ogg",
     message: "sound-message.ogg", request: "sound-request.ogg",
   };
   var SOUND_GROUP = {
