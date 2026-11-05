@@ -26,6 +26,7 @@ installed during a party, a call or while the game network is on; the control pa
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -408,9 +409,19 @@ class Updater:
     def _load_state(self):
         try:
             data = json.loads(self._state_file.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             return {}
+        if not isinstance(data, dict):
+            return {}
+        # A damaged file keeps only what has the shape it should: the rest is as if never written.
+        shapes = {"backoff_until": (int, float), "backoff": (int, float), "checked_at": (int, float), "etag": str,
+                  "releases": list, "key_links": list}
+        state = {name: value for name, value in data.items()
+                 if name in shapes and isinstance(value, shapes[name]) and not isinstance(value, bool)
+                 and (not isinstance(value, float) or math.isfinite(value))}
+        if "backoff_until" in state:  # never longer than the longest back-off from now
+            state["backoff_until"] = min(state["backoff_until"], self._clock() + MAX_BACKOFF)
+        return state
 
     def _store_state(self):
         try:

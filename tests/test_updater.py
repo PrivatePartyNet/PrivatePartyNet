@@ -502,6 +502,20 @@ class FlowTests(unittest.TestCase):
                 self.github.releases = answer
                 self.assertEqual(self.updater().check(manual=True)["state"], "error")
 
+    def test_a_damaged_state_file_is_set_aside(self):
+        self.github.publish("3.2.1", {"installer": b"x" * 10})
+        updates = self.folder / "data" / "updates"
+        updates.mkdir(parents=True)
+        (updates / "state.json").write_text(json.dumps({"backoff_until": "soon", "backoff": [], "checked_at": "x",
+                                                        "key_links": 5, "etag": 7, "releases": "x"}))
+        up = self.updater()
+        self.assertEqual(up.check(manual=False)["state"], "ready")
+        self.assertIsInstance(up.view()["checked_at"], float)
+        for until in (float("inf"), 1e300):
+            (updates / "state.json").write_text(json.dumps({"backoff_until": until}))
+            self.assertLessEqual(self.updater()._memory.get("backoff_until", 0), time.time() + updater.MAX_BACKOFF,
+                                 "a damaged file cannot stop the checks for good")
+
     def test_two_checks_at_once_ask_and_download_once(self):
         self.github.publish("3.2.1", {"installer": b"x" * 100})
         up = self.updater()
