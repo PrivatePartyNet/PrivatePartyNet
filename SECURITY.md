@@ -52,6 +52,35 @@ What leaves your PC:
   press Check for updates.
 - There are no accounts. The app sends nothing to a company server.
 
+The one window (3.3.0 on):
+
+- The app's own pages (the rail, Home, direct messages, About, How) are served to its window by the app itself on
+  http://127.0.0.1 at a port Windows picks. Only the web folder's own files of known types are served, by name, to
+  requests addressed to that exact address, and they may not be put in a frame by any other page (frame-ancestors).
+- Each party's room is a frame of that window, from the party's own address. A room asks the app for things only
+  through the window's page, by postMessage: only the calls a party window could always make (open a pop-out of the
+  same party, close itself, fullscreen, keep the chat and its pictures in this PC's store, read this person's look),
+  only from that room's frame and origin, and only for that room. A room cannot reach another room, Home or the app's
+  other calls.
+- So that an HTTPS room can sign in inside the frame, its sign-in cookie is SameSite=None; Secure, and each party
+  names its cookies after its server, so two servers on one address cannot overwrite each other's. To keep pages from
+  elsewhere from using that cookie, the party refuses any POST whose Origin is not its own and any body that is not
+  declared as JSON (or as raw bytes for an upload).
+- A room is framed only when its host's join answer says it supports this; older hosts open in a window of their own.
+  A room whose certificate is not the one its join checked is stopped in its own place.
+
+Files (3.3.0 on):
+
+- A file sent in a party is kept on the host's PC, encrypted with the rest of the store in sealed pieces of 1 MiB, each
+  bound to its file and place, so a changed, cut, swapped or moved piece is refused. Members' PCs keep only its name,
+  size and type. The host can read every file sent in its server, as it can read the chat.
+- A file is always given back as a download (Content-Disposition: attachment, application/octet-stream, nosniff, and
+  a sandbox policy), never as a page, so nothing a member sends runs in anyone's window. Its name is cleaned of folders
+  and characters Windows reserves. Save goes through Windows' Save dialog.
+- Each server's owner and admins can cap the largest file and all files together; the host's disk always keeps half a
+  gigabyte free. The sender, the owner and admins can delete a message and its file from the host; copies people saved
+  stay theirs.
+
 How updates are checked:
 
 - The app takes the newest release of PrivatePartyNet/PrivatePartyNet on GitHub that is newer than the one running
