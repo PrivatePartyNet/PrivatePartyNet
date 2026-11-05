@@ -89,6 +89,10 @@ def on_certificate_error(browser, sender, args, delay=0.2):
     args.set_Action(Action.Cancel)
     log.warning("A party window refused %s: its certificate is not the one the join checked", origin(uri) or "a page")
     window = getattr(browser, "pywebview_window", None)
+    refused = getattr(window, "ppn_refused", None)  # the one window: the shell shows it in that server's place
+    if callable(refused):
+        refused(origin(uri))
+        return
     if window is not None:
         show = lambda: window.load_html(REFUSED_PAGE)  # noqa: E731 - after this handler returns, not inside it
         if delay:

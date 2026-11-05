@@ -65,6 +65,8 @@
     gameStatus: document.getElementById("gameStatus"),
     gameOff: document.getElementById("gameOff"),
     openMessages: document.getElementById("openMessages"),
+    messagesBox: document.getElementById("messagesBox"),
+    messagesFrame: document.getElementById("messagesFrame"),
     dmUnread: document.getElementById("dmUnread"),
     unlockBox: document.getElementById("unlockBox"),
     unlockPassword: document.getElementById("unlockPassword"),
@@ -309,6 +311,7 @@
     item.addEventListener("click", function () {
       api().set_theme(item.dataset.choice).then(function (result) {
         document.documentElement.dataset.theme = item.dataset.choice;
+        if (shell()) shell().theme(item.dataset.choice); // the rail and every room follow at once
         say(result.message);
       });
     });
@@ -388,6 +391,22 @@
   el.openMessages.addEventListener("click", function () {
     api().open_messages();
   });
+
+  // The one window's own controls (appshell.js), looked up when needed: its script may finish after this page's.
+  function shell() {
+    try {
+      return window.top !== window && window.top.PPNShell ? window.top.PPNShell : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // Inside the one window, the Direct messages page shows the conversations (dm.html) instead of a button for a window.
+  if (document.documentElement.classList.contains("in-shell") && el.messagesFrame) {
+    el.messagesBox.hidden = true;
+    el.messagesFrame.hidden = false;
+    el.messagesFrame.src = "dm.html?embedded=1";
+  }
 
   el.unlock.addEventListener("click", function () {
     api().unlock(el.unlockPassword.value).then(function (result) {

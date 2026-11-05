@@ -38,6 +38,7 @@ from privatepartynet.identity import Identity, safety_number
 from privatepartynet.netinfo import LOOPBACK, address_for, lan_addresses
 from privatepartynet.paths import data_dir, web_dir
 from privatepartynet.server import Forbidden, NotFound, Party, generate_password
+from privatepartynet.shellserver import ShellServer
 from privatepartynet.settings import (DENSITIES, THEMES, load_settings, save_settings, valid_accent, valid_mbps, valid_port,
                                       valid_text_scale)
 from privatepartynet.store import Store
@@ -156,9 +157,13 @@ class WindowApi:
     a backup. The page is served by the host, so everything it hands over is checked and bounded, and a window is held
     to the one server it first named."""
 
-    def __init__(self, origin, store=None, appearance=None):
+    def __init__(self, origin, store=None, appearance=None, on_close=None, fullscreen=None):
         self._origin = origin
         self._appearance = appearance  # a callable giving this person's accent, text size and spacing (Settings)
+        # In the one window a room is a frame: closing it takes it off the rail (on_close), and fullscreen is the whole
+        # window's, shared by every room (fullscreen).
+        self._on_close = on_close
+        self._fullscreen_hook = fullscreen
         self._window = None
         self._children = []
         self._fullscreen = False
@@ -196,6 +201,8 @@ class WindowApi:
     def set_fullscreen(self, on):
         """Make this window cover the whole display it is on, or put it back. The window host ignores the browser's
         own fullscreen request (an element would only fill the page inside the window's frame), so the page asks here."""
+        if self._fullscreen_hook is not None:
+            return self._fullscreen_hook(bool(on))
         window = self._window
         if window is None:
             return {"ok": False, "fullscreen": False}
@@ -290,10 +297,17 @@ class WindowApi:
         """Close the window that asked, and its pop-outs. A page calls this when its member leaves the party."""
         window = self._window
         self._close_children()
+        if self._on_close is not None:
+            self._on_close()
+            return {"ok": True, "message": ""}
         if window is None:
             return {"ok": False, "message": "No window to close."}
         window.destroy()
         return {"ok": True, "message": ""}
+
+
+# What a party room inside the one window may ask of the app: WindowApi's own calls (test_app checks they match).
+ROOM_CALLS = ("open_viewer", "close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance")
 
 
 class Controller:
@@ -351,6 +365,13 @@ class Controller:
         # user id -> name, when it knows them. The control panel shows its relaying and its problems from it.
         self.path_manager = None
         self._party_windows = set()  # joined parties' windows that are open: an update waits for them to close
+        # The one window (use_shell): its page server, the rooms in its frames (key -> WindowApi), and what its rail
+        # should open or close next (shell_state hands each event over once).
+        self._shell = None
+        self._room_apis = {}
+        self._shell_events = []
+        self._shell_lock = threading.Lock()
+        self._fullscreen = False
         self.updater = Updater(lambda: self._settings, self._save, self._data_dir, self._update_busy,
                                quit=self._quit_for_update)
         if self._probe_network:  # a test or diagnostic run (discovery port 0) never asks GitHub
@@ -729,7 +750,7 @@ class Controller:
                 self._remember_server(invite, joiner)
                 # The window accepts the certificate this join checked, and no other.
                 self._join({"url": status["url"], "name": invite["name"],
-                            "pins": (joiner.seen_fingerprint, joiner.seen_spki)})
+                            "pins": (joiner.seen_fingerprint, joiner.seen_spki), "embed": getattr(joiner, "embed", False)})
             status["state"], status["message"] = "joined", "Opening the party window."
         status.pop("url", None)
         return status
@@ -1069,6 +1090,80 @@ class Controller:
 
     def bind_window(self, window):
         self._window = window
+        if self._shell is not None:
+            window.ppn_refused = self._shell_refused  # windowpins: a refused room shows its refusal in its own place
+
+    # --- the one window ----------------------------------------------------------------------------------------
+
+    def use_shell(self, shell):
+        """Show everything in one window (shell.html, served by `shell`): rooms open in its frames, About and How over it."""
+        self._shell = shell
+
+    def _shell_queue(self, event):
+        with self._shell_lock:
+            self._shell_events.append(event)
+            del self._shell_events[:-200]
+
+    def shell_state(self):
+        """What the one window's rail needs, asked for every second: unread direct messages, the theme and look, and
+        the servers to open or close and the pages to show since it last asked (each once)."""
+        with self._shell_lock:
+            events, self._shell_events = self._shell_events, []
+        return {"dm_unread": self._dm_unread(), "theme": self._settings.get("theme", "dark"),
+                "appearance": self.appearance(), "running": self._party is not None, "events": events}
+
+    def room_call(self, key, method, args):
+        """A party room inside the one window asks the app for something (roombridge.js, through appshell.js, which
+        checked it came from that room's frame). Only WindowApi's own calls, and only for the room that asked."""
+        api = self._room_apis.get(key) if isinstance(key, str) else None
+        if api is None or method not in ROOM_CALLS or not isinstance(args, (list, tuple)) or len(args) > 6:
+            return {"ok": False, "message": "That cannot be done here."}
+        try:
+            return getattr(api, method)(*args)
+        except TypeError:
+            return {"ok": False, "message": "That request was not understood."}
+
+    def _shell_room(self, key, name, url, origin, own=False, select=True, store=None):
+        """Put a party's room on the rail (or show it when it is there already)."""
+        if key not in self._room_apis:
+            api = WindowApi(origin, store=store, appearance=self.appearance,
+                            on_close=lambda: self._shell_room_closed(key), fullscreen=self._set_fullscreen)
+            api._window = self._window
+            self._room_apis[key] = api
+            if not own:
+                self._party_windows.add(key)
+                self.updater.busy_changed()
+        self._shell_queue({"type": "open", "key": key, "name": name, "url": url, "own": own, "select": select})
+
+    def _shell_room_closed(self, key):
+        api = self._room_apis.pop(key, None)
+        if api is not None:
+            api._close_children()
+        if key in self._party_windows:
+            self._party_windows.discard(key)
+            self.updater.busy_changed()
+        if self._fullscreen:
+            self._set_fullscreen(False)
+        self._shell_queue({"type": "close", "key": key})
+
+    def _open_own_room(self, select):
+        if self._party is None:
+            return
+        port = self._party.local_port
+        self._shell_room("own", self._party.party_name, f"http://127.0.0.1:{port}/host", f"http://127.0.0.1:{port}",
+                         own=True, select=select)
+
+    def _shell_refused(self, refused_origin):
+        self._shell_queue({"type": "refused", "origin": refused_origin})
+
+    def _set_fullscreen(self, on):
+        window = self._window
+        if window is None:
+            return {"ok": False, "fullscreen": False}
+        if on != self._fullscreen:
+            window.toggle_fullscreen()
+            self._fullscreen = on
+        return {"ok": True, "fullscreen": on}
 
     # --- state for the page ------------------------------------------------------------------------------
 
@@ -1194,7 +1289,7 @@ class Controller:
         if self._discovery is not None:
             self._discovery.set_sharing(port, "party", party.fingerprint, party.spki)
         log.info("Party started on port %s", port)
-        self.open_room()
+        self.open_room()  # your room opens (in the one window: on the rail, and shown)
         return {"ok": True, "message": "Party is open."}
 
     def stop(self):
@@ -1203,6 +1298,8 @@ class Controller:
         if self._game is not None and self._game["key"] == "own":
             self.game_off()
         self._end_host_punch()
+        if "own" in self._room_apis:
+            self._shell_room_closed("own")
         self._party.stop()
         self._party = None
         self._passcode = ""
@@ -1314,6 +1411,9 @@ class Controller:
 
     def open_room(self):
         """Open the party room in its own native window, on the loopback address only."""
+        if self._party is not None and self._shell is not None:
+            self._open_own_room(select=True)
+            return {"ok": True, "message": ""}
         if self._party is None or not webview.windows:
             return {"ok": False, "message": "Start the party first."}
         url = f"http://127.0.0.1:{self._party.local_port}/host"
@@ -1366,7 +1466,7 @@ class Controller:
                 return result
         token = self._party.join_token(request["name"])
         url = f"https://{address_for(request['address'])}:{self._party.port}/join?token={token}"
-        self._discovery.answer(request_id, True, url, cert=self._cert_pem)
+        self._discovery.answer(request_id, True, url, cert=self._cert_pem, embed=True)
         return {"ok": True, "message": f"{request['name']} is joining your party."}
 
     def set_theme(self, theme):
@@ -1414,6 +1514,11 @@ class Controller:
         if theme != "system":
             url += f"&theme={theme}"
         parts = urlsplit(data["url"])
+        if self._shell is not None and data.get("embed"):
+            origin = f"{parts.scheme}://{parts.netloc}"
+            self._shell_room(f"join:{origin}", data["name"], url, origin, store=lambda: self._store)
+            log.info("Joined %s", data["name"])
+            return
         api = WindowApi(f"{parts.scheme}://{parts.netloc}", store=lambda: self._store, appearance=self.appearance)
         window = webview.create_window(f"PrivatePartyNet party: {data['name']}", url=url, width=1280, height=820, js_api=api)
         api._attach(window)
@@ -1505,6 +1610,12 @@ class Controller:
 
     def _open_info(self, page, title, width, height):
         """One About window and one How window at a time. A second click says so instead of opening a copy."""
+        if self._shell is not None:
+            if page == "dm":
+                self._shell_queue({"type": "home", "page": "messages"})
+            else:
+                self._shell_queue({"type": "info", "page": page, "title": title})
+            return {"ok": True, "message": ""}
         if page in self._info_open:
             return {"ok": True, "message": f"{title} is already open."}
         window = webview.create_window(title, url=str(web_dir() / f"{page}.html"), js_api=self, width=width, height=height)
@@ -1533,6 +1644,8 @@ class Controller:
         if self._store is not None:
             self._store.close()
             self._store = None
+        if self._shell is not None:
+            self._shell.stop()
         self.updater.stop()
         self.updater.on_exit()  # a checked update waiting for the app to close installs now, without starting it again
 
@@ -1649,9 +1762,13 @@ def main(argv=None):
         return 0
     log.info("PrivatePartyNet %s starting", __version__)
     controller = Controller()
+    # One window, as Discord has: the rail of servers, Home (the control panel) and every room in frames beside it.
+    shell = ShellServer().start()
+    controller.use_shell(shell)
+    webview.settings["ALLOW_DOWNLOADS"] = True  # a file in the chat is saved with Windows' Save dialog
     window = webview.create_window(
-        "PrivatePartyNet", url=str(web_dir() / "control.html"), js_api=controller,
-        width=1040, height=740, min_size=(640, 520),
+        "PrivatePartyNet", url=shell.url(), js_api=controller,
+        width=1280, height=820, min_size=(900, 600),
     )
     controller.bind_window(window)
     window.events.closed += controller.shutdown

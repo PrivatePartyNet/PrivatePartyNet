@@ -650,6 +650,7 @@ class Joiner:
         self._timeout = timeout
         self._cancel = threading.Event()
         self.seen_fingerprint = self.seen_spki = ""
+        self.embed = False  # set when the host's answer says its room opens inside the one window
         self.tunnel = None  # the punch-through tunnel, when that is how the party was reached (kept open by the app)
         self.needs_password = False  # the party wants a password and none was given: the page offers a box for it
         self.status = {"state": "trying", "message": "Looking for the party...", "url": ""}
@@ -823,6 +824,7 @@ class Joiner:
                 answer = {"state": "pending"}
             state = answer.get("state")
             if state == "allowed":
+                self.embed = answer.get("embed") == 1  # the room can open inside the one window
                 self._set("allowed", "You are in.", f"{_base(address, port)}/join?token={answer['token']}")
                 return
             if state == "denied":

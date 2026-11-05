@@ -100,3 +100,9 @@ html.rail-compact .navbadge { min-width: 16px; padding: 0 4px; font-size: 10px; 
 .update-banner .row { margin: 0; flex: none; }
 .row[hidden] { display: none; }
 .row.bottom { align-items: flex-end; }
+
+/* Inside the one window the Direct messages page is the conversations themselves (dm.html), filling the page. */
+.messages-frame { display: block; width: 100%; height: calc(100vh - 150px); min-height: 420px; border: 1px solid var(--border);
+  border-radius: var(--r-lg); background: var(--surface); }
+.messages-frame[hidden] { display: none; }
+.in-shell #page-messages .page-head { margin-bottom: var(--sp-3); }

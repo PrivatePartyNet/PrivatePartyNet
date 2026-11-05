@@ -8,7 +8,10 @@
     module.exports = api;
   } else {
     root.PPNNav = api;
-    if (root.document) api.start(root.document, root);
+    if (root.document) {
+      var started = api.start(root.document, root);
+      api.go = started.show; // the one window's rail opens Settings and Join here
+    }
   }
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";

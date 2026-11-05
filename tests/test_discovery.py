@@ -85,6 +85,14 @@ class DiscoveryTests(unittest.TestCase):
         accepted = next_event(self.a, "accepted")
         self.assertEqual(accepted["url"], "https://127.0.0.1:8765/")
         self.assertEqual(accepted["name"], "Laptop")
+        self.assertFalse(accepted["embed"], "an answer that does not say so opens in a window of its own")
+
+    def test_an_accept_says_when_the_room_opens_inside_the_one_window(self):
+        self.assertTrue(wait_until(lambda: peer_named(self.a, "Laptop") is not None))
+        self.assertTrue(self.a.request(peer_named(self.a, "Laptop")["id"]))
+        asked = next_event(self.b, "request")
+        self.assertTrue(self.b.answer(asked["id"], True, url="https://127.0.0.1:8765/", embed=True))
+        self.assertTrue(next_event(self.a, "accepted")["embed"])
 
     def test_a_declined_request_says_so(self):
         self.assertTrue(wait_until(lambda: peer_named(self.a, "Laptop") is not None))

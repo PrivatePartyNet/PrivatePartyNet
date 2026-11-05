@@ -117,6 +117,22 @@ class HandlerTests(Certificates):
         self.assertIn("not the one", page)
         self.assertNotIn("BEGIN CERTIFICATE", page)
 
+    def test_in_the_one_window_a_refused_room_is_stopped_in_its_own_place(self):
+        """The one window's page (the shell) stays; the shell is told which party's room was refused."""
+        from webview.platforms import edgechromium
+
+        window = FakeWindow()
+        refused = []
+        window.ppn_refused = refused.append
+        browser = type("Browser", (), {"pywebview_window": window})()
+        windowpins.pin("https://192.168.1.95:8765/join?token=x", (self.spki,))
+        bad = FakeArgs("https://192.168.1.95:8765/?embedded=1", self.other_pem)
+        with self.assertLogs("privatepartynet", "WARNING"):
+            windowpins.on_certificate_error(browser, None, bad, delay=0)
+        self.assertEqual(bad.action, edgechromium.CoreWebView2ServerCertificateErrorAction.Cancel)
+        self.assertEqual(refused, ["https://192.168.1.95:8765"])
+        self.assertEqual(window.html, [], "nothing replaces the window's own page")
+
 
 if __name__ == "__main__":
     unittest.main()

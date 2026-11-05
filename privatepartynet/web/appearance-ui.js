@@ -39,9 +39,20 @@
     A.apply(document, current);
   }
 
+  // Inside the one window, the rail and every room follow a change at once.
+  function shell() {
+    try {
+      return window.top !== window && window.top.PPNShell ? window.top.PPNShell : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
   function change(patch) {
     Object.keys(patch).forEach(function (k) { current[k] = patch[k]; });
     show();
+    var top = shell();
+    if (top) top.look({ accent: current.accent, text_scale: current.text_scale, density: current.density });
     clearTimeout(saveTimer);
     saveTimer = setTimeout(function () {
       var api = window.pywebview && window.pywebview.api;

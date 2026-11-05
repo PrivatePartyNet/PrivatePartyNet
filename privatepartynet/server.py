@@ -50,6 +50,7 @@ STATIC_TYPES = {
     "shell.js": "application/javascript; charset=utf-8",
     "panels.js": "application/javascript; charset=utf-8",
     "appearance.js": "application/javascript; charset=utf-8",
+    "roombridge.js": "application/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
     "theme.css": "text/css; charset=utf-8",
     "ui.css": "text/css; charset=utf-8",
@@ -102,6 +103,9 @@ MIN_FREE_BYTES = 512 * 1024 * 1024
 MAX_FILE_NAME = 200
 FILES_PER_MINUTE = 20  # per member
 UPLOAD_PIECE = 256 * 1024  # an upload is read from the connection this much at a time
+# Said in every "allowed" join answer: this party's room signs in inside the app's one window (its HTTPS cookie is
+# SameSite=None, server.py _cookie_flags). Hosts on 3.2.0 and older never say it; their rooms open in a window of their own.
+EMBED = 1
 MAX_DRAIN = 1024 * 1024  # what is read of a refused upload so the answer reaches the client; past it the connection closes
 SIGNAL_KINDS = {"offer", "answer", "quality"}
 TURN_PORT = 3478  # coturn beside the relay server (relay/turnserver.conf)
@@ -888,7 +892,8 @@ class Party:
                 self._answers[request["ticket"]] = {"state": "denied", "until": time.monotonic() + REQUEST_SECONDS}
                 return None
             token = self.join_token(request["name"], user=request["user"])
-            self._answers[request["ticket"]] = {"state": "allowed", "token": token, "until": time.monotonic() + JOIN_SECONDS}
+            self._answers[request["ticket"]] = {"state": "allowed", "token": token, "embed": EMBED,
+                                                "until": time.monotonic() + JOIN_SECONDS}
             return token
 
     def pending_requests(self):

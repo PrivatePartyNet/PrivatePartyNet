@@ -232,6 +232,7 @@
       document.title = "PrivatePartyNet: " + msg.party;
       RTC.setStun(!!msg.stun, msg.turn);
       chat.hello(msg);
+      if (window.PPNEmbedded) window.PPNEmbedded.send({ ppn: "ready" }); // the one window: this room is signed in
       var savedName = readPref(PREFS.name);
       if (savedName && savedName !== me.name) post("/name", { name: savedName }).catch(function () {});
     } else if (msg.type === "roster") {
@@ -1769,6 +1770,7 @@
     getJson: getJson,
     notice: notice,
     avatar: avatar,
+    isHidden: function () { return document.hidden || !shellShown; },
     onVoice: function (channelId, channelName) {
       if (channelId) voice.join(channelId, channelName);
       else voice.leave();
@@ -2184,6 +2186,52 @@
   }
 
   setInterval(tickStats, 1000);
+
+  // --- inside the one window ------------------------------------------------------------------------------
+  // roombridge.js set window.PPNEmbedded when this room is a frame of the app's one window. The rail shows what this
+  // room reports (unread messages, people waiting to join, the call), and the shell sends the person's look and theme,
+  // whether this server is the one shown, and the call's controls when another server is shown.
+
+  var shellShown = true;
+  var lastReport = "";
+
+  function shellReport() {
+    if (!window.PPNEmbedded) return;
+    var inCall = voice.state.channel;
+    var report = {
+      ppn: "state",
+      unread: chat.unreadTotal(),
+      requests: requests.size,
+      voice: inCall ? { channel: chat.channelName(inCall), muted: voice.state.muted, deafened: voice.state.deafened } : null,
+    };
+    var key = JSON.stringify(report);
+    if (key === lastReport) return;
+    lastReport = key;
+    window.PPNEmbedded.send(report);
+  }
+
+  if (window.PPNEmbedded) {
+    setInterval(shellReport, 700);
+    window.addEventListener("ppn-shell", function (event) {
+      var msg = event.detail || {};
+      if (msg.ppn === "visible") {
+        shellShown = Boolean(msg.on);
+        if (shellShown) chat.seen();
+        shellReport();
+      } else if (msg.ppn === "appearance" && window.PPNAppearance && msg.look) {
+        window.PPNAppearance.apply(document, msg.look);
+      } else if (msg.ppn === "theme" && /^(light|dark|system)$/.test(String(msg.theme))) {
+        THEME_OVERRIDE = msg.theme; // this person's theme, whatever the host picked for its own room
+        document.documentElement.dataset.theme = msg.theme;
+      } else if (msg.ppn === "voice") {
+        var button = { mute: el.muteBtn, deafen: el.deafenBtn, leave: el.voiceLeave }[msg.action];
+        if (button && voice.state.channel) button.click();
+        shellReport();
+      } else if (msg.ppn === "leave") {
+        el.leave.click();
+      }
+    });
+  }
 
   // --- helpers -----------------------------------------------------------------------------------------------
 

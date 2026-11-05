@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-ppn-shell>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrivatePartyNet</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="ui.css">
+<link rel="stylesheet" href="shell.css">
+</head>
+<body>
+<div id="shell">
+  <nav id="servers" aria-label="Servers">
+    <div class="srv-item current" data-key="home">
+      <button id="homeBtn" class="srv home current" type="button" aria-label="Home" aria-current="page">
+        <svg class="ic lg"><use href="#i-home"></use></svg>
+        <span class="srv-badge" hidden></span>
+      </button>
+    </div>
+    <div class="srv-sep" role="separator"></div>
+    <div id="serverList" class="srv-list" role="list"></div>
+    <div class="srv-item">
+      <button id="addBtn" class="srv add" type="button" aria-label="Start a party or join one">
+        <svg class="ic lg"><use href="#i-plus"></use></svg>
+      </button>
+    </div>
+    <div class="srv-spacer"></div>
+    <div id="voiceDock" class="voice-dock" hidden>
+      <span class="dock-label">Voice</span>
+      <button id="dockServer" class="dock-btn" type="button"><svg class="ic"><use href="#i-speaker"></use></svg></button>
+      <button id="dockMute" class="dock-btn" type="button" aria-pressed="false" aria-label="Mute"><svg class="ic"><use href="#i-mic"></use></svg></button>
+      <button id="dockDeafen" class="dock-btn" type="button" aria-pressed="false" aria-label="Deafen"><svg class="ic"><use href="#i-headphones"></use></svg></button>
+      <button id="dockLeave" class="dock-btn leave" type="button" aria-label="Leave the voice channel"><svg class="ic"><use href="#i-leave"></use></svg></button>
+    </div>
+    <div class="srv-item">
+      <button id="settingsBtn" class="srv settings" type="button" aria-label="Settings">
+        <svg class="ic lg"><use href="#i-gear"></use></svg>
+      </button>
+    </div>
+  </nav>
+
+  <main id="views">
+    <iframe id="view-home" class="view current" src="control.html?embedded=1" title="Home"></iframe>
+  </main>
+</div>
+
+<div id="overlay" class="overlay" hidden>
+  <div class="overlay-box" role="dialog" aria-modal="true" aria-labelledby="overlayTitle">
+    <div class="overlay-head">
+      <b id="overlayTitle"></b>
+      <button id="overlayClose" class="icon" type="button" aria-label="Close"><svg class="ic"><use href="#i-close"></use></svg></button>
+    </div>
+    <iframe id="overlayFrame" title="Information"></iframe>
+  </div>
+</div>
+
+<div id="railTip" class="rail-tip" role="tooltip" hidden></div>
+<div id="railMenu" class="menu rail-menu" role="menu" hidden></div>
+
+<script src="icons.js"></script>
+<script src="appearance.js"></script>
+<script src="appshell.js"></script>
+</body>
+</html>

@@ -527,6 +527,7 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         self.assertEqual(set(opened["pins"]), set(pins_of_pem(self.host._cert_pem)),
                          "the window is pinned to the certificate the join checked")
         self.assertEqual(opened["name"], "Host")
+        self.assertTrue(opened["embed"], "a host of this version says its room can open inside the one window")
         self.assertEqual(self.guest.join_status()["state"], "joined")
         self.assertEqual(len(self.opened), 1, "the window opens once")
 

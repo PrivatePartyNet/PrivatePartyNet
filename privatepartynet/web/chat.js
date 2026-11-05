@@ -126,6 +126,11 @@
       if (toKeep.length) keepTimer = setTimeout(flushKeep, 800);
     }
 
+    // A page in another server's place in the one window is hidden too, though the browser does not say so.
+    function isHidden() {
+      return options.isHidden ? options.isHidden() : document.hidden;
+    }
+
     function buffer(id) {
       if (!state.buffers.has(id)) state.buffers.set(id, { list: [], done: false, loading: false, unread: 0 });
       return state.buffers.get(id);
@@ -183,7 +188,7 @@
       keep([msg]);
       if (msg.channel === state.current) {
         appendMessage(msg);
-        if (document.hidden) buf.unread += 1;
+        if (isHidden()) buf.unread += 1;
       } else {
         buf.unread += 1;
         renderChannels();
@@ -578,6 +583,18 @@
       current: function () { return state.current; },
       voiceChannel: function () { return state.voice; },
       muted: function () { return Array.from(muted); },
+      // what the one window's rail shows: unread messages in the text channels that are not muted
+      unreadTotal: function () {
+        return textChannels().reduce(function (sum, c) { return sum + (isMuted(c.id) ? 0 : buffer(c.id).unread); }, 0);
+      },
+      // the person is looking again: what arrived in the open channel meanwhile is read
+      seen: function () {
+        if (state.current !== null && buffer(state.current).unread) {
+          buffer(state.current).unread = 0;
+          renderChannels();
+        }
+      },
+      channelName: function (id) { var c = channelById(id); return c ? c.name : ""; },
     };
   }
 
