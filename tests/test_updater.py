@@ -477,6 +477,28 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.launched, [], "nothing was run")
         self.assertEqual(up.view()["state"], "error")
 
+    def test_nothing_can_change_or_replace_the_installer_from_its_last_check_until_it_has_started(self):
+        self.github.publish("3.2.1", {"installer": b"x" * 100})
+        up = self.updater()
+        up.check(manual=False)
+        tried = []
+
+        def launch(command, env):
+            path = Path(command[0])
+            for attempt in (lambda: path.open("r+b").close(), lambda: path.rename(path.with_suffix(".old")),
+                            lambda: path.unlink()):
+                try:
+                    attempt()
+                    tried.append("allowed")
+                except PermissionError:
+                    tried.append("refused")
+            self.assertEqual(path.read_bytes(), b"x" * 100, "it can still be read (and so started)")
+
+        up._launch = launch
+        self.assertTrue(up.restart_now()["ok"])
+        self.assertEqual(tried, ["refused", "refused", "refused"])
+        up.ready.open("r+b").close()  # let go once it has started
+
     def test_an_installer_that_is_gone_or_will_not_start_is_an_error_not_a_crash(self):
         self.github.publish("3.2.1", {"installer": b"x" * 100})
         up = self.updater()

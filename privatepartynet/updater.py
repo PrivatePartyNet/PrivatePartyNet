@@ -11,7 +11,7 @@ with its size and SHA-256, and a detached Ed25519 signature of it (.json.sig). T
 (TRUSTED_KEYS) and nothing at run time can replace it: no setting, no environment variable, no command line. A
 download is refused unless the signature checks out with that key, its size and hash are the ones signed, the version
 is newer than the one running (never older: no rollback) and the manifest's version and tag are the release's. The
-file is hashed again just before it runs. Only HTTPS is used, with Windows' certificates, and files only come from
+file is hashed again just before it runs, and held so that nothing can change it until it has started. Only HTTPS is used, with Windows' certificates, and files only come from
 GitHub's own hosts. A signed manifest may carry the next public key, signed by the current one, which is then trusted
 too (key rotation). It is kept in the data folder with that signature, and checked again from the compiled-in keys
 each time, so a key written into the folder is not trusted, and a key the app stops carrying takes those it handed on
@@ -24,6 +24,7 @@ the app has closed (the user's data is in %LOCALAPPDATA%, not in the app's folde
 installed during a party, a call or while the game network is on; the control panel says it is waiting.
 """
 
+import contextlib
 import email.message
 import hashlib
 import json
@@ -356,11 +357,39 @@ def install_kind():
 
 
 def sha256_file(path):
-    digest = hashlib.sha256()
     with open(path, "rb") as file:
-        for chunk in iter(lambda: file.read(1 << 20), b""):
-            digest.update(chunk)
+        return _sha256_of(file)
+
+
+def _sha256_of(file):
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: file.read(1 << 20), b""):
+        digest.update(chunk)
     return digest.hexdigest()
+
+
+@contextlib.contextmanager
+def _held(path):
+    """`path` open for reading, while no one else may write to, rename or delete it (others may still read it, which
+    is how Windows starts it). Python's own open() lets others do all three."""
+    if os.name != "nt":
+        with open(path, "rb") as file:
+            yield file
+        return
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    create = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create.restype = wintypes.HANDLE
+    create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                       wintypes.DWORD, wintypes.HANDLE)
+    generic_read, share_read, open_existing, normal = 0x80000000, 0x1, 3, 0x80
+    handle = create(str(path), generic_read, share_read, None, open_existing, normal, None)
+    if handle in (None, wintypes.HANDLE(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    with os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY), "rb") as file:
+        yield file
 
 
 # The folders come in environment variables (PPN_*), not written into the script: cmd reads a script in the console's
@@ -808,12 +837,16 @@ class Updater:
     def _start_install(self, restart):
         found, ready = self.found, self.ready
         if found["kind"] == "installer":
-            if sha256_file(ready) != found["file"]["sha256"]:  # hashed again just before it runs
-                self.ready = None
-                self._set("error", "The downloaded installer changed on disk; it was not run.")
-                raise UpdateError("the installer's SHA-256 changed since it was checked")
-            arguments = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1"] + ([] if restart else ["/NOLAUNCH=1"])
-            self._launch([str(ready), *arguments], None)
+            # Hashed again just before it runs, through a handle that keeps anyone from changing or replacing it until
+            # Windows has started it.
+            with _held(ready) as file:
+                if _sha256_of(file) != found["file"]["sha256"]:
+                    self.ready = None
+                    self._set("error", "The downloaded installer changed on disk; it was not run.")
+                    raise UpdateError("the installer's SHA-256 changed since it was checked")
+                arguments = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1"] + \
+                    ([] if restart else ["/NOLAUNCH=1"])
+                self._launch([str(ready), *arguments], None)
         else:
             try:  # checked again just before it is swapped in
                 self._check_unpacked(ready)
