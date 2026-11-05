@@ -252,8 +252,8 @@ def main():
     step("3. Smoke test the packaged app")
     run([APP_DIR / "PrivatePartyNet.exe", "--smoke-test"], timeout=120)
     check_packaged_capture()
-    # the window stack, which nothing else in the build reaches: the control panel opens (hidden) and its bridge answers
-    run([APP_DIR / "PrivatePartyNet.exe", "--window-test"], timeout=120)
+    # the window stack, which nothing else in the build reaches: the one window, its frames and their certificates (hidden)
+    run([APP_DIR / "PrivatePartyNet.exe", "--window-test"], timeout=200)
 
     step("4. Build the installer")
     check_path_lengths()
