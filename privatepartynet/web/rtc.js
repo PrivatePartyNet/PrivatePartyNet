@@ -111,6 +111,46 @@
   // and silence not sent at all (DTX), so a quiet person costs almost nothing. Only the Opus lines change.
   var OPUS_SETTINGS = { minptime: "10", useinbandfec: "1", usedtx: "1", stereo: "0", "sprop-stereo": "0", maxaveragebitrate: "32000" };
 
+  // Whether two session descriptions come from the same peer connection: the same DTLS certificate (a=fingerprint).
+  // An ICE restart keeps it, so the offer is answered on the connection that is there, keeping its audio and screens; a
+  // page that was reloaded has a new one, and the connection is made over.
+  function sameEndpoint(oldSdp, newSdp) {
+    function fingerprint(sdp) {
+      var match = /^a=fingerprint:(.+)$/m.exec(String(sdp || ""));
+      return match ? match[1].trim().toLowerCase() : null;
+    }
+    var before = fingerprint(oldSdp);
+    return before !== null && before === fingerprint(newSdp);
+  }
+
+  // An ICE restart: a new offer with fresh ICE credentials on the same connection, which keeps its tracks, its audio
+  // element and its screens while it finds a new way through (after a dropout, or a new address). An offer of ours that
+  // was never answered is taken back first. `send(sdp)` delivers the offer; it rejects while the party is unreachable.
+  async function restartIce(pc, send) {
+    if (pc.signalingState === "closed") return false;
+    if (pc.signalingState === "have-local-offer") await pc.setLocalDescription({ type: "rollback" });
+    var offer = await pc.createOffer({ iceRestart: true });
+    offer.sdp = tuneOpus(offer.sdp);
+    await pc.setLocalDescription(offer);
+    await gatherComplete(pc);
+    await send(pc.localDescription.sdp);
+    return true;
+  }
+
+  // Answer an offer on the connection that is there, when it comes from the same peer connection (sameEndpoint): an
+  // ICE restart. Resolves false, changing nothing, when it does not: the caller then makes the connection over.
+  async function answerInPlace(pc, sdp, send) {
+    if (pc.signalingState === "closed" || !pc.remoteDescription || !sameEndpoint(pc.remoteDescription.sdp, sdp)) return false;
+    if (pc.signalingState === "have-local-offer") await pc.setLocalDescription({ type: "rollback" });
+    await pc.setRemoteDescription({ type: "offer", sdp: sdp });
+    var answer = await pc.createAnswer();
+    answer.sdp = tuneOpus(answer.sdp);
+    await pc.setLocalDescription(answer);
+    await gatherComplete(pc);
+    await send(pc.localDescription.sdp);
+    return true;
+  }
+
   function tuneOpus(sdp) {
     var match = /a=rtpmap:(\d+) opus\/48000\/2/i.exec(sdp);
     if (!match) return sdp;
@@ -327,6 +367,9 @@
     setMicTrack: setMicTrack,
     remoteAudioTrack: remoteAudioTrack,
     tuneOpus: tuneOpus,
+    sameEndpoint: sameEndpoint,
+    restartIce: restartIce,
+    answerInPlace: answerInPlace,
     OPUS_SETTINGS: OPUS_SETTINGS,
     prepareAnswer: prepareAnswer,
     remoteTrack: remoteTrack,
