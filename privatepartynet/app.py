@@ -310,7 +310,7 @@ class Controller:
         except OSError as exc:
             log.exception("Could not start network discovery")
             self._discovery = None
-            self._discovery_error = f"Nearby PCs are unavailable: {exc}"
+            self._discovery_error = f"Nearby PCs are unavailable: {plain_error(exc)}"
         self._dm = None
         self._start_dm()
         self._probe_network = discovery_port != 0  # port 0 means a test or diagnostic run: no router or STUN calls
@@ -356,7 +356,7 @@ class Controller:
             self._secure_error = "That is not the password."
         except (VaultError, OSError) as exc:
             log.exception("Could not open the encrypted store")
-            self._secure_error = f"Your saved chats could not be opened: {exc}"
+            self._secure_error = f"Your saved chats could not be opened: {plain_error(exc)}"
 
     def unlock(self, password):
         """Give the password that protects the saved chats. Returns {ok, message}."""
@@ -378,7 +378,8 @@ class Controller:
         except WrongPassword:
             return {"ok": False, "message": "That is not the current password."}
         except (Locked, VaultError, ValueError) as exc:
-            return {"ok": False, "message": str(exc)}
+            log.warning("The chat password was not changed: %s", exc)
+            return {"ok": False, "message": plain_error(exc)}
         return {"ok": True, "message": ""}
 
     # --- direct messages -------------------------------------------------------------------------------------
@@ -809,7 +810,7 @@ class Controller:
             paths = self._make_paths()
         except Exception as exc:
             log.exception("The game network could not start")
-            return {"ok": False, "message": f"The game network could not start: {exc}"}
+            return {"ok": False, "message": f"The game network could not start: {plain_error(exc)}"}
         public = gamenet.public_key(private)
         game = {"key": key, "session": None, "link": None, "mesh": None, "paths": paths, "stop": stop,
                 "private": private, "public": public}
@@ -820,8 +821,9 @@ class Controller:
             try:
                 address = party.net_host(public, paths.local_candidates())
             except gamenet.NetError as exc:
+                log.warning("The game network could not start: %s", exc)
                 self.game_off()
-                return {"ok": False, "message": f"The game network could not start: {exc}"}
+                return {"ok": False, "message": f"The game network could not start: {plain_error(exc)}"}
             paths.set_on_candidates(lambda candidates: party.net_candidates(party.net_host_user, candidates))
             self._game_session(game, address, party.net_directory().network)
 
@@ -990,7 +992,7 @@ class Controller:
             return self._export_to(path, str(passphrase), bool(include_identity))
         except (backup.BackupError, OSError) as exc:
             log.exception("Export failed")
-            return {"ok": False, "message": f"The backup could not be saved: {exc}"}
+            return {"ok": False, "message": f"The backup could not be saved: {plain_error(exc)}"}
 
     def import_chats(self, passphrase, use_identity=False):
         """Merge a backup file into the saved chats. Asks which file. Nothing already here is changed or removed."""
@@ -1005,7 +1007,8 @@ class Controller:
         try:
             return self._import_from(path, str(passphrase or ""), bool(use_identity))
         except (backup.BackupError, VaultError, OSError) as exc:
-            return {"ok": False, "message": str(exc)}
+            log.warning("Import failed", exc_info=isinstance(exc, OSError))
+            return {"ok": False, "message": plain_error(exc)}
 
     # --- wiring from the app entry point -----------------------------------------------------------------
 
@@ -1110,7 +1113,7 @@ class Controller:
             certfile, keyfile = ensure_certificate(self._data_dir, ["localhost", "127.0.0.1", *addresses])
         except (OSError, ValueError) as exc:
             log.exception("Could not create the certificate")
-            return {"ok": False, "message": f"Could not create the certificate: {exc}"}
+            return {"ok": False, "message": f"Could not create the certificate: {plain_error(exc)}"}
         self._cert_pem = Path(certfile).read_text(encoding="utf-8")
         self._certfiles = (str(certfile), str(keyfile))
         passcode = generate_password()  # used only by a brand-new server; an existing one keeps its own
@@ -1123,7 +1126,7 @@ class Controller:
                           owner=self._identity)
         except OSError as exc:
             log.exception("Could not listen on port %s", port)
-            return {"ok": False, "message": f"Could not listen on port {port}: {exc}"}
+            return {"ok": False, "message": f"Could not listen on port {port}: {plain_error(exc)}"}
         party.start()
         party.friend_relays = self._friend_relays  # members who relay for others, for the invites' relays
         party.relay_listeners.append(lambda: party.net_directory().touch())  # members get new relay settings at once
@@ -1464,6 +1467,15 @@ def _split_address(text):
     else:
         host, port = text, ""
     return host, (port or None)
+
+
+def plain_error(exc):
+    """What went wrong, for the control panel: an OS error by its reason alone (no "[WinError 10048]" in front, no
+    exception name), anything else by the words it carries. The full exception goes to the log, not here."""
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror.rstrip(".") + "."
+    text = str(exc).strip()
+    return text if text else "something unexpected went wrong; the details are in the log"
 
 
 def window_test(seconds=45):

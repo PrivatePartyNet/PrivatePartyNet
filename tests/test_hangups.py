@@ -202,5 +202,18 @@ class FeedHangupTests(unittest.TestCase):
         self.assertTrue(all(line.startswith("INFO:") for line in logs.output), logs.output)
 
 
+
+
+class PlainErrorTests(unittest.TestCase):
+    def test_the_control_panel_gets_the_reason_never_the_exception(self):
+        from privatepartynet.app import plain_error
+
+        text = plain_error(OSError(10048, "Only one usage of each socket address is normally permitted", None, 10048))
+        self.assertEqual(text, "Only one usage of each socket address is normally permitted.")
+        self.assertNotIn("WinError", text)
+        self.assertEqual(plain_error(ValueError("That is not a backup file.")), "That is not a backup file.")
+        self.assertIn("details are in the log", plain_error(RuntimeError()))
+
+
 if __name__ == "__main__":
     unittest.main()
