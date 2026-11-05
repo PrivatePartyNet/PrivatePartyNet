@@ -145,6 +145,9 @@
     myLink = event.detail || null;
     updatePings();
   });
+  // Between rosters the host sends every member's link each 2 seconds ("links"); the page puts them on the members and
+  // says so with this event, and the pings follow in place.
+  window.addEventListener("ppn-links", function () { updatePings(); });
   var hoverId = null; // the peer whose chip the pointer is over
   var statsBusy = false;
   var lastCpu = null;
