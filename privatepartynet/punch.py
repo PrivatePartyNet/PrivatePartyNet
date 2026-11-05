@@ -752,15 +752,25 @@ def join_relayed(secret, fingerprint, relays, connect_seconds=CONNECT_SECONDS, b
     raise PunchError("; ".join(why) or "no relay to try")
 
 
+IPV6_HEAD_START = 0.25  # RFC 8305 (Happy Eyeballs): "One recommended value for a default delay is 250 milliseconds."
+
+
 def _first_tunnel(attempts, fingerprint):
-    """Try every (kind, sock, remote, seconds) at once. Returns (the first tunnel that opens or None, {kind: the
-    exception that ended each other one}). Attempts still running when one wins are closed when they end."""
+    """Try every (kind, sock, remote, seconds) together, IPv6 first: the others start IPV6_HEAD_START later, so where
+    both ways work IPv6 is the one used. Returns (the first tunnel that opens or None, {kind: the exception that ended
+    each other one}). Attempts still running when one wins are closed when they end."""
     lock, done = threading.Lock(), threading.Event()
     state = {"client": None, "left": len(attempts)}
     why = {}
+    has_v6 = any(kind == "ipv6" for kind, _, _, _ in attempts)
 
     def attempt(kind, sock, remote, seconds):
         client = None
+        if has_v6 and kind != "ipv6" and done.wait(IPV6_HEAD_START):
+            sock.close()  # IPv6 already got through: this way is not needed
+            with lock:
+                state["left"] -= 1
+            return
         try:
             client = TunnelClient(sock, remote, fingerprint, connect_seconds=seconds)
             client.kind = kind
