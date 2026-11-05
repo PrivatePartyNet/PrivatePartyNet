@@ -773,6 +773,35 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(swap.wait(timeout=60), 0)
         self.assertEqual((app / "PrivatePartyNet.exe").read_bytes(), b"new app")
 
+    def test_stale_unpacked_versions_beside_a_portable_copy_are_cleaned_and_nothing_else(self):
+        app = self.folder / "portable" / "PrivatePartyNet"
+        up = self.portable(app)
+        up.check(manual=False)
+        self.assertTrue((up.ready.parent / updater.STAGING_MARK).is_file(), "the updater marks the folders it makes")
+        parent = app.parent
+
+        def folder(name, marked=True):
+            path = parent / name
+            (path / "PrivatePartyNet").mkdir(parents=True)
+            if marked:
+                (path / updater.STAGING_MARK).write_text("made by the updater", encoding="utf-8")
+            return path
+
+        stale = [folder("PrivatePartyNet.update-3.1.9"), folder("PrivatePartyNet.update-3.2.0-beta.2")]
+        kept = [folder("PrivatePartyNet.update-3.1.8", marked=False), folder("PrivatePartyNet.update-old"),
+                folder("PrivatePartyNet.update-3.1.9 (copy)"), folder("Other.update-3.1.9"),
+                folder("PrivatePartyNet.update-3.1.9.bak")]
+        target = folder("somewhere-else")
+        junction = parent / "PrivatePartyNet.update-3.1.7"
+        subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(junction), str(target)], capture_output=True,
+                       creationflags=updater.NO_WINDOW)
+        up.clean()
+        for path in stale:
+            self.assertFalse(path.exists(), path.name)
+        for path in kept + [target, up.ready.parent]:
+            self.assertTrue(path.exists(), path.name)
+        self.assertTrue((target / updater.STAGING_MARK).exists(), "a junction is never followed")
+
     def test_a_portable_copy_whose_folder_cannot_change_unpacks_into_updates_and_says_so(self):
         app = self.folder / "portable" / "PrivatePartyNet"
         app.mkdir(parents=True)

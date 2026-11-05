@@ -70,6 +70,7 @@ MAX_MANIFEST = 64 * 1024
 MAX_FILE = 2 * 1024 ** 3
 MAX_NOTES = 4000
 KINDS = ("installer", "portable")
+STAGING_MARK = ".privatepartynet-update"  # in each <app>.update-<version> folder the updater makes, so it cleans only those
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
@@ -772,6 +773,7 @@ class Updater:
             if staging.exists():
                 shutil.rmtree(staging)
             staging.mkdir(parents=True)
+        (staging / STAGING_MARK).write_text(f"Unpacked by {APP}'s updater: {version}\n", encoding="utf-8")
         root = staging.resolve()
         with zipfile.ZipFile(archive) as zipped:
             total = 0
@@ -921,7 +923,8 @@ class Updater:
             return None
 
     def clean(self):
-        """Delete old downloads, and a portable copy's previous folder once the new one runs."""
+        """Delete old downloads, a portable copy's previous folder once the new one runs, and versions unpacked beside
+        it that are no longer wanted (skipped, or passed by a newer one)."""
         keep = {self._in_updates(), self.found["file"]["name"] if self.found else None, "state.json"}
         try:
             for path in self.folder.iterdir():
@@ -936,6 +939,31 @@ class Updater:
         old = self.app_dir.parent / f"{self.app_dir.name}.old"
         if self.kind == "portable" and old.is_dir():
             shutil.rmtree(old, ignore_errors=True)
+        if self.kind == "portable":
+            self._clean_staging()
+
+    def _clean_staging(self):
+        """Remove <app>.update-<version> folders beside this copy, but only those named exactly so, with a real version,
+        that hold the updater's mark, and are not links; and never the one that is ready now."""
+        current = self.ready.parent if self.ready is not None else None
+        prefix = f"{self.app_dir.name}.update-"
+        try:
+            entries = list(self.app_dir.parent.iterdir())
+        except OSError:
+            return
+        for path in entries:
+            if not path.name.startswith(prefix) or parse_version(path.name[len(prefix):]) is None \
+                    or path.name[len(prefix):] != path.name[len(prefix):].strip() or path == current:
+                continue
+            try:
+                if path.is_symlink() or path.is_junction() or not path.is_dir():
+                    continue
+                mark = path / STAGING_MARK
+                if mark.is_symlink() or not mark.is_file():
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
 
     # --- for the windows ---------------------------------------------------------------------------------------
 
