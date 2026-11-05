@@ -64,7 +64,8 @@ Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app
 ; Rebuilds Explorer's icon cache without restarting Explorer, so the new icon shows on shortcuts and the taskbar now.
 Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden skipifdoesntexist; StatusMsg: "Refreshing icons..."
 ; Starts the app afterwards in a silent install too (that is how the app's own updates run), unless /NOLAUNCH=1 says
-; not (an update installed as the app closes).
+; not (an update installed as the app closes). A scripted or deployed install that should not start the app passes it
+; too: PrivatePartyNetSetup-<version>.exe /SILENT /NOLAUNCH=1.
 Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; WorkingDir: "{app}"; Flags: nowait postinstall; Check: LaunchAfter
 
 ; The app's own data (settings, certificate, log, and chat history when it exists) is not in an UninstallDelete

@@ -27,6 +27,9 @@ Set `PRIVATEPARTYNET_PYTHON` or `PRIVATEPARTYNET_EDGE` if Python or Edge is some
 checks that the packaged app captures the screen and opens its window, builds the installer with Inno Setup 6, and writes
 checksums. It checks each Microsoft installer's signature first and stops if one does not verify.
 
+The installer starts the app when it finishes, in a silent install too, because that is how the app's own updates run.
+A scripted install that should not start it adds `/NOLAUNCH=1`: `PrivatePartyNetSetup-<version>.exe /SILENT /NOLAUNCH=1`.
+
 ## Make a signed release
 
 Installed copies update themselves only to releases signed with PrivatePartyNet's release key

@@ -163,6 +163,15 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertNotIn("skipifsilent", run, "a silent update starts the app again")
         self.assertIn("Check: LaunchAfter", run)
 
+    def test_a_scripted_silent_install_is_told_how_not_to_start_the_app(self):
+        root = Path(__file__).resolve().parents[1]
+        contributing = (root / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        self.assertTrue("/SILENT /NOLAUNCH=1" in contributing, "CONTRIBUTING.md says how")
+        iss = (root / "installer" / "PrivatePartyNet.iss").read_text(encoding="utf-8")
+        comment = iss.split("[Run]", 1)[1].split('Filename: "{app}\\{#AppExe}"')[0]
+        self.assertIn("/NOLAUNCH=1", comment)
+        self.assertIn("scripted", comment)
+
 
 if __name__ == "__main__":
     unittest.main()
