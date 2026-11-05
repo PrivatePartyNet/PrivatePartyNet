@@ -202,4 +202,15 @@ body.viewer #primary .tile .frame, body.viewer .hidden-note { border-radius: 0; 
 #voiceVolumes { display: grid; gap: 4px; }
 .volume-row { display: grid; grid-template-columns: 1fr 110px; gap: 8px; align-items: center; }
 #roster li.speaking .avatar { box-shadow: 0 0 0 2px var(--success); }
+/* Each member's ping: a dot in the quality's colour and a number that keeps its width (pingview.js). */
+#roster .ping { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); order: 1;
+  font-variant-numeric: tabular-nums; min-width: 58px; justify-content: flex-end; white-space: nowrap; flex: none; }
+#roster li > button { order: 2; } /* after the ping, so the pings line up in a column whatever badges a row has */
+#roster .ping .pdot, .chip .dot { transition: background-color 0.3s; }
+#roster .ping .pdot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+#roster .ping[data-quality="good"] .pdot, .chip[data-state="connected"][data-quality="good"] .dot { background: var(--success); }
+#roster .ping[data-quality="fair"] .pdot, .chip[data-state="connected"][data-quality="fair"] .dot { background: #d4b106; }
+#roster .ping[data-quality="poor"] .pdot, .chip[data-state="connected"][data-quality="poor"] .dot { background: var(--danger); }
+#roster .ping[data-quality="shaky"] { color: var(--warn); }
+#roster .ping[data-quality="shaky"] .pdot { background: var(--warn); }
 .badge.voice { background: var(--surface-2); }

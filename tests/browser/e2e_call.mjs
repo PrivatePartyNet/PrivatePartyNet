@@ -488,9 +488,25 @@ async function main() {
   })()`);
   check("hovering a name shows its connection summary", await waitFor(() => sam.evaluate("!document.getElementById('tip').hidden && document.getElementById('tip').textContent.includes('Receiving from Alex')")));
   await shot(sam, "4-tip");
-  check("the summary has the resolution, the frame rate and the CPU impact", await sam.evaluate("(function () { const t = document.getElementById('tip').textContent; return /fps/.test(t) && /\u00d7/.test(t) && /CPU/.test(t) && /Round trip/.test(t); })()"));
+  check("the summary has the resolution, the frame rate and the CPU impact", await sam.evaluate("(function () { const t = document.getElementById('tip').textContent; return /fps/.test(t) && /\u00d7/.test(t) && /CPU/.test(t) && /Ping (\\d+ ms|n\\/a)/.test(t); })()"));
   await sam.evaluate("document.getElementById('peerChips').dispatchEvent(new MouseEvent('mouseleave'))");
   check("the summary goes away when the pointer leaves", await sam.evaluate("document.getElementById('tip').hidden"));
+
+  // Each member's ping in the members list, beside their name (pingview.js), on every page.
+  const others = `[...document.querySelectorAll('#roster li.online')].filter(li => !li.querySelector('.name').textContent.endsWith('(you)'))`;
+  for (const [who, page] of [["the host", host], ["Alex", alex], ["Sam", sam]]) {
+    check(`${who} sees a ping beside each other member`, await waitFor(() => page.evaluate(`(function () {
+      const pings = ${others}.map(li => li.querySelector('.ping'));
+      return pings.length === 2 && pings.every(p => p && /^\\d+$/.test(p.dataset.pingMs) && p.dataset.quality !== 'unknown' &&
+        / ms$/.test(p.textContent));
+    })()`)));
+  }
+  check("a ping comes from the member's own connection, as the connection bar's does", await sam.evaluate(`(function () {
+    const alexRow = ${others}.find(li => li.querySelector('.name').textContent === 'Alex');
+    return alexRow.querySelector('.ping').dataset.source === 'direct' && /Measured on your own connection to Alex/.test(alexRow.querySelector('.ping').title);
+  })()`));
+  check("the host's own row has no ping of its own", await host.evaluate(
+    "[...document.querySelectorAll('#roster li.online')].filter(li => li.querySelector('.name').textContent.endsWith('(you)')).every(li => !li.querySelector('.ping') || li.querySelector('.ping').hidden)"));
   check("the bar shows icons for the numbers that apply", await sam.evaluate("document.querySelectorAll('#peerChips .chip svg.ic').length > 0"));
   check("the bar has a chip for each person and not for pop-out windows", await sam.evaluate("document.querySelectorAll('#peerChips .chip').length === Number(document.getElementById('statsbar').dataset.peers)"));
   await sam.evaluate("(function () { document.getElementById('statsbar').style.maxWidth = '210px'; })()");

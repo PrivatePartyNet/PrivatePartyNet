@@ -22,6 +22,7 @@ CHECKS = [
     ("/static/rtc.js", b"PartyRTC"),
     ("/static/layout.js", b"PrivatePartyNetLayout"),
     ("/static/netstats.js", b"PrivatePartyNetNetStats"),
+    ("/static/pingview.js", b"PrivatePartyNetPingView"),
     ("/static/room.js", b"EventSource"),
     ("/static/style.css", b"statsbar"),
     ("/static/theme.css", b"data-theme"),

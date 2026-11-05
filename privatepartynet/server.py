@@ -39,6 +39,7 @@ STATIC_TYPES = {
     "rtc.js": "application/javascript; charset=utf-8",
     "layout.js": "application/javascript; charset=utf-8",
     "netstats.js": "application/javascript; charset=utf-8",
+    "pingview.js": "application/javascript; charset=utf-8",
     "capturesize.js": "application/javascript; charset=utf-8",
     "room.js": "application/javascript; charset=utf-8",
     "chat.js": "application/javascript; charset=utf-8",

@@ -18,6 +18,7 @@
   var RTC = window.PartyRTC;
   var Layout = window.PrivatePartyNetLayout;
   var Stats = window.PrivatePartyNetNetStats;
+  var Ping = window.PrivatePartyNetPingView;
   var CaptureSize = window.PrivatePartyNetCaptureSize;
 
   var PREFS = {
@@ -137,6 +138,13 @@
   var streamPanel = null; // the open per-stream settings panel: { key, node }
   var statSamples = new Map(); // peer id -> the previous normalized stats report
   var summaries = new Map(); // peer id -> the latest connection summary
+  // This page's own link to the host, timed by the page from the host's heartbeat (window.ppnMyLink and its "ppn-mylink"
+  // event, same shape as a member's "link"); null until then, and always on the host's own page.
+  var myLink = window.ppnMyLink || null;
+  window.addEventListener("ppn-mylink", function (event) {
+    myLink = event.detail || null;
+    updatePings();
+  });
   var hoverId = null; // the peer whose chip the pointer is over
   var statsBusy = false;
   var lastCpu = null;
@@ -1673,6 +1681,7 @@
       name.className = "name";
       name.textContent = member.name + (member.id === me.id ? " (you)" : "");
       row.append(wrap, name);
+      if (member.online) row.append(pingCell(member));
       var roleLabel = member.id === hostId ? "Owner" : member.role === "admin" ? "Admin" : member.role === "guest" ? "Guest" : "";
       if (roleLabel) {
         var badge = document.createElement("span");
@@ -1710,6 +1719,50 @@
       el.roster.append(row);
     });
   }
+
+  // --- each member's ping ----------------------------------------------------------------------------------
+
+  // The best ping there is for a member (pingview.js): this page's own connection to them, else the host's heartbeat.
+  function pingOf(member) {
+    return Ping.pick({
+      member: member, summary: summaries.get(member.id), myLink: myLink, self: !!me && member.id === me.id,
+      selfIsHost: !!me && me.id === hostId, isHost: member.id === hostId,
+    });
+  }
+
+  function fillPing(cell, member) {
+    var choice = pingOf(member);
+    var shown = Ping.text(choice);
+    var quality = choice.state === "ok" ? Ping.quality(choice.rtt, choice.loss) : "shaky";
+    var label = cell.lastChild;
+    if (label.textContent !== shown) label.textContent = shown;
+    cell.dataset.quality = quality;
+    cell.dataset.source = choice.source;
+    cell.dataset.pingMs = typeof choice.rtt === "number" && choice.state === "ok" ? String(Math.round(choice.rtt)) : "";
+    cell.hidden = choice.state === "self";
+    cell.title = Ping.detail(choice, member.id === (me && me.id) ? "you" : member.name).join("\n");
+  }
+
+  function pingCell(member) {
+    var cell = document.createElement("span");
+    cell.className = "ping";
+    var dot = document.createElement("span");
+    dot.className = "pdot";
+    cell.append(dot, document.createElement("span"));
+    fillPing(cell, member);
+    return cell;
+  }
+
+  // Every 2 seconds, in place: the rows stay where they are and only the numbers change.
+  function updatePings() {
+    document.querySelectorAll("#roster li[data-id]").forEach(function (row) {
+      var cell = row.querySelector(".ping");
+      var member = members.get(row.dataset.id);
+      if (cell && member) fillPing(cell, member);
+    });
+  }
+
+  setInterval(updatePings, 2000);
 
   function updateCount() {
     var online = Array.from(members.values()).filter(function (m) { return m.online && m.role !== "viewer"; }).length;
@@ -1865,6 +1918,7 @@
       chip.dataset.upRes = Stats.formatSize(up.w, up.h);
       chip.dataset.upKbps = String(Math.round(up.kbps));
     }
+    chip.dataset.quality = Ping.summaryQuality(summary); // the members list's colours
     var dot = document.createElement("span");
     dot.className = "dot";
     var name = document.createElement("span");
@@ -2002,8 +2056,8 @@
     el.tip.append(net);
     var line = document.createElement("div");
     line.className = "line";
-    line.textContent = (summary.rtt == null ? "Round trip n/a" : "Round trip " + Math.round(summary.rtt) + " ms") +
-      "  ·  Packet loss " + summary.loss.toFixed(1) + "%";
+    line.textContent = Ping.summaryLine(summary) +
+      (typeof summary.jitter === "number" ? "  ·  jitter " + Math.round(summary.jitter) + " ms" : "");
     el.tip.append(line);
     if (summary.way) {
       var wayLine = document.createElement("div");
@@ -2116,7 +2170,7 @@
         var peer = entry[1];
         var state = peer.pc.connectionState;
         if (state === "connected") connected += 1;
-        var summary = { state: state, rtt: null, way: null, loss: 0, down: [], up: [] };
+        var summary = { state: state, rtt: null, jitter: null, way: null, loss: 0, down: [], up: [] };
         try {
           var sample = await collect(peer);
           var previous = statSamples.get(id);
@@ -2124,6 +2178,7 @@
           var activeIn = new Set(sharesOf(id).map(function (s) { return s.slot; }));
           var result = Stats.diff(previous, sample, { cores: cores, activeIn: activeIn, activeOut: activeOut });
           summary.rtt = result.rtt;
+          summary.jitter = result.jitter;
           summary.way = result.way;
           summary.loss = result.loss;
           summary.down = result.down;
