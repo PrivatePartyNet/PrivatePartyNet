@@ -33,12 +33,17 @@ Installed copies update themselves only to releases signed with PrivatePartyNet'
 (`privatepartynet\updater.py`, `TRUSTED_KEYS`).
 
 1. Once: `py tools\sign_release.py --new-key` makes the key in `%APPDATA%\PrivatePartyNet-release\update-signing.key`,
-   sealed for your Windows account, and prints its public key, which goes into `TRUSTED_KEYS`. Back the folder up; without
-   the key no installed copy can be updated again. To move to a new key, sign one release with
-   `py tools\sign_release.py --next-key <new public key>` using the old key; copies that install it trust the new one too.
-2. Raise the version in `privatepartynet\__init__.py` (a test version is, for example, `3.3.0-alpha.1`) and build with
+   sealed for your Windows account, and prints its public key, which goes into `TRUSTED_KEYS`. To move to a new key, sign
+   one release with `py tools\sign_release.py --next-key <new public key>` using the old key; copies that install it
+   trust the new one too.
+2. Back the key up, once: `py tools\sign_release.py --export E:\ppn-signing-key.json` asks for a passphrase (12
+   characters or more) and writes the key sealed with it. Keep the file off this PC (a USB stick in a drawer) and the
+   passphrase somewhere else (a password manager). Copying the key folder is not a backup: Windows seals the key for
+   this account on this PC only. Without the key no installed copy can be updated again. On a new PC, or after
+   reinstalling Windows, `py tools\sign_release.py --import E:\ppn-signing-key.json` puts it back.
+3. Raise the version in `privatepartynet\__init__.py` (a test version is, for example, `3.3.0-alpha.1`) and build with
    `py tools\build.py`. Its last step writes `PrivatePartyNet-<version>-update.json` and `.json.sig` into `dist\`.
-3. Make the GitHub release with the tag `v<version>` (a pre-release for a test version) and upload the installer, the
+4. Make the GitHub release with the tag `v<version>` (a pre-release for a test version) and upload the installer, the
    portable zip, the `update.json` and the `.json.sig`. A release without them is never offered.
 
 ## What a change needs

@@ -1,10 +1,13 @@
 """tools/sign_release.py: the manifest it writes is one the updater accepts, and it can hand on the next key."""
 
 import hashlib
+import json
+import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -56,6 +59,89 @@ class SignReleaseTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         self.assertNotIn(str(root).lower(), str(sign_release.KEY_FILE).lower())
         self.assertEqual(sign_release.KEY_FILE.name, "update-signing.key")
+
+
+class KeyBackupTests(unittest.TestCase):
+    """--export writes the signing key sealed with a passphrase, for a safe place off this PC; --import seals it into
+    Windows data protection on this PC or another one."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.folder = Path(temp.name)
+        self.key = Ed25519PrivateKey.generate()
+        self.public = sign_release.public_hex(self.key)
+
+    def export(self, passphrase="correct horse battery staple", log2_n=10):
+        path = self.folder / "signing-key.ppnkey"
+        sign_release.export_key(self.key, path, passphrase, log2_n=log2_n)
+        return path
+
+    def test_an_exported_key_comes_back_with_its_passphrase(self):
+        path = self.export()
+        text = path.read_text(encoding="utf-8")
+        self.assertIn(self.public, text, "the public key is in the clear, to tell backups apart")
+        self.assertNotIn(self.key.private_bytes_raw().hex(), text)
+        back = sign_release.import_key(path, "correct horse battery staple")
+        self.assertEqual(back.private_bytes_raw(), self.key.private_bytes_raw())
+
+    def test_a_wrong_passphrase_or_a_changed_byte_is_refused(self):
+        path = self.export()
+        with self.assertRaisesRegex(SystemExit, "passphrase"):
+            sign_release.import_key(path, "wrong horse battery staple")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        for field in ("public", "salt", "sealed"):
+            changed = dict(record)
+            value = changed[field]
+            changed[field] = ("0" if value[0] != "0" else "1") + value[1:]
+            path.write_text(json.dumps(changed), encoding="utf-8")
+            with self.assertRaises(SystemExit, msg=field):
+                sign_release.import_key(path, "correct horse battery staple")
+
+    def test_a_short_passphrase_an_existing_file_or_a_hostile_cost_is_refused(self):
+        with self.assertRaisesRegex(SystemExit, "12"):
+            self.export(passphrase="short")
+        self.export()
+        with self.assertRaisesRegex(SystemExit, "already"):
+            self.export()
+        path = self.folder / "signing-key.ppnkey"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps(dict(record, log2_n=40)), encoding="utf-8")
+        with self.assertRaisesRegex(SystemExit, "damaged"):
+            sign_release.import_key(path, "correct horse battery staple")
+
+    def test_import_seals_the_key_on_this_pc_and_never_replaces_another(self):
+        path = self.export()
+        target = self.folder / "release" / "update-signing.key"
+        sealed = []
+        with mock.patch.object(sign_release, "dpapi_protect", lambda data, entropy: sealed.append(data) or b"sealed"):
+            sign_release.store_key(sign_release.import_key(path, "correct horse battery staple"), target)
+        self.assertEqual(sealed, [self.key.private_bytes_raw()])
+        self.assertEqual(target.read_bytes(), b"sealed")
+        with self.assertRaisesRegex(SystemExit, "already"):
+            sign_release.store_key(Ed25519PrivateKey.generate(), target)
+
+    def test_the_passphrase_comes_only_from_a_prompt(self):
+        options = {o for action in sign_release.parser()._actions for o in action.option_strings}
+        self.assertIn("--export", options)
+        self.assertIn("--import", options)
+        self.assertFalse(any("pass" in o for o in options), "never on the command line")
+        source = Path(sign_release.__file__).read_text(encoding="utf-8")
+        self.assertIn("getpass.getpass(", source)
+        self.assertNotIn("os.environ.get(\"PPN", source)
+        asked = iter(["correct horse battery staple", "correct horse battery staple"])
+        path = self.folder / "from-the-prompt.ppnkey"
+        with mock.patch.object(sign_release, "load_key", lambda: self.key), \
+                mock.patch.object(sign_release.getpass, "getpass", lambda prompt="": next(asked)), \
+                mock.patch.object(sign_release, "EXPORT_LOG2_N", 10):
+            self.assertEqual(sign_release.main(["--export", str(path)]), 0)
+        self.assertEqual(sign_release.import_key(path, "correct horse battery staple").private_bytes_raw(),
+                         self.key.private_bytes_raw())
+
+    def test_the_docstring_names_only_options_that_exist(self):
+        options = {o for action in sign_release.parser()._actions for o in action.option_strings}
+        for named in re.findall(r"(?<![\w-])--[a-z][a-z-]+", sign_release.__doc__):
+            self.assertIn(named, options, named)
 
 
 class InstallerScriptTests(unittest.TestCase):
