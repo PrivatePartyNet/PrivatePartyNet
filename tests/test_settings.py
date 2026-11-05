@@ -16,9 +16,19 @@ class SettingsTests(unittest.TestCase):
 
     def test_saved_values_come_back(self):
         save_settings({"port": 9100, "name": "Kitchen PC"}, self.folder)
-        self.assertEqual(load_settings(self.folder), {"port": 9100, "name": "Kitchen PC", "theme": "system", "server_id": None,
+        self.assertEqual(load_settings(self.folder), {"port": 9100, "name": "Kitchen PC", "theme": "dark", "server_id": None,
                                                       "game_server": None, "friend_relay": False, "friend_relay_mbps": 8,
-                                                      "game_open": []})
+                                                      "game_open": [], "accent": None, "text_scale": 100,
+                                                      "density": "default"})
+
+    def test_a_persons_appearance_comes_back_and_bad_values_fall_back(self):
+        save_settings({"accent": "#16A34A", "text_scale": 115, "density": "compact"}, self.folder)
+        loaded = load_settings(self.folder)
+        self.assertEqual((loaded["accent"], loaded["text_scale"], loaded["density"]), ("#16a34a", 115, "compact"))
+        for accent, scale, density in (("green", 300, "huge"), ("#12345", 89, None), (5, True, "")):
+            save_settings({"accent": accent, "text_scale": scale, "density": density}, self.folder)
+            loaded = load_settings(self.folder)
+            self.assertEqual((loaded["accent"], loaded["text_scale"], loaded["density"]), (None, 100, "default"))
 
     def test_relaying_for_others_is_off_until_turned_on_and_its_limit_is_checked(self):
         self.assertFalse(load_settings(self.folder)["friend_relay"])

@@ -48,6 +48,46 @@
     throw new Error("That picture does not fit in 12 MB at its full size. Its size is never reduced, so crop it or send a smaller file.");
   }
 
+  var MAX_DROPPED = 10; // pictures sent from one drop
+
+  function hasFiles(event) {
+    return Boolean(event.dataTransfer && Array.prototype.indexOf.call(event.dataTransfer.types, "Files") >= 0);
+  }
+
+  // Files dragged onto the window. The whole window takes the drop, so a picture dropped on the screens or the channel list
+  // is sent too, and a file dropped anywhere never makes the window open it in place of the party. While files are being
+  // dragged over, <body> has the class "dropping", which the page uses to say what a drop will do.
+  function dropTarget(target, onDrop) {
+    var doc = target.ownerDocument || target;
+    var depth = 0;
+    function clear() {
+      depth = 0;
+      doc.body.classList.remove("dropping");
+    }
+    target.addEventListener("dragenter", function (event) {
+      if (!hasFiles(event)) return;
+      depth += 1;
+      doc.body.classList.add("dropping");
+    });
+    target.addEventListener("dragleave", function (event) {
+      if (!hasFiles(event)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) doc.body.classList.remove("dropping");
+    });
+    target.addEventListener("dragover", function (event) {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    });
+    target.addEventListener("drop", function (event) {
+      clear();
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      onDrop(Array.prototype.slice.call(event.dataTransfer.files));
+    });
+    if (doc.defaultView) doc.defaultView.addEventListener("blur", clear);
+  }
+
   function create(options) {
     var el = options.el;
     var state = {
@@ -250,33 +290,33 @@
       return null;
     }
 
-    if (el.attachBtn && el.attachFile) {
-      el.attachBtn.addEventListener("click", function () { el.attachFile.click(); });
-      el.attachFile.addEventListener("change", function () {
-        var file = pictureFrom(el.attachFile.files);
-        el.attachFile.value = "";
-        if (file) sendPicture(file);
-      });
-    }
     el.chatText.addEventListener("paste", function (event) {
       var file = pictureFrom((event.clipboardData && event.clipboardData.files) || []);
       if (!file) return;
       event.preventDefault();
       sendPicture(file);
     });
-    if (el.dropZone) {
-      el.dropZone.addEventListener("dragover", function (event) {
-        if (event.dataTransfer && Array.prototype.indexOf.call(event.dataTransfer.types, "Files") >= 0) event.preventDefault();
-      });
-      el.dropZone.addEventListener("drop", function (event) {
-        var file = pictureFrom((event.dataTransfer && event.dataTransfer.files) || []);
-        if (!file) return;
-        event.preventDefault();
-        sendPicture(file);
-      });
+
+    // Pictures dragged onto the window go to the channel that is open, one message each, in the order dropped.
+    function dropped(files) {
+      if (state.role === "guest") {
+        options.notice("Guests can read the chat but not post.");
+        return;
+      }
+      var pictures = files.filter(function (f) { return PICTURE_TYPES.test(f.type); }).slice(0, MAX_DROPPED);
+      var skipped = files.length - pictures.length;
+      if (skipped) {
+        options.notice((skipped === 1 ? "One file was" : skipped + " files were") +
+          " not sent. Only pictures can be sent: PNG, JPEG, GIF or WebP, up to 12 MB.");
+      }
+      pictures.reduce(function (before, file) {
+        return before.then(function () { return sendPicture(file); });
+      }, Promise.resolve());
     }
+    if (el.dropZone) dropTarget(el.dropZone, dropped);
 
     function renderMessages() {
+      renderComposer(); // the message box names the channel it writes to
       el.messages.textContent = "";
       lastSpeaker = null;
       var channel = channelById(state.current);
@@ -340,8 +380,10 @@
       var guest = state.role === "guest";
       el.chatText.disabled = guest;
       el.chatForm.querySelector("button[type=submit]").disabled = guest;
-      if (el.attachBtn) el.attachBtn.disabled = guest;
-      el.chatText.placeholder = guest ? "Guests can read the chat but not post" : "Message this channel";
+      var channel = channelById(state.current);
+      el.chatText.placeholder = guest ? "Guests can read the chat but not post" : channel ? "Message #" + channel.name : "Message this channel";
+      var hint = el.chatForm.ownerDocument.getElementById("dropChannel");
+      if (hint) hint.textContent = channel ? "#" + channel.name : "the chat";
     }
 
     // --- the channel list ----------------------------------------------------------------------------------
@@ -414,8 +456,12 @@
         row.className = "channel-row";
         var label = document.createElement("span");
         label.className = "channel-name";
-        label.textContent = (isVoice ? "Voice  " : "#  ") + channel.name;
+        // The page's icon set draws a # or a speaker; without it (tests, other pages) the kind is written in words.
+        var glyph = typeof PPNIcons !== "undefined" ? PPNIcons.node(isVoice ? "speaker" : "hash") : null;
+        label.textContent = glyph ? channel.name : (isVoice ? "Voice  " : "#  ") + channel.name;
+        if (glyph) row.append(glyph);
         row.append(label);
+        item.setAttribute("aria-label", (isVoice ? "Voice channel " : "Text channel ") + channel.name);
         var unread = buffer(channel.id).unread;
         if (!isVoice && unread && channel.id !== state.current) {
           var badge = document.createElement("span");
@@ -423,10 +469,14 @@
           badge.textContent = unread > 99 ? "99+" : String(unread);
           row.append(badge);
         }
+        // Voice is joined with this button only, never by clicking the channel's name: a stray click must not open the mic.
         if (isVoice && state.role !== "guest") {
           var inHere = state.voice === channel.id;
-          row.append(smallButton(inHere ? "Leave" : "Join", inHere ? "Leave this voice channel" : "Join this voice channel",
-            function () { options.onVoice(inHere ? null : channel.id, channel.name); }));
+          var joinButton = smallButton(inHere ? "Leave" : "Join", inHere ? "Leave this voice channel" : "Join this voice channel",
+            function () { options.onVoice(inHere ? null : channel.id, channel.name); });
+          joinButton.classList.add("join");
+          if (inHere) joinButton.classList.add("in");
+          row.append(joinButton);
         }
         if (isStaff()) {
           row.append(smallButton("Rename", "Rename this channel", function () {
@@ -447,7 +497,12 @@
             list.className = "voice-people";
             people.forEach(function (person) {
               var li = document.createElement("li");
-              li.textContent = person.name + (person.id === state.meId ? " (you)" : "");
+              li.dataset.id = person.id;
+              var who = document.createElement("span");
+              who.className = "who";
+              who.textContent = person.name + (person.id === state.meId ? " (you)" : "");
+              if (options.avatar) li.append(options.avatar(person.name, person.id));
+              li.append(who);
               list.append(li);
             });
             item.append(list);
@@ -488,7 +543,8 @@
     };
   }
 
-  var api = { create: create, encodingPlan: encodingPlan, preparePicture: preparePicture, MAX_BYTES: MAX_BYTES };
+  var api = { create: create, encodingPlan: encodingPlan, preparePicture: preparePicture, dropTarget: dropTarget, hasFiles: hasFiles,
+              MAX_BYTES: MAX_BYTES, MAX_DROPPED: MAX_DROPPED };
   if (typeof window !== "undefined") window.PartyChat = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 })();

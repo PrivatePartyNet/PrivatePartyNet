@@ -18,6 +18,7 @@
 
   function fill(info) {
     document.documentElement.dataset.theme = info.theme;
+    if (window.PPNAppearance && info.appearance) window.PPNAppearance.apply(document, info.appearance);
     document.querySelectorAll(".appname").forEach(function (node) { node.textContent = info.name; });
     document.querySelectorAll(".appversion").forEach(function (node) { node.textContent = info.version; });
     document.title = document.title.replace("PrivatePartyNet", info.name);
@@ -72,6 +73,16 @@
     done.textContent = ok ? "Copied." : "Could not copy. Select the text and copy it by hand.";
     setTimeout(function () { done.textContent = ""; }, 4000);
   }
+
+  // These pages take no files. Without this, a file dropped on one would replace the page with the file.
+  ["dragover", "drop"].forEach(function (type) {
+    document.addEventListener(type, function (event) {
+      if (event.dataTransfer && Array.prototype.indexOf.call(event.dataTransfer.types, "Files") >= 0) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "none";
+      }
+    });
+  });
 
   window.addEventListener("pywebviewready", function () {
     window.pywebview.api.about_info().then(fill).catch(function () {

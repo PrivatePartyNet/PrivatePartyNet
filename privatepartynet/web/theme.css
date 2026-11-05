@@ -1,100 +1,79 @@
 /*
- * Shared colors for every PrivatePartyNet page. The page's <html data-theme> decides which palette applies:
- * "light", "dark", or "system" (follows Windows' app theme). Pages use these variables and never fixed colors.
+ * The look of every PrivatePartyNet window: colors, type, spacing, radii and shadows, as variables.
+ * <html data-theme> is "light", "dark" or "system" (follows Windows). Each color is written once as light-dark(light, dark),
+ * and color-scheme picks the side, so "system" needs no second copy of the palette. Pages use these variables and never
+ * fixed colors. The palette comes from the app's icon: a blue screen, a pink party hat with yellow stripes.
  */
 :root,
-[data-theme="light"] {
-  --bg: #f3f4f6;
-  --surface: #ffffff;
-  --surface-2: #e5e7eb;
-  --border: #d1d5db;
-  --text: #111827;
-  --muted: #6b7280;
-  --accent: #2563eb;
-  --accent-text: #ffffff;
-  --danger: #dc2626;
-  --success: #15803d;
-  --warn: #b45309;
-  --notice-bg: #fff7ed;
-  --notice-text: #9a3412;
-  --selected: #dbeafe;
+[data-theme="system"] { color-scheme: light dark; }
+[data-theme="light"] { color-scheme: light; }
+[data-theme="dark"] { color-scheme: dark; }
+
+/*
+ * Contrast, measured (WCAG ratio): body text is 12 to 15.8 in light and 8.8 to 13.4 in dark, below the near-white-on-black
+ * that Discord users with astigmatism complained of; secondary text is at least 4.8; white on every filled button is at
+ * least 5. Each colour that is also text (--success, --danger) has a darker -fill twin for buttons with white text on them.
+ * Research: ! LLM Files\Research\2026-11-04_Discord-UI-and-its-criticisms.md
+ */
+:root {
+  --bg: light-dark(#f2f4fa, #11172a);
+  --surface: light-dark(#ffffff, #181f35);
+  --surface-2: light-dark(#e9edf7, #212a47);
+  --surface-3: light-dark(#dbe1f0, #2c365a);
+  --border: light-dark(#d3d9ea, #2e3858);
+  --text: light-dark(#1b2238, #d9dff0);
+  --muted: light-dark(#525c7c, #9ba5c6);
+
+  --accent: light-dark(#2563eb, #2563eb);          /* the icon's blue by default; each person may pick their own */
+  --accent-hover: light-dark(#2055ca, #2157cf);
+  --accent-text: light-dark(#ffffff, #ffffff);
+  --accent-ink: light-dark(#2563eb, #5585ef);        /* the accent as text or an icon on a plain surface */
+  --focus: light-dark(#2563eb, #7aa8ff);             /* focus rings */
+  --selected: light-dark(#dce6fc, #1c356f);
+  --yellow: light-dark(#d99a00, #ffd23f);            /* the hat's stripes: unread and highlights */
+  --yellow-text: #2a1f00;
+
+  --danger: light-dark(#c21f2b, #ff7078);            /* as text, a dot or an outline */
+  --danger-fill: light-dark(#c21f2b, #c0303b);       /* behind white text */
+  --success: light-dark(#13773a, #45d18a);
+  --success-fill: light-dark(#15803d, #177a43);
+  --warn: light-dark(#9a5300, #f2b53a);
+  --notice-bg: light-dark(#fff4e1, #3a2a10);
+  --notice-text: light-dark(#7a3f00, #fbd38d);
+
   --video-bg: #000000;
-  --stage-bg: #dfe1e5;
-  --c-up: #b45309;
-  --c-down: #15803d;
-  --c-fps: #6d28d9;
-  --c-size: #0369a1;
-}
+  --stage-bg: light-dark(#dde2ef, #0c1120);
+  --scrim: rgba(6, 9, 20, 0.72);
 
-[data-theme="dark"] {
-  --bg: #313338;
-  --surface: #2b2d31;
-  --surface-2: #383a40;
-  --border: #3f4147;
-  --text: #dbdee1;
-  --muted: #949ba4;
-  --accent: #4f8dff;
-  --accent-text: #ffffff;
-  --danger: #f23f43;
-  --success: #23a55a;
-  --warn: #f0b232;
-  --notice-bg: #3b2212;
-  --notice-text: #fdba74;
-  --selected: #3a4a6e;
-  --video-bg: #000000;
-  --stage-bg: #1e1f22;
-  --c-up: #f5a524;
-  --c-down: #3ddc97;
-  --c-fps: #b39bff;
-  --c-size: #6cc0ff;
-}
+  --c-up: light-dark(#a55a00, #f5a524);
+  --c-down: light-dark(#14803c, #3ddc97);
+  --c-fps: light-dark(#6d28d9, #b39bff);
+  --c-size: light-dark(#0369a1, #6cc0ff);
 
-@media (prefers-color-scheme: dark) {
-  [data-theme="system"] {
-    --bg: #313338;
-    --surface: #2b2d31;
-    --surface-2: #383a40;
-    --border: #3f4147;
-    --text: #dbdee1;
-    --muted: #949ba4;
-    --accent: #4f8dff;
-    --accent-text: #ffffff;
-    --danger: #f23f43;
-    --success: #23a55a;
-    --warn: #f0b232;
-    --notice-bg: #3b2212;
-    --notice-text: #fdba74;
-    --selected: #3a4a6e;
-    --video-bg: #000000;
-    --stage-bg: #1e1f22;
-  --c-up: #f5a524;
-  --c-down: #3ddc97;
-  --c-fps: #b39bff;
-  --c-size: #6cc0ff;
-  }
-}
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", Consolas, monospace;
 
-@media (prefers-color-scheme: light) {
-  [data-theme="system"] {
-    --bg: #f3f4f6;
-    --surface: #ffffff;
-    --surface-2: #e5e7eb;
-    --border: #d1d5db;
-    --text: #111827;
-    --muted: #6b7280;
-    --accent: #2563eb;
-    --accent-text: #ffffff;
-    --danger: #dc2626;
-    --success: #15803d;
-    --warn: #b45309;
-    --notice-bg: #fff7ed;
-    --notice-text: #9a3412;
-    --selected: #dbeafe;
-    --video-bg: #000000;
-    --stage-bg: #dfe1e5;
-  --c-up: #b45309;
-  --c-down: #15803d;
-  --c-fps: #6d28d9;
-  --c-size: #0369a1;
-  }
+  --fs-xs: calc(12px * var(--text-scale, 1));
+  --fs-sm: calc(13px * var(--text-scale, 1));
+  --fs-md: calc(14px * var(--text-scale, 1));
+  --fs-lg: calc(16px * var(--text-scale, 1));
+  --fs-xl: calc(20px * var(--text-scale, 1));
+  --fs-2xl: calc(28px * var(--text-scale, 1));
+
+  --sp-1: calc(4px * var(--space-scale, 1));
+  --sp-2: calc(8px * var(--space-scale, 1));
+  --sp-3: calc(12px * var(--space-scale, 1));
+  --sp-4: calc(16px * var(--space-scale, 1));
+  --sp-5: calc(24px * var(--space-scale, 1));
+  --sp-6: calc(32px * var(--space-scale, 1));
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-pill: 999px;
+
+  --shadow-1: 0 1px 2px rgba(8, 12, 28, 0.18);
+  --shadow-2: 0 6px 18px rgba(8, 12, 28, 0.28);
+  --shadow-3: 0 16px 40px rgba(8, 12, 28, 0.45);
 }

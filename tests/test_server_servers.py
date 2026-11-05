@@ -57,17 +57,17 @@ class ServerTestCase(unittest.TestCase):
         return conn.getresponse()
 
     def post(self, party, path, body, session, cookie="privatepartynet_member"):
-        response = self.open(party, "POST", path, json.dumps(body), {**JSON_HEADERS, "Cookie": f"{cookie}={session}"})
+        response = self.open(party, "POST", path, json.dumps(body), {**JSON_HEADERS, "Cookie": f"{party.cookie_name(cookie)}={session}"})
         data = response.read()
         return response.status, data
 
     def get(self, party, path, session, cookie="privatepartynet_member"):
-        response = self.open(party, "GET", path, headers={"Cookie": f"{cookie}={session}"})
+        response = self.open(party, "GET", path, headers={"Cookie": f"{party.cookie_name(cookie)}={session}"})
         data = response.read()
         return response.status, data
 
     def stream(self, party, session, cookie="privatepartynet_member"):
-        response = self.open(party, "GET", "/events", headers={"Cookie": f"{cookie}={session}"})
+        response = self.open(party, "GET", "/events", headers={"Cookie": f"{party.cookie_name(cookie)}={session}"})
         self.assertEqual(response.status, 200)
         return response
 
@@ -503,7 +503,7 @@ WEBP = b"RIFF\x10\x00\x00\x00WEBPVP8 " + bytes(range(32))
 
 class ImageTests(ServerTestCase):
     def upload(self, party, session, data, cookie="privatepartynet_member"):
-        response = self.open(party, "POST", "/blob", data, {"Content-Type": "application/octet-stream", "Cookie": f"{cookie}={session}"})
+        response = self.open(party, "POST", "/blob", data, {"Content-Type": "application/octet-stream", "Cookie": f"{party.cookie_name(cookie)}={session}"})
         return response.status, response.read()
 
     def test_each_accepted_type_is_stored_and_named_by_its_hash(self):
@@ -583,7 +583,7 @@ class ImageTests(ServerTestCase):
         party = self.party()
         _, session = self.member(party, "Alex")
         info = json.loads(self.upload(party, session, JPEG)[1])
-        response = self.open(party, "GET", f"/blob?hash={info['hash']}", headers={"Cookie": f"privatepartynet_member={session}"})
+        response = self.open(party, "GET", f"/blob?hash={info['hash']}", headers={"Cookie": f"{party.cookie_name('privatepartynet_member')}={session}"})
         self.assertEqual(response.status, 200)
         self.assertEqual(response.getheader("Content-Type"), "image/jpeg")
         self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
@@ -592,7 +592,7 @@ class ImageTests(ServerTestCase):
         response = self.open(party, "GET", f"/blob?hash={info['hash']}")
         self.assertEqual(response.status, 401)
         response.read()
-        response = self.open(party, "GET", "/blob?hash=../../etc", headers={"Cookie": f"privatepartynet_member={session}"})
+        response = self.open(party, "GET", "/blob?hash=../../etc", headers={"Cookie": f"{party.cookie_name('privatepartynet_member')}={session}"})
         self.assertEqual(response.status, 404)
         response.read()
 
@@ -834,11 +834,11 @@ class InputLimitTests(ServerTestCase):
         _, session = self.member(party, "Alex")
         started = time.monotonic()
         reply = self.raw(party, (f"POST /chat HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
-                                 f"Cookie: privatepartynet_member={session}\r\nContent-Length: -1\r\n\r\n").encode())
+                                 f"Cookie: {party.cookie_name('privatepartynet_member')}={session}\r\nContent-Length: -1\r\n\r\n").encode())
         self.assertLess(time.monotonic() - started, 3, "the server did not wait for the connection to close")
         self.assertIn(b" 400 ", reply.split(b"\r\n")[0] + b" ")
-        reply = self.raw(party, (f"POST /blob HTTP/1.1\r\nHost: x\r\nCookie: privatepartynet_member={session}\r\n"
-                                 f"Content-Length: -5\r\n\r\n").encode())
+        reply = self.raw(party, (f"POST /blob HTTP/1.1\r\nHost: x\r\nContent-Type: application/octet-stream\r\n"
+                                 f"Cookie: {party.cookie_name('privatepartynet_member')}={session}\r\nContent-Length: -5\r\n\r\n").encode())
         self.assertIn(b" 413 ", reply.split(b"\r\n")[0] + b" ")
 
     def test_connections_beyond_the_limit_are_closed_not_queued(self):

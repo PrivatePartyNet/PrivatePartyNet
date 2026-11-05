@@ -94,10 +94,7 @@
     channelList: document.getElementById("channelList"),
     addText: document.getElementById("addText"),
     addVoice: document.getElementById("addVoice"),
-    attachBtn: document.getElementById("attachBtn"),
-    attachFile: document.getElementById("attachFile"),
     lightbox: document.getElementById("lightbox"),
-    chatBox: document.getElementById("chat"),
     voiceBar: document.getElementById("voiceBar"),
     voiceName: document.getElementById("voiceName"),
     voiceState: document.getElementById("voiceState"),
@@ -1492,6 +1489,18 @@
   document.addEventListener("fullscreenchange", syncFullscreen);
   window.addEventListener("pywebviewready", syncFullscreen); // a reloaded page learns the window's state again
 
+  // This person's own accent, text size and spacing from Settings, kept on this PC. Read again whenever the window comes
+  // to the front, so a change made in the control panel shows here too. A page opened without the app keeps the default.
+  function syncAppearance() {
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || !api.appearance || !window.PPNAppearance) return;
+    api.appearance().then(function (look) {
+      if (look) window.PPNAppearance.apply(document, look);
+    }).catch(function () { /* the next focus tries again */ });
+  }
+  window.addEventListener("pywebviewready", syncAppearance);
+  window.addEventListener("focus", syncAppearance);
+
   el.full.addEventListener("click", function () {
     if (appWindow()) {
       windowFull = !windowFull;
@@ -1658,8 +1667,39 @@
 
   function renderRoster() {
     el.roster.textContent = "";
-    members.forEach(function (member) {
-      if (member.role === "viewer") return; // a pop-out window, not a person
+    // People who are here come first, then the ones who are away, each under a small heading with a count.
+    var people = Array.from(members.values()).filter(function (m) { return m.role !== "viewer"; }); // viewers are pop-out windows
+    var groups = [
+      { title: "Online", list: people.filter(function (m) { return m.online; }) },
+      { title: "Offline", list: people.filter(function (m) { return !m.online; }) },
+    ];
+    var panels = window.PPNPanels;
+    groups.forEach(function (group) {
+      if (!group.list.length) return;
+      // each group's heading folds it away; remembered on this PC (panels.js)
+      var key = "room.members." + group.title.toLowerCase();
+      var folded = Boolean(panels) && panels.read(window.localStorage, key) === "folded";
+      var heading = document.createElement("li");
+      heading.className = "group" + (folded ? " folded" : "");
+      var fold = document.createElement("button");
+      fold.type = "button";
+      fold.className = "fold";
+      fold.setAttribute("aria-expanded", String(!folded));
+      var chevron = document.createElement("span");
+      chevron.className = "chev";
+      fold.append(chevron, document.createTextNode(group.title + ", " + group.list.length));
+      fold.addEventListener("click", function () {
+        if (panels) panels.write(window.localStorage, key, folded ? null : "folded");
+        renderRoster();
+      });
+      heading.append(fold);
+      el.roster.append(heading);
+      if (!folded) group.list.forEach(addRosterRow);
+    });
+  }
+
+  function addRosterRow(member) {
+    {  // one person's row: avatar with presence, name, role, voice and live badges, and the actions button
       var row = document.createElement("li");
       row.className = member.online ? "online" : "offline";
       row.dataset.id = member.id;
@@ -1708,7 +1748,7 @@
         row.append(more);
       }
       el.roster.append(row);
-    });
+    }
   }
 
   function updateCount() {
@@ -1720,8 +1760,8 @@
 
   var chat = PartyChat.create({
     el: { messages: el.messages, chatForm: el.chatForm, chatText: el.chatText, chatTitle: el.chatTitle,
-          channelList: el.channelList, addText: el.addText, addVoice: el.addVoice, attachBtn: el.attachBtn,
-          attachFile: el.attachFile, lightbox: el.lightbox, dropZone: el.chatBox },
+          channelList: el.channelList, addText: el.addText, addVoice: el.addVoice,
+          lightbox: el.lightbox, dropZone: document.body },
     post: post,
     upload: uploadBlob,
     keep: keepChat(),
@@ -1743,7 +1783,8 @@
     post: post,
     notice: notice,
     onSpeaking: function (who) {
-      document.querySelectorAll("#roster li").forEach(function (row) {
+      // The speaking ring shows in the members list and under the voice channel in the channel list.
+      document.querySelectorAll("#roster li[data-id], #channelList .voice-people li[data-id]").forEach(function (row) {
         row.classList.toggle("speaking", who.has(row.dataset.id));
       });
     },

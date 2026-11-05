@@ -1,44 +1,69 @@
 <!doctype html>
-<html lang="en" data-theme="system">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Direct messages</title>
 <link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="ui.css">
 <link rel="stylesheet" href="dm.css">
 </head>
 <body>
 <div id="app">
-  <aside id="people">
-    <h2>People</h2>
-    <ul id="contacts"></ul>
-    <p id="noContacts" class="muted">Nobody yet. People on your network who run <span class="appname">PrivatePartyNet</span> show up under Nearby; add one to start talking.</p>
-    <h2>Saved servers</h2>
-    <ul id="servers"></ul>
-    <p id="noServers" class="muted">Servers you join are kept here, encrypted, so you can read them while their host is off.</p>
-    <h2>Nearby</h2>
-    <ul id="nearby"></ul>
-    <p id="noNearby" class="muted">Nobody else is visible on this network right now.</p>
+  <aside id="people" aria-label="People and saved servers">
+    <header class="side-head">
+      <span class="mark"><svg class="ic"><use href="#i-chat"></use></svg></span>
+      <strong>Direct messages</strong>
+    </header>
+    <div class="side-scroll">
+      <h2>People</h2>
+      <div id="peopleBody" class="sect-body">
+        <ul id="contacts" class="people-list"></ul>
+        <p id="noContacts" class="muted empty-note">Nobody yet. People on your network who run <span class="appname">PrivatePartyNet</span> show up under Nearby; add one to start talking.</p>
+      </div>
+      <h2>Nearby</h2>
+      <div id="nearbyBody" class="sect-body">
+        <ul id="nearby" class="people-list"></ul>
+        <p id="noNearby" class="muted empty-note">Nobody else is visible on this network right now.</p>
+      </div>
+      <h2>Saved servers</h2>
+      <div id="serversBody" class="sect-body">
+        <ul id="servers" class="people-list"></ul>
+        <p id="noServers" class="muted empty-note">Servers you join are kept here, encrypted, so you can read them while their host is off.</p>
+      </div>
+    </div>
   </aside>
   <main id="conversation">
     <header id="head" hidden>
-      <b id="who"></b>
-      <span id="presence" class="muted"></span>
-      <button id="safety" class="secondary small" title="Compare this number with theirs to be sure it is really them">Safety number</button>
+      <div class="who-block"><b id="who"></b><span id="presence" class="muted"></span></div>
+      <button id="safety" class="secondary small" title="Compare this number with theirs to be sure it is really them"><svg class="ic sm"><use href="#i-shield"></use></svg>Safety number</button>
     </header>
-    <p id="safetyNumber" class="safety" hidden></p>
-    <p id="pick" class="muted">Pick someone on the left.</p>
+    <p id="safetyNumber" class="safety notice info" hidden></p>
+    <div id="pick" class="empty">
+      <svg class="ic"><use href="#i-chat"></use></svg>
+      <p>Pick someone on the left.</p>
+      <p class="muted">Messages are sealed to the other person's key and kept on both PCs. If they are away, they are sent when they are back.</p>
+    </div>
     <div id="messages" hidden></div>
     <form id="composer" hidden>
-      <input id="text" maxlength="4000" placeholder="Write a message" autocomplete="off">
-      <button type="button" id="attach" class="secondary" title="Send a picture">Picture</button>
-      <input id="file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
-      <button type="submit">Send</button>
+      <input id="text" maxlength="4000" placeholder="Write a message" autocomplete="off" aria-label="Message (drop or paste a picture to send it)">
+      <button type="submit" class="send" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button>
     </form>
-    <p id="note" class="muted"></p>
+    <p id="note" class="muted" role="status"></p>
   </main>
 </div>
-<div id="lightbox" hidden><img alt=""></div>
+<div id="lightbox" class="lightbox" hidden><img alt=""></div>
+<!-- shown while files are dragged over the window (body.dropping); the whole window takes the drop -->
+<div id="dropHint" class="drop-hint" aria-hidden="true">
+  <div class="drop-card">
+    <svg class="ic"><use href="#i-picture"></use></svg>
+    <b id="dropWho">Drop to send</b>
+    <span class="muted">Pictures: PNG, JPEG, GIF or WebP, up to 12 MB each</span>
+  </div>
+</div>
+<script src="appearance.js"></script>
+<script src="icons.js"></script>
+<script src="panels.js"></script>
 <script src="chat.js"></script>
 <script src="dm.js"></script>
 </body>

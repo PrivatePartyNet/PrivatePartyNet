@@ -39,3 +39,6 @@ _templates/
 
 # The game network helper, built from wghelper/ by tools/gohelper.py (and by tools/build.py)
 assets/PrivatePartyNetGameNet.exe
+
+# pictures the assistant shows in chat (may contain screen captures)
+.aiondx-pictures/

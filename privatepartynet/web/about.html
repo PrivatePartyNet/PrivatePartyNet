@@ -1,33 +1,44 @@
 <!doctype html>
-<html lang="en" data-theme="system">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>About PrivatePartyNet</title>
 <link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="ui.css">
 <link rel="stylesheet" href="info.css">
 </head>
 <body>
 <main>
-  <h1 class="appname">PrivatePartyNet</h1>
-  <p>A local hangout for PCs on the same network. Chat and share screens, with no server to run and no accounts to make.</p>
+  <header class="info-head brand">
+    <span class="mark"><svg class="ic"><use href="#i-hat"></use></svg></span>
+    <div><h1 class="appname">PrivatePartyNet</h1><p class="muted">A private place for a group of friends to chat, talk, share screens and play LAN games together. No company server, no account, nothing relayed through anyone else's machine unless your group sets that up.</p></div>
+  </header>
 
-  <dl id="facts"></dl>
+  <section class="card">
+    <h2>This copy</h2>
+    <dl id="facts"></dl>
+    <div class="row">
+      <button id="copy" class="secondary"><svg class="ic"><use href="#i-copy"></use></svg>Copy these details</button>
+      <span id="copied" class="muted"></span>
+    </div>
+  </section>
 
-  <h2>Built with</h2>
-  <table id="libs">
-    <thead><tr><th>Library</th><th>Version</th><th>Used for</th></tr></thead>
-    <tbody></tbody>
-  </table>
+  <section class="card">
+    <h2>Built with</h2>
+    <table id="libs">
+      <thead><tr><th>Library</th><th>Version</th><th>Used for</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
 
-  <div class="row">
-    <button id="copy">Copy these details</button>
-    <span id="copied" class="muted"></span>
-  </div>
-
-  <h2>License</h2>
-  <p class="muted">Private, the author's own work. No license has been chosen yet.</p>
+  <section class="card">
+    <h2>License</h2>
+    <p class="muted">Apache License 2.0. The name and the icon are not part of that grant; TRADEMARKS.md in the source says how they may be used.</p>
+  </section>
 </main>
+<script src="appearance.js"></script>
+<script src="icons.js"></script>
 <script src="info.js"></script>
 </body>
 </html>

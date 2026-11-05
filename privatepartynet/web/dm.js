@@ -23,8 +23,6 @@
     messages: document.getElementById("messages"),
     composer: document.getElementById("composer"),
     text: document.getElementById("text"),
-    attach: document.getElementById("attach"),
-    file: document.getElementById("file"),
     note: document.getElementById("note"),
     lightbox: document.getElementById("lightbox"),
   };
@@ -42,6 +40,21 @@
 
   function say(text) {
     el.note.textContent = text || "";
+  }
+
+  function hueOf(text) {
+    var h = 0;
+    for (var i = 0; i < text.length; i += 1) h = (h * 31 + text.charCodeAt(i)) % 360;
+    return h;
+  }
+
+  // A round badge with the first letter of a name, in a color taken from the person (the same as in the party room).
+  function avatar(name, id) {
+    var badge = document.createElement("span");
+    badge.className = "avatar";
+    badge.textContent = (name || "?").trim().charAt(0).toUpperCase() || "?";
+    badge.style.background = "hsl(" + hueOf(String(id || name)) + " 45% 42%)";
+    return badge;
   }
 
   function item(text, extra) {
@@ -63,11 +76,30 @@
     el.noContacts.hidden = state.contacts.length > 0;
     state.contacts.forEach(function (contact) {
       var li = item(contact.name);
-      li.className = "contact" + (contact.id === current ? " current" : "") + (contact.online ? " online" : "");
+      li.className = "contact" + (contact.id === current ? " current" : "") + (contact.online ? " online" : "") +
+        (contact.unread ? " has-unread" : "");
       li.title = contact.preview;
+      // the avatar with its presence dot, then the name over the last message
+      var wrap = document.createElement("span");
+      wrap.className = "avwrap";
       var dot = document.createElement("span");
       dot.className = "presence";
-      li.prepend(dot);
+      wrap.append(avatar(contact.name, contact.id), dot);
+      var block = document.createElement("span");
+      block.className = "name-block";
+      block.append(li.querySelector(".name"));
+      var preview = document.createElement("span");
+      preview.className = "preview";
+      preview.textContent = contact.preview || (contact.online ? "On the network now" : "Not seen on the network");
+      block.append(preview);
+      li.prepend(wrap, block);
+      if (contact.waiting) {
+        var waiting = document.createElement("span");
+        waiting.className = "tag";
+        waiting.textContent = contact.waiting + " to send";
+        waiting.title = "Sent when they are back on the network";
+        li.append(waiting);
+      }
       if (contact.new) {
         var fresh = document.createElement("span");
         fresh.className = "tag";
@@ -97,6 +129,7 @@
       });
       var li = item(person.name, add);
       li.title = person.address;
+      li.prepend(avatar(person.name, person.id));
       el.nearby.append(li);
     });
     if (current && contactsById.has(current)) {
@@ -187,7 +220,7 @@
     el.messages.textContent = "";
     list.forEach(function (m) {
       var row = document.createElement("div");
-      row.className = "message " + (m.mine ? "mine" : "theirs");
+      row.className = "message " + (m.mine ? "mine" : "theirs") + (m.refused ? " failed" : "");
       var bubble = document.createElement("div");
       bubble.className = "bubble";
       if (m.text) {
@@ -257,8 +290,8 @@
   }
 
   function sendPicture(file) {
-    if (!current) return;
-    PartyChat.preparePicture(file)
+    if (!current) return Promise.resolve();
+    return PartyChat.preparePicture(file)
       .then(function (prepared) { return readAsBase64(prepared.blob); })
       .then(function (data) { return api().dm_send(current, el.text.value.trim(), data); })
       .then(function (result) {
@@ -269,12 +302,27 @@
       .catch(function (err) { say(err && err.message ? err.message : "That picture did not send."); });
   }
 
-  el.attach.addEventListener("click", function () { el.file.click(); });
-  el.file.addEventListener("change", function () {
-    var file = el.file.files[0];
-    el.file.value = "";
-    if (file) sendPicture(file);
+  // Pictures dragged onto the window go to the open conversation, one message each. The whole window takes the drop, so a
+  // file dropped anywhere is never opened by the window in place of this page.
+  var PICTURE = /^image\/(png|jpeg|gif|webp)$/;
+  PartyChat.dropTarget(document.body, function (files) {
+    if (!current) {
+      say(reading ? "A saved server is read only here." : "Pick someone on the left first, then drop the picture.");
+      return;
+    }
+    var pictures = files.filter(function (f) { return PICTURE.test(f.type); }).slice(0, PartyChat.MAX_DROPPED);
+    var skipped = files.length - pictures.length;
+    say(skipped ? (skipped === 1 ? "One file was" : skipped + " files were") +
+      " not sent. Only pictures can be sent: PNG, JPEG, GIF or WebP, up to 12 MB." : "");
+    pictures.reduce(function (before, file) {
+      return before.then(function () { return sendPicture(file); });
+    }, Promise.resolve());
   });
+  document.body.addEventListener("dragenter", function () {
+    var contact = current && contactsById.get(current);
+    document.getElementById("dropWho").textContent = contact ? "Drop to send to " + contact.name : "Pick someone first";
+  });
+
   el.text.addEventListener("paste", function (event) {
     var files = (event.clipboardData && event.clipboardData.files) || [];
     for (var i = 0; i < files.length; i += 1) {
@@ -305,11 +353,30 @@
     if (event.key === "Escape") el.lightbox.hidden = true;
   });
 
-  function start() {
+  // The people list can be made wider or narrower, and its three sections fold (panels.js).
+  if (window.PPNPanels) {
+    PPNPanels.resizable(document.getElementById("people"), { side: "right", variable: "--people-w", min: 200, max: 480,
+      key: "dm.people", label: "people list", leave: 380 });
+    [["peopleBody", "dm.people.list", "People"], ["nearbyBody", "dm.nearby", "Nearby"], ["serversBody", "dm.servers", "Saved servers"]]
+      .forEach(function (s) {
+        var body = document.getElementById(s[0]);
+        PPNPanels.collapsible(body && body.previousElementSibling, body, { key: s[1], label: s[2] });
+      });
+  }
+
+  // The theme, accent, text size and spacing from Settings; read again whenever the window comes to the front, so a change
+  // made in the control panel shows here too.
+  function look() {
     api().about_info().then(function (info) {
-      if (info.theme && info.theme !== "system") document.documentElement.dataset.theme = info.theme;
+      if (info.theme) document.documentElement.dataset.theme = info.theme;
+      if (window.PPNAppearance && info.appearance) PPNAppearance.apply(document, info.appearance);
       document.querySelectorAll(".appname").forEach(function (node) { node.textContent = info.name; });
-    });
+    }).catch(function () { /* the next focus tries again */ });
+  }
+
+  function start() {
+    look();
+    window.addEventListener("focus", look);
     refresh();
     setInterval(refresh, POLL_MS);
   }

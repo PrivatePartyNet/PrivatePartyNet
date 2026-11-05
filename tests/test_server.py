@@ -156,7 +156,7 @@ class PartyTests(unittest.TestCase):
 
     def stream(self, cookie):
 
-        viewer = cookie.startswith("privatepartynet_viewer=")  # a pop-out page says so on its event stream
+        viewer = cookie.startswith("privatepartynet_viewer_")  # a pop-out page says so on its event stream
         _, response = self.open("GET", "/events?as=viewer" if viewer else "/events", headers={"Cookie": cookie})
 
         self.assertEqual(response.status, 200)
@@ -171,7 +171,7 @@ class PartyTests(unittest.TestCase):
 
     def post(self, path, body, cookie):
 
-        marker = {"X-PrivatePartyNet-View": "1"} if cookie.startswith("privatepartynet_viewer=") else {}
+        marker = {"X-PrivatePartyNet-View": "1"} if cookie.startswith("privatepartynet_viewer_") else {}
 
         _, response = self.open("POST", path, body=json.dumps(body), headers={**JSON_HEADERS, **marker, "Cookie": cookie})
 
@@ -214,7 +214,7 @@ class PartyTests(unittest.TestCase):
 
         cookie = self.host_cookie()
 
-        self.assertTrue(cookie.startswith("privatepartynet_host="))
+        self.assertTrue(cookie.startswith("privatepartynet_host_"))
 
 
 
@@ -534,6 +534,52 @@ class PartyTests(unittest.TestCase):
 
 
 
+    def test_a_post_from_another_page_is_refused(self):
+        """Rooms run in frames of the app's one window, beside other servers' rooms, and an HTTPS party's cookie is
+        SameSite=None so it reaches its frame. So a POST that a page from another address sends is refused."""
+        cookie = self.join("Alex")
+        own = f"https://127.0.0.1:{self.party.port}"
+        for origin in ("https://192.168.1.50:8765", "http://127.0.0.1:9999", "null", f"http://127.0.0.1:{self.party.port}"):
+            _, response = self.open("POST", "/name", body=json.dumps({"name": "Mallory"}),
+                                    headers={**JSON_HEADERS, "Cookie": cookie, "Origin": origin})
+            with self.subTest(origin=origin):
+                self.assertEqual(response.status, 403)
+                response.read()
+        self.assertNotIn("Mallory", [m["name"] for m in self.party.roster()])
+        _, response = self.open("POST", "/name", body=json.dumps({"name": "Alexandra"}),
+                                headers={**JSON_HEADERS, "Cookie": cookie, "Origin": own})
+        self.assertEqual(response.status, 202, "the party's own page is let through")
+
+    def test_a_post_not_declared_as_json_is_refused(self):
+        """A plain form or text POST needs no permission from another page; the party's own pages always declare JSON."""
+        cookie = self.join("Alex")
+        for declared in ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", None):
+            headers = {"Cookie": cookie}
+            if declared:
+                headers["Content-Type"] = declared
+            _, response = self.open("POST", "/name", body=json.dumps({"name": "Mallory"}), headers=headers)
+            with self.subTest(declared=declared):
+                self.assertEqual(response.status, 403)
+                response.read()
+        self.assertNotIn("Mallory", [m["name"] for m in self.party.roster()])
+
+    def test_an_https_cookie_reaches_a_frame_and_the_loopback_one_stays_strict(self):
+        """The app's window is a page on 127.0.0.1; an HTTPS party's room is a frame in it, another site, so its cookie
+        is SameSite=None (and Secure). The host's own room is plain HTTP on 127.0.0.1, the same site: Strict stays."""
+        import http.client as hc
+
+        _, response = self.open("GET", f"/join?token={self.party.join_token('Alex')}")
+        joined = response.getheader("Set-Cookie")
+        self.assertIn("Secure", joined)
+        self.assertIn("SameSite=None", joined)
+        self.assertIn("HttpOnly", joined)
+        conn = hc.HTTPConnection("127.0.0.1", self.party.local_port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.request("GET", "/host")
+        host = conn.getresponse()
+        host.read()
+        self.assertIn("SameSite=Strict", host.getheader("Set-Cookie"))
+
     def test_the_host_page_loads_over_plain_loopback_http_with_a_host_cookie(self):
 
         import http.client as hc
@@ -552,7 +598,7 @@ class PartyTests(unittest.TestCase):
 
         cookie = response.getheader("Set-Cookie")
 
-        self.assertTrue(cookie.startswith("privatepartynet_host="))
+        self.assertTrue(cookie.startswith("privatepartynet_host_"))
 
         self.assertNotIn("Secure", cookie)
 
@@ -660,7 +706,7 @@ class PartyTests(unittest.TestCase):
         _, response = self.open("GET", path)
         self.assertEqual(response.status, 303)
         viewer_cookie = response.getheader("Set-Cookie").split(";", 1)[0]
-        self.assertTrue(viewer_cookie.startswith("privatepartynet_viewer="), "a pop-out window gets a cookie of its own")
+        self.assertTrue(viewer_cookie.startswith("privatepartynet_viewer_"), "a pop-out window gets a cookie of its own")
         response.read()
         self.stream(viewer_cookie)
         viewer_roster = read_until(host, "roster", lambda e: any(m["name"] == "Alex window" for m in e["members"]))
@@ -758,7 +804,7 @@ class PartyTests(unittest.TestCase):
         self.assertIn("no longer being shared", reason)
         status, reason = ask("nobody", 0)
         self.assertIn("left the party", reason)
-        status, reason = ask(alex_id, 0, cookie="privatepartynet_member=forged")
+        status, reason = ask(alex_id, 0, cookie=self.party.cookie_name("privatepartynet_member") + "=forged")
         self.assertIn("not signed in", reason)
 
     def test_a_pop_out_window_closes_when_the_member_who_opened_it_leaves(self):

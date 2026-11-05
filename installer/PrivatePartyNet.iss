@@ -4,7 +4,7 @@
 ; Installing over an existing PrivatePartyNet is an upgrade: same AppId, same folder, settings and certificate kept.
 
 #ifndef AppVersion
-  #define AppVersion "3.1.0"
+  #define AppVersion "3.2.0"
 #endif
 #ifndef PrereqDir
   #define PrereqDir "..\installer\prereq"

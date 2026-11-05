@@ -4,7 +4,7 @@ Run from the project root after each iteration:
     py tools\\snapshot.py "why this iteration exists, one line"
 
 Each snapshot goes to a new folder named PrivatePartyNet in the archive:
-    S:\Non-Game Software and Utilities\Display Management and Recording\PrivatePartyNet\Iterations\<YYYY-MM-DD>_v<version>\PrivatePartyNet\
+    S:\Non-Game Software and Utilities\Internet and Networking Software\PrivatePartyNet\Iterations\<YYYY-MM-DD>_v<version>\PrivatePartyNet\
 with MANIFEST.sha256 beside it. The index in Iterations\README.txt gets a new entry, and the entry
 before it is marked retired, with the snapshot that replaced it. Existing snapshots are never overwritten.
 """
@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from privatepartynet import __version__  # noqa: E402
 
-ARCHIVE_ROOT = Path(r"S:\Non-Game Software and Utilities\Display Management and Recording\PrivatePartyNet")
+ARCHIVE_ROOT = Path(r"S:\Non-Game Software and Utilities\Internet and Networking Software\PrivatePartyNet")
 BACKUPS = ARCHIVE_ROOT / "Iterations"
 INDEX = BACKUPS / "README.txt"
 LEFT_OUT_OF_SNAPSHOT = {"! LLM Files", "! Outbound", "build", "dist", "__pycache__"}

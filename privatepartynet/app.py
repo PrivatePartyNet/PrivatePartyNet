@@ -38,7 +38,8 @@ from privatepartynet.identity import Identity, safety_number
 from privatepartynet.netinfo import LOOPBACK, address_for, lan_addresses
 from privatepartynet.paths import data_dir, web_dir
 from privatepartynet.server import Forbidden, NotFound, Party, generate_password
-from privatepartynet.settings import THEMES, load_settings, save_settings, valid_mbps, valid_port
+from privatepartynet.settings import (DENSITIES, THEMES, load_settings, save_settings, valid_accent, valid_mbps, valid_port,
+                                      valid_text_scale)
 from privatepartynet.store import Store
 from privatepartynet.vault import Locked, Vault, VaultError, WrongPassword
 
@@ -141,8 +142,9 @@ class WindowApi:
     a backup. The page is served by the host, so everything it hands over is checked and bounded, and a window is held
     to the one server it first named."""
 
-    def __init__(self, origin, store=None):
+    def __init__(self, origin, store=None, appearance=None):
         self._origin = origin
+        self._appearance = appearance  # a callable giving this person's accent, text size and spacing (Settings)
         self._window = None
         self._children = []
         self._fullscreen = False
@@ -163,10 +165,14 @@ class WindowApi:
             except Exception:
                 log.debug("A pop-out window was already closed", exc_info=True)
 
+    def appearance(self):
+        """How this person has every window look (their accent, text size and spacing), for the party page to apply."""
+        return self._appearance() if self._appearance else None
+
     def open_viewer(self, path):
         if not isinstance(path, str) or not path.startswith("/join?token=") or any(c in path for c in "\\\r\n\t "):
             return {"ok": False, "message": "That window cannot be opened."}
-        api = WindowApi(self._origin)  # a pop-out shows one screen; the member's own window keeps the chat
+        api = WindowApi(self._origin, appearance=self._appearance)  # a pop-out shows one screen; the member's own window keeps the chat
         child = webview.create_window("PrivatePartyNet screen", url=self._origin + path, width=960, height=540, js_api=api)
         api._attach(child)
         self._children.append(child)
@@ -525,7 +531,7 @@ class Controller:
                                          for m in rows]}
 
     def open_messages(self):
-        return self._open_info("dm", "Direct messages", 760, 640)
+        return self._open_info("dm", "Direct messages", 980, 680)
 
     # --- reaching a party from outside, and joining one ------------------------------------------------------
 
@@ -1013,7 +1019,8 @@ class Controller:
         return {
             "version": __version__,
             "app_name": APP_NAME,
-            "theme": self._settings.get("theme", "system"),
+            "theme": self._settings.get("theme", "dark"),
+            "appearance": self.appearance(),
             "name": self._name,
             "port": self._settings["port"],
             "running": party is not None,
@@ -1110,7 +1117,7 @@ class Controller:
             if not self._settings.get("server_id"):
                 self._save(server_id=secrets.token_hex(8))  # this PC's server keeps one id, so its chat is the same each run
             party = Party(passcode, port, certfile, keyfile, party_name=name, host_name=name, grabber=self._grabber,
-                          theme=self._settings.get("theme", "system"), store=self._store,
+                          theme=self._settings.get("theme", "dark"), store=self._store,
                           server_id=self._settings["server_id"], host_user_id=self._identity.user_id,
                           owner=self._identity)
         except OSError as exc:
@@ -1249,7 +1256,7 @@ class Controller:
         if self._party is None or not webview.windows:
             return {"ok": False, "message": "Start the party first."}
         url = f"http://127.0.0.1:{self._party.local_port}/host"
-        api = WindowApi(f"http://127.0.0.1:{self._party.local_port}")
+        api = WindowApi(f"http://127.0.0.1:{self._party.local_port}", appearance=self.appearance)
         window = webview.create_window(f"PrivatePartyNet party: {self._name}", url=url, width=1280, height=820, js_api=api)
         api._attach(window)
         self._rooms.append(window)
@@ -1306,6 +1313,19 @@ class Controller:
             self._party.set_theme(theme)
         return {"ok": True, "message": ""}
 
+    def appearance(self):
+        """This person's accent color (None for the default blue), text size in percent and spacing."""
+        return {"accent": self._settings.get("accent"), "text_scale": self._settings.get("text_scale", 100),
+                "density": self._settings.get("density", "default")}
+
+    def set_appearance(self, accent, text_scale, density):
+        """Save how every window looks on this PC. The page has already applied it; this keeps it for next time."""
+        accent = accent.lower() if isinstance(accent, str) and accent else None
+        if not valid_accent(accent) or not valid_text_scale(text_scale) or density not in DENSITIES:
+            return {"ok": False, "message": "That appearance could not be saved."}
+        self._save(accent=accent, text_scale=text_scale, density=density)
+        return {"ok": True, "message": ""}
+
     def open_data_folder(self):
         self._data_dir.mkdir(parents=True, exist_ok=True)
         if hasattr(os, "startfile"):
@@ -1318,11 +1338,11 @@ class Controller:
         separator = "&" if "?" in data["url"] else "?"
         feed = quote(f"http://127.0.0.1:{self._feed.port}", safe="")
         url = f"{data['url']}{separator}feed={feed}&feed_token={token}"
-        theme = self._settings.get("theme", "system")
+        theme = self._settings.get("theme", "dark")
         if theme != "system":
             url += f"&theme={theme}"
         parts = urlsplit(data["url"])
-        api = WindowApi(f"{parts.scheme}://{parts.netloc}", store=lambda: self._store)
+        api = WindowApi(f"{parts.scheme}://{parts.netloc}", store=lambda: self._store, appearance=self.appearance)
         api._attach(webview.create_window(f"PrivatePartyNet party: {data['name']}", url=url, width=1280, height=820, js_api=api))
         log.info("Joined %s", data["name"])
 
@@ -1333,7 +1353,8 @@ class Controller:
         return {
             "name": APP_NAME,
             "version": __version__,
-            "theme": self._settings.get("theme", "system"),
+            "theme": self._settings.get("theme", "dark"),
+            "appearance": self.appearance(),
             "webview2": webview2_version() or "not found",
             "python": platform.python_version(),
             "windows": platform.platform(),
@@ -1415,7 +1436,7 @@ def window_test(seconds=45):
     folder = tempfile.mkdtemp(prefix="privatepartynet-window-test-")
     controller = Controller(data_folder=folder, discovery_port=0)
     window = webview.create_window("PrivatePartyNet", url=str(web_dir() / "control.html"), js_api=controller, hidden=True,
-                                   width=460, height=880)
+                                   width=1040, height=740)
     outcome = {"ok": False, "why": "the page never answered"}
 
     def probe(win):
@@ -1468,7 +1489,7 @@ def main(argv=None):
     controller = Controller()
     window = webview.create_window(
         "PrivatePartyNet", url=str(web_dir() / "control.html"), js_api=controller,
-        width=460, height=880, resizable=False,
+        width=1040, height=740, min_size=(640, 520),
     )
     controller.bind_window(window)
     window.events.closed += controller.shutdown

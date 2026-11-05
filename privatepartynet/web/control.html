@@ -5,201 +5,343 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PrivatePartyNet</title>
 <link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="ui.css">
 <link rel="stylesheet" href="control.css">
 </head>
 <body>
-<nav id="menubar" aria-label="Menu">
-  <div class="menu">
-    <button class="menubtn" aria-haspopup="true" aria-expanded="false" aria-controls="optionsMenu">Options</button>
-    <div class="dropdown" id="optionsMenu" role="menu" hidden>
-      <div class="group">Appearance</div>
-      <button role="menuitemradio" aria-checked="false" data-choice="system">Match Windows</button>
-      <button role="menuitemradio" aria-checked="false" data-choice="light">Light</button>
-      <button role="menuitemradio" aria-checked="false" data-choice="dark">Dark</button>
-      <hr>
-      <button role="menuitem" id="openFolder">Open data folder</button>
+<div id="shell">
+
+  <aside id="rail">
+    <div class="brand">
+      <span class="mark"><svg class="ic"><use href="#i-hat"></use></svg></span>
+      <div class="brand-text">
+        <strong class="appname">PrivatePartyNet</strong>
+        <span id="version" class="muted"></span>
+      </div>
     </div>
-  </div>
-  <div class="menu">
-    <button class="menubtn" aria-haspopup="true" aria-expanded="false" aria-controls="infoMenu">Info</button>
-    <div class="dropdown" id="infoMenu" role="menu" hidden>
-      <button role="menuitem" id="openHow">How <span class="appname">PrivatePartyNet</span> works</button>
-      <button role="menuitem" id="openAbout">About <span class="appname">PrivatePartyNet</span></button>
-    </div>
-  </div>
-</nav>
+    <nav id="nav" aria-label="Pages">
+      <button class="navitem" title="Home" aria-label="Home" data-go="home" aria-current="page"><svg class="ic"><use href="#i-home"></use></svg><span>Home</span><span class="navbadge" id="badgeHome" hidden></span></button>
+      <button class="navitem" title="Join a party" aria-label="Join a party" data-go="join"><svg class="ic"><use href="#i-link"></use></svg><span>Join a party</span></button>
+      <button class="navitem" title="Nearby PCs" aria-label="Nearby PCs" data-go="nearby"><svg class="ic"><use href="#i-wifi"></use></svg><span>Nearby PCs</span><span class="navbadge neutral" id="badgeNearby" hidden></span></button>
+      <button class="navitem" title="Game network" aria-label="Game network" data-go="game"><svg class="ic"><use href="#i-gamepad"></use></svg><span>Game network</span><span class="navlight" id="lightGame" hidden></span></button>
+      <button class="navitem" title="Direct messages" aria-label="Direct messages" data-go="messages"><svg class="ic"><use href="#i-chat"></use></svg><span>Direct messages</span><span class="navbadge" id="badgeMessages" hidden></span></button>
+      <button class="navitem" title="Saved chats" aria-label="Saved chats" data-go="chats"><svg class="ic"><use href="#i-lock"></use></svg><span>Saved chats</span></button>
+      <button class="navitem" title="Settings" aria-label="Settings" data-go="settings"><svg class="ic"><use href="#i-gear"></use></svg><span>Settings</span></button>
+    </nav>
+    <p class="rail-foot muted">Nothing here goes through a company server.</p>
+    <button id="railToggle" class="navitem rail-toggle" type="button" aria-pressed="false" title="Show icons only" aria-label="Show icons only"><svg class="ic"><use href="#i-panel-left"></use></svg><span>Icons only</span></button>
+  </aside>
 
-<header>
-  <h1 class="appname">PrivatePartyNet</h1>
-  <span id="version" class="muted"></span>
-</header>
+  <main id="pages">
+    <p id="notice" class="notice" role="status" hidden></p>
 
-<section>
-  <label class="field">Your name in the party and on the network (changes apply at once)
-    <input id="name" maxlength="40" autocomplete="off">
-  </label>
-  <div class="row bottom">
-    <label class="field small">Port (1024 to 65535)
-      <input id="port" inputmode="numeric" maxlength="5" autocomplete="off">
-    </label>
-    <button id="toggle" class="primary">Start party</button>
-  </div>
-  <p id="notice" class="notice" hidden></p>
-</section>
+    <!-- Home -->
+    <section class="page" id="page-home" data-page="home">
+      <header class="page-head">
+        <h1>Home</h1>
+        <p class="muted">Start a party, or open the one you run. People on your network see it under Nearby PCs.</p>
+      </header>
 
-<section id="party" hidden>
-  <h2>Your party</h2>
-  <p class="muted">Your party is open. PCs on this network see you under Nearby PCs and can ask to join. You let each one in.</p>
-  <p id="others" class="muted"></p>
-  <div class="row">
-    <button id="room" class="secondary">Open party room</button>
-  </div>
-  <p class="muted">Server password: <b id="serverPassword"></b>. People on your network do not need it; people joining from outside do, and invites carry it.</p>
-  <details>
-    <summary>Change the password</summary>
-    <p class="muted">Everyone you let in before still comes back by who they are. New people need the new password, so copy a new invite afterwards.</p>
-    <label class="field">New password (6 to 64 characters)
-      <input id="newServerPassword" autocomplete="off" maxlength="64">
-    </label>
-    <div class="row"><button id="saveServerPassword" class="secondary">Change password</button></div>
-  </details>
-  <p id="reach" class="muted"></p>
-  <details id="relayBox">
-    <summary>Relay server</summary>
-    <p class="muted">For members whose routers let nothing through, on both sides. Your group runs it on a small rented server (relay/README.md says how). What passes through it is encrypted and it cannot read it. The secret stays on this PC: members get short-lived credentials from it, signed by this PC.</p>
-    <p id="relayNow" class="muted"></p>
-    <label class="field">Address (with :port if it is not 3479; for IPv4 and IPv6, both with a comma between)
-      <input id="relayAddress" autocomplete="off" spellcheck="false" placeholder="relay.example.net">
-    </label>
-    <label class="field">Secret
-      <input id="relaySecret" type="password" autocomplete="off">
-    </label>
-    <label class="field">Certificate fingerprint (printed by the setup script; without it members never use the relay over TCP port 443)
-      <input id="relayPin" autocomplete="off" spellcheck="false" maxlength="95">
-    </label>
-    <div class="row">
-      <button id="saveRelay" class="secondary">Save relay server</button>
-      <button id="clearRelay" class="secondary" hidden>Remove</button>
-    </div>
-  </details>
-  <div class="row">
-    <button id="copyInvite" class="secondary">Copy invite</button>
-    <span id="inviteNote" class="muted"></span>
-  </div>
-</section>
+      <div id="requests" class="card accent" hidden>
+        <div class="card-head"><svg class="ic lg"><use href="#i-users"></use></svg><div class="grow"><h2>Asking to join your party</h2><p class="muted">You decide who comes in.</p></div></div>
+        <ul id="requestList" class="requests"></ul>
+      </div>
 
-<section id="joinBox">
-  <h2>Join a party from anywhere</h2>
-  <p class="muted">Paste an invite code from the host. They see your request and let you in.</p>
-  <label class="field">Invite code
-    <input id="inviteCode" autocomplete="off" spellcheck="false">
-  </label>
-  <div class="row">
-    <button id="joinInvite" class="secondary">Ask to join</button>
-    <button id="joinCancel" class="secondary" hidden>Cancel</button>
-  </div>
-  <details>
-    <summary>Join with an address and a password</summary>
-    <p class="muted">An invite code also checks that you reach the right host. With only an address, the first certificate seen is trusted and remembered.</p>
-    <div class="row bottom">
-      <label class="field">Address
-        <input id="joinAddress" autocomplete="off" spellcheck="false" placeholder="203.0.113.5">
-      </label>
-      <label class="field small">Port
-        <input id="joinPort" inputmode="numeric" maxlength="5" value="8765" autocomplete="off">
-      </label>
-    </div>
-    <label class="field">Party password
-      <input id="joinPassword" type="password" autocomplete="off">
-    </label>
-    <div class="row"><button id="joinAddressBtn" class="secondary">Ask to join</button></div>
-  </details>
-  <p id="joinStatus" class="notice" hidden></p>
-  <ul id="joined" class="requests"></ul>
-</section>
+      <div class="card">
+        <div class="card-head"><svg class="ic lg"><use href="#i-user"></use></svg><div class="grow"><h2>You</h2><p class="muted">Your name shows in the party and on the network. Changes apply at once.</p></div></div>
+        <label class="field">Your name
+          <input id="name" maxlength="40" autocomplete="off">
+        </label>
+        <div class="row bottom">
+          <label class="field small">Port (1024 to 65535)
+            <input id="port" inputmode="numeric" maxlength="5" autocomplete="off">
+          </label>
+          <button id="toggle" class="primary">Start party</button>
+        </div>
+      </div>
 
-<section>
-  <h2>Nearby PCs running <span class="appname">PrivatePartyNet</span></h2>
-  <table id="peers">
-    <thead><tr><th>Name</th><th>Address</th><th>State</th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <p id="nobody" class="muted">Nobody else is visible on this network yet.</p>
-  <div class="row">
-    <button id="ask" class="secondary" disabled>Ask to join</button>
-    <span id="askNote" class="muted"></span>
-  </div>
-</section>
+      <div id="party" class="card" hidden>
+        <div class="card-head"><svg class="ic lg"><use href="#i-server"></use></svg>
+          <div class="grow"><h2>Your party is open</h2><p id="others" class="muted"></p></div>
+          <button id="room" class="secondary"><svg class="ic"><use href="#i-screen"></use></svg>Open party room</button>
+        </div>
 
-<section id="gameBox">
-  <h2>Game network</h2>
-  <p class="muted">Each server is also a private network for games that play over a LAN. Pick the one to play on: this PC gets that server's game address, shown with a green light, and games see it as an ordinary network card. Windows asks for permission once each time it is turned on.</p>
-  <ul id="gameList" class="requests"></ul>
-  <p id="gameNone" class="muted">Start your party or join one to use its game network.</p>
-  <p id="gameStatus" class="muted"></p>
-  <div class="row"><button id="gameOff" class="secondary" hidden>Turn the game network off</button></div>
-  <p id="pathWays" class="muted" hidden></p>
-  <p id="pathProblems" class="muted" hidden></p>
-  <label class="check"><input id="friendRelay" type="checkbox"> Let party members who can't reach each other go through this PC (encrypted; uses your upload)</label>
-  <label class="field small">At most (Mbit/s)
-    <input id="friendRelayMbps" inputmode="numeric" maxlength="4" autocomplete="off">
-  </label>
-  <p id="friendRelayNow" class="muted" hidden></p>
-  <!-- What party members can reach on this PC: gamereach.js fills it in. A setting of this PC only. -->
-  <details id="gameReach">
-    <summary>What party members can reach on this PC</summary>
-    <p class="muted">Games always work. Windows' own services are closed to party members unless you open them here. This is for this PC only and takes effect at once. Bonjour (mDNS), which some games use to find each other, always stays open.</p>
-    <div id="gameReachList"></div>
-  </details>
-</section>
+        <div class="subcard">
+          <h3>Invite people</h3>
+          <p class="muted">People on your network do not need the password. People joining from outside do, and an invite carries it.</p>
+          <div class="row">
+            <button id="copyInvite" class="secondary"><svg class="ic"><use href="#i-copy"></use></svg>Copy invite</button>
+            <span id="inviteNote" class="muted"></span>
+          </div>
+          <input id="inviteOut" class="mono-text" readonly spellcheck="false" aria-label="Invite code" hidden>
+          <div class="kv"><span class="muted">Server password</span><b id="serverPassword" class="mono-text"></b></div>
+          <details>
+            <summary>Change the password</summary>
+            <div class="details-body">
+              <p class="muted">Everyone you let in before still comes back by who they are. New people need the new password, so copy a new invite afterwards.</p>
+              <label class="field">New password (6 to 64 characters)
+                <input id="newServerPassword" autocomplete="off" maxlength="64">
+              </label>
+              <div class="row"><button id="saveServerPassword" class="secondary">Change password</button></div>
+            </div>
+          </details>
+        </div>
 
-<section id="messagesBox">
-  <h2>Direct messages</h2>
-  <p class="muted">Write to anyone on your network, with no party open. Messages are sealed to the other person's key and kept on both PCs.</p>
-  <div class="row"><button id="openMessages" class="secondary">Open messages</button> <span id="dmUnread" class="muted"></span></div>
-</section>
+        <div class="subcard">
+          <h3>How people reach you</h3>
+          <div id="reachChips" class="chips"></div>
+          <p id="reach" class="muted"></p>
+          <div class="kv"><span class="muted">Addresses on this network</span></div>
+          <ul id="addresses" class="addresses"></ul>
+        </div>
 
-<section id="chats">
-  <h2>Saved chats</h2>
-  <p class="muted">Your chats are kept on this PC, encrypted, in your own PrivatePartyNet folder.</p>
-  <div id="unlockBox" hidden>
-    <label class="field">This PC's chats are locked with a password
-      <input id="unlockPassword" type="password" autocomplete="current-password">
-    </label>
-    <div class="row"><button id="unlock" class="primary">Unlock</button></div>
-  </div>
-  <details id="passwordBox">
-    <summary id="passwordSummary">Add a password</summary>
-    <p class="muted">Windows already protects the key for your sign-in. A password adds a second lock. If you forget it your saved chats cannot be recovered; a backup file with its own passphrase is the safety net.</p>
-    <label class="field">Current password (if there is one)
-      <input id="oldPassword" type="password" autocomplete="current-password">
-    </label>
-    <label class="field">New password (leave empty to remove the password)
-      <input id="newPassword" type="password" autocomplete="new-password">
-    </label>
-    <div class="row"><button id="savePassword" class="secondary">Save</button></div>
-  </details>
-  <details id="backupBox">
-    <summary>Back up or move your chats</summary>
-    <p class="muted">One compressed file with every chat and picture, sealed with a passphrase you choose. Importing adds what is missing and never changes what is here.</p>
-    <label class="field">Passphrase for the backup file
-      <input id="backupPassphrase" type="password" autocomplete="off">
-    </label>
-    <label class="check"><input id="withIdentity" type="checkbox"> Include my identity (anyone with the file and passphrase can then be me; use it only to move to a new PC)</label>
-    <div class="row">
-      <button id="exportChats" class="secondary">Export all chats...</button>
-      <button id="importChats" class="secondary">Import chats...</button>
-    </div>
-    <p id="backupNote" class="muted"></p>
-  </details>
-</section>
+        <details id="relayBox">
+          <summary>Relay server</summary>
+          <div class="details-body">
+            <p class="muted">For members whose routers let nothing through, on both sides. Your group runs it on a small rented server (relay/README.md says how). What passes through it is encrypted and it cannot read it. The secret stays on this PC: members get short-lived credentials from it, signed by this PC.</p>
+            <p id="relayNow" class="muted"></p>
+            <label class="field">Address (with :port if it is not 3479; for IPv4 and IPv6, both with a comma between)
+              <input id="relayAddress" autocomplete="off" spellcheck="false" placeholder="relay.example.net">
+            </label>
+            <label class="field">Secret
+              <input id="relaySecret" type="password" autocomplete="off">
+            </label>
+            <label class="field">Certificate fingerprint (printed by the setup script; without it members never use the relay over TCP port 443)
+              <input id="relayPin" autocomplete="off" spellcheck="false" maxlength="95">
+            </label>
+            <div class="row">
+              <button id="saveRelay" class="secondary">Save relay server</button>
+              <button id="clearRelay" class="secondary" hidden>Remove</button>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
 
-<section id="requests" hidden>
-  <h2>Asking to join your party</h2>
-  <ul id="requestList" class="requests"></ul>
-</section>
+    <!-- Join -->
+    <section class="page" id="page-join" data-page="join" hidden>
+      <header class="page-head">
+        <h1>Join a party</h1>
+        <p class="muted">Paste an invite code from the host. They see your request and let you in.</p>
+      </header>
 
+      <div id="joinBox" class="card">
+        <label class="field">Invite code
+          <input id="inviteCode" class="mono-text" autocomplete="off" spellcheck="false" placeholder="ppn1-...">
+        </label>
+        <div class="row">
+          <button id="joinInvite" class="primary">Ask to join</button>
+          <button id="joinCancel" class="secondary" hidden>Cancel</button>
+        </div>
+        <details>
+          <summary>Join with an address and a password</summary>
+          <div class="details-body">
+            <p class="muted">An invite code also checks that you reach the right host. With only an address, the first certificate seen is trusted and remembered.</p>
+            <div class="row bottom">
+              <label class="field grow">Address
+                <input id="joinAddress" autocomplete="off" spellcheck="false" placeholder="203.0.113.5">
+              </label>
+              <label class="field small">Port
+                <input id="joinPort" inputmode="numeric" maxlength="5" value="8765" autocomplete="off">
+              </label>
+            </div>
+            <label class="field">Party password
+              <input id="joinPassword" type="password" autocomplete="off">
+            </label>
+            <div class="row"><button id="joinAddressBtn" class="secondary">Ask to join</button></div>
+          </div>
+        </details>
+        <p id="joinStatus" class="notice info" role="status" hidden></p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><svg class="ic lg"><use href="#i-server"></use></svg><div class="grow"><h2>Servers you joined</h2><p class="muted">Ask to join again when the host is back, or forget a server.</p></div></div>
+        <ul id="joined" class="requests"></ul>
+      </div>
+    </section>
+
+    <!-- Nearby -->
+    <section class="page" id="page-nearby" data-page="nearby" hidden>
+      <header class="page-head">
+        <h1>Nearby PCs</h1>
+        <p class="muted">PCs on this network running <span class="appname">PrivatePartyNet</span>.</p>
+      </header>
+      <div class="card">
+        <table id="peers">
+          <thead><tr><th>Name</th><th>Address</th><th>State</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="nobody" class="empty"><svg class="ic"><use href="#i-wifi"></use></svg><p>Nobody else is visible on this network yet.</p></div>
+        <div class="row">
+          <button id="ask" class="primary" disabled>Ask to join</button>
+          <span id="askNote" class="muted"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Game network -->
+    <section class="page" id="page-game" data-page="game" hidden>
+      <header class="page-head">
+        <h1>Game network</h1>
+        <p class="muted">Each server is also a private network for games that play over a LAN. Pick the one to play on: this PC gets that server's game address, shown with a green light, and games see it as an ordinary network card. Windows asks for permission once each time it is turned on.</p>
+      </header>
+
+      <div id="gameBox" class="card">
+        <ul id="gameList" class="requests"></ul>
+        <div id="gameNone" class="empty"><svg class="ic"><use href="#i-gamepad"></use></svg><p>Start your party or join one to use its game network.</p></div>
+        <p id="gameStatus" class="muted"></p>
+        <div class="kv" id="gameAddressRow" hidden><span class="muted">This PC's game address</span><b id="gameAddress" class="mono-text"></b></div>
+        <div class="row"><button id="gameOff" class="secondary" hidden>Turn the game network off</button></div>
+      </div>
+
+      <div class="card" id="gameMembersCard" hidden>
+        <div class="card-head"><svg class="ic lg"><use href="#i-users"></use></svg><div class="grow"><h2>Members on this network</h2><p class="muted">Each one's game address and how this PC reaches them.</p></div></div>
+        <ul id="gameMembers" class="requests"></ul>
+        <p id="pathWays" class="muted" hidden></p>
+        <p id="pathProblems" class="notice" hidden></p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><svg class="ic lg"><use href="#i-network"></use></svg><div class="grow"><h2>Going through this PC</h2><p class="muted">Members who cannot reach each other can pass through a PC that is willing.</p></div></div>
+        <label class="switch"><input id="friendRelay" type="checkbox"><span>Let party members who can't reach each other go through this PC (encrypted; uses your upload)</span></label>
+        <label class="field small">At most (Mbit/s)
+          <input id="friendRelayMbps" inputmode="numeric" maxlength="4" autocomplete="off">
+        </label>
+        <p id="friendRelayNow" class="muted" hidden></p>
+      </div>
+
+      <details id="gameReach">
+        <summary>What party members can reach on this PC</summary>
+        <div class="details-body">
+          <p class="muted">Games always work. Windows' own services are closed to party members unless you open them here. This is for this PC only and takes effect at once. Bonjour (mDNS), which some games use to find each other, always stays open.</p>
+          <div id="gameReachList" class="stack tight"></div>
+        </div>
+      </details>
+    </section>
+
+    <!-- Direct messages -->
+    <section class="page" id="page-messages" data-page="messages" hidden>
+      <header class="page-head">
+        <h1>Direct messages</h1>
+        <p class="muted">Write to anyone on your network, with no party open. Messages are sealed to the other person's key and kept on both PCs.</p>
+      </header>
+      <div id="messagesBox" class="card">
+        <div class="row"><button id="openMessages" class="primary"><svg class="ic"><use href="#i-chat"></use></svg>Open messages</button> <span id="dmUnread" class="muted"></span></div>
+      </div>
+    </section>
+
+    <!-- Saved chats -->
+    <section class="page" id="page-chats" data-page="chats" hidden>
+      <header class="page-head">
+        <h1>Saved chats</h1>
+        <p class="muted">Your chats are kept on this PC, encrypted, in your own PrivatePartyNet folder.</p>
+      </header>
+      <div id="chats" class="card">
+        <div id="unlockBox" class="subcard" hidden>
+          <label class="field">This PC's chats are locked with a password
+            <input id="unlockPassword" type="password" autocomplete="current-password">
+          </label>
+          <div class="row"><button id="unlock" class="primary"><svg class="ic"><use href="#i-key"></use></svg>Unlock</button></div>
+        </div>
+        <details id="passwordBox">
+          <summary id="passwordSummary">Add a password</summary>
+          <div class="details-body">
+            <p class="muted">Windows already protects the key for your sign-in. A password adds a second lock. If you forget it your saved chats cannot be recovered; a backup file with its own passphrase is the safety net.</p>
+            <label class="field">Current password (if there is one)
+              <input id="oldPassword" type="password" autocomplete="current-password">
+            </label>
+            <label class="field">New password (leave empty to remove the password)
+              <input id="newPassword" type="password" autocomplete="new-password">
+            </label>
+            <div class="row"><button id="savePassword" class="secondary">Save</button></div>
+          </div>
+        </details>
+        <details id="backupBox">
+          <summary>Back up or move your chats</summary>
+          <div class="details-body">
+            <p class="muted">One compressed file with every chat and picture, sealed with a passphrase you choose. Importing adds what is missing and never changes what is here.</p>
+            <label class="field">Passphrase for the backup file
+              <input id="backupPassphrase" type="password" autocomplete="off">
+            </label>
+            <label class="check"><input id="withIdentity" type="checkbox"> Include my identity (anyone with the file and passphrase can then be me; use it only to move to a new PC)</label>
+            <div class="row">
+              <button id="exportChats" class="secondary"><svg class="ic"><use href="#i-download"></use></svg>Export all chats...</button>
+              <button id="importChats" class="secondary"><svg class="ic"><use href="#i-upload"></use></svg>Import chats...</button>
+            </div>
+            <p id="backupNote" class="muted"></p>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section class="page" id="page-settings" data-page="settings" hidden>
+      <header class="page-head">
+        <h1>Settings</h1>
+        <p class="muted">How <span class="appname">PrivatePartyNet</span> looks, where it keeps things, and how it works.</p>
+      </header>
+
+      <div class="card">
+        <div class="card-head"><svg class="ic lg"><use href="#i-sun"></use></svg><div class="grow"><h2>Appearance</h2><p class="muted">Match Windows follows your system's light or dark mode.</p></div></div>
+        <div id="optionsMenu" class="segmented" role="radiogroup" aria-label="Appearance">
+          <button role="radio" aria-checked="false" data-choice="system">Match Windows</button>
+          <button role="radio" aria-checked="false" data-choice="light">Light</button>
+          <button role="radio" aria-checked="false" data-choice="dark">Dark</button>
+        </div>
+        <div class="appearance-row">
+          <span class="row-label">Accent color</span>
+          <div id="accentSwatches" class="swatches" role="radiogroup" aria-label="Accent color"></div>
+        </div>
+        <div class="appearance-row accent-mix">
+          <span class="row-label">Your own</span>
+          <div class="mix">
+            <label class="slider red">R <input id="accentR" type="range" min="0" max="255" aria-label="Red"><output id="accentRv"></output></label>
+            <label class="slider green">G <input id="accentG" type="range" min="0" max="255" aria-label="Green"><output id="accentGv"></output></label>
+            <label class="slider blue">B <input id="accentB" type="range" min="0" max="255" aria-label="Blue"><output id="accentBv"></output></label>
+            <div class="row">
+              <span id="accentPreview" class="accent-preview" aria-hidden="true">Aa</span>
+              <label class="field small">Hex <input id="accentHex" class="mono-text" maxlength="7" spellcheck="false" autocomplete="off"></label>
+              <button id="accentReset" class="secondary small" type="button">Default blue</button>
+            </div>
+          </div>
+        </div>
+        <div class="appearance-row">
+          <span class="row-label">Text size</span>
+          <label class="slider wide"><input id="textScale" type="range" min="90" max="130" step="5" aria-label="Text size"><output id="textScaleV">100%</output></label>
+        </div>
+        <div class="appearance-row">
+          <span class="row-label">Spacing</span>
+          <div id="density" class="segmented" role="radiogroup" aria-label="Spacing">
+            <button role="radio" aria-checked="false" data-density="compact">Compact</button>
+            <button role="radio" aria-checked="false" data-density="default">Default</button>
+            <button role="radio" aria-checked="false" data-density="spacious">Spacious</button>
+          </div>
+        </div>
+        <p class="muted">These are this PC's own choices; nobody else sees them. Party rooms follow them once they open inside this window (the one-window version).</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><svg class="ic lg"><use href="#i-folder"></use></svg><div class="grow"><h2>Your data</h2><p class="muted">Settings, certificate, saved chats and the log live in one folder on this PC.</p></div></div>
+        <div class="row"><button id="openFolder" class="secondary"><svg class="ic"><use href="#i-folder"></use></svg>Open data folder</button></div>
+        <div class="kv"><span class="muted">Your identity</span><b id="userId" class="mono-text"></b></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><svg class="ic lg"><use href="#i-info"></use></svg><div class="grow"><h2>Help</h2><p class="muted">What the app does, and what is installed.</p></div></div>
+        <div class="row">
+          <button id="openHow" class="secondary"><span>How <span class="appname">PrivatePartyNet</span> works</span></button>
+          <button id="openAbout" class="secondary"><span>About <span class="appname">PrivatePartyNet</span></span></button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="icons.js"></script>
+<script src="appearance.js"></script>
 <script src="control.js"></script>
 <script src="gamereach.js"></script>
+<script src="nav.js"></script>
+<script src="appearance-ui.js"></script>
 </body>
 </html>

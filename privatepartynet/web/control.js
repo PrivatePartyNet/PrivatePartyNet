@@ -69,6 +69,22 @@
     backupNote: document.getElementById("backupNote"),
     openHow: document.getElementById("openHow"),
     openAbout: document.getElementById("openAbout"),
+    addresses: document.getElementById("addresses"),
+    reachChips: document.getElementById("reachChips"),
+    inviteOut: document.getElementById("inviteOut"),
+    userId: document.getElementById("userId"),
+    gameAddress: document.getElementById("gameAddress"),
+    gameAddressRow: document.getElementById("gameAddressRow"),
+    gameMembers: document.getElementById("gameMembers"),
+    gameMembersCard: document.getElementById("gameMembersCard"),
+  };
+
+  // How the game network reaches a member, in words (the app sends the way as a short word).
+  // Same wording as WAY_TEXT in pathway.py, so this page and the paths summary agree.
+  var WAY_WORDS = {
+    lan: "direct on the same network", ipv6: "direct over IPv6", upnp: "direct through an open port",
+    punch: "direct through both routers", friend: "through a member's PC", vps: "through the relay server",
+    "": "not connected yet",
   };
 
   var selectedPeer = null;
@@ -104,13 +120,15 @@
       if (state.app_name && node.textContent !== state.app_name) node.textContent = state.app_name;
     });
     if (!nameEditing && document.activeElement !== el.name) el.name.value = state.name;
-    if (document.activeElement !== el.port && !state.running) el.port.value = state.port;
+    if (document.activeElement !== el.port && (!state.running || !el.port.value)) el.port.value = state.port;
     el.port.disabled = state.running;
     el.toggle.textContent = state.running ? "Stop party" : "Start party";
     el.toggle.className = state.running ? "danger" : "primary";
 
     el.party.hidden = !state.running;
     el.serverPassword.textContent = state.passcode || "";
+    renderAddresses(state.addresses || []);
+    el.userId.textContent = state.user_id || "";
     if (state.join && state.join.message) {
       el.askNote.textContent = state.join.message;
       if (state.join.state !== lastJoinState) {
@@ -308,7 +326,15 @@
     api().import_chats(el.backupPassphrase.value, el.withIdentity.checked).then(backupSay);
   });
 
+  function chip(text, kind) {
+    var node = document.createElement("span");
+    node.className = "badge" + (kind ? " " + kind : "");
+    node.textContent = text;
+    return node;
+  }
+
   function renderReach(reach) {
+    el.reachChips.textContent = "";
     if (!reach) {
       el.reach.textContent = "";
       return;
@@ -319,7 +345,32 @@
       el.reach.textContent = "Could not check how you can be reached from outside.";
     } else {
       el.reach.textContent = reach.advice;
+      // The facts behind the advice, as short labels.
+      // reach.reachable is "yes", "maybe" or "no"; reach.nat is "easy", "hard" or "unknown"
+      var outside = { yes: ["Reachable from outside", "good"], maybe: ["Maybe reachable from outside", "warn"] }[reach.reachable] ||
+        ["Not reachable from outside", "bad"];
+      el.reachChips.append(
+        chip(outside[0], outside[1]),
+        chip(reach.port_open ? "Router port open" : "Router port not opened", reach.port_open ? "good" : ""),
+        chip(reach.ipv6 ? "IPv6 available" : "No IPv6", reach.ipv6 ? "good" : ""),
+        chip(reach.cgnat ? "Carrier-grade NAT" : "No carrier-grade NAT", reach.cgnat ? "warn" : "good")
+      );
+      var nat = { easy: ["Router easy to punch through", "good"], hard: ["Router gives a new port per destination", "warn"] }[reach.nat];
+      if (nat) el.reachChips.append(chip(nat[0], nat[1]));
     }
+  }
+
+  // The addresses other PCs on this network can use to reach the party.
+  function renderAddresses(list) {
+    var key = list.join("|");
+    if (el.addresses.dataset.key === key) return;
+    el.addresses.dataset.key = key;
+    el.addresses.textContent = "";
+    list.forEach(function (address) {
+      var item = document.createElement("li");
+      item.textContent = address;
+      el.addresses.append(item);
+    });
   }
 
   el.copyInvite.addEventListener("click", function () {
@@ -328,14 +379,15 @@
         el.inviteNote.textContent = result.message;
         return;
       }
+      // The code stays in a box under the button, so it can be selected and copied by hand if the clipboard is refused.
+      el.inviteOut.value = result.invite;
+      el.inviteOut.hidden = false;
       var done = function () { el.inviteNote.textContent = "Copied. Send it to the person; it contains your party's password."; };
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(result.invite).then(done, function () {
-          el.inviteCode.value = result.invite;
           el.inviteNote.textContent = "Copy did not work here. The code is in the box below; select it and copy.";
         });
       } else {
-        el.inviteCode.value = result.invite;
         el.inviteNote.textContent = "The code is in the box below; select it and copy.";
       }
     });
@@ -438,6 +490,13 @@
       var name = document.createElement("span");
       name.textContent = network.name + (active && game.address ? "  (" + game.address + ")" : "");
       li.append(light, name);
+      // the light's meaning in words too, so it does not rest on color alone
+      if (active) {
+        var inUse = document.createElement("span");
+        inUse.className = "badge " + (game.state === "on" ? "good" : "warn");
+        inUse.textContent = game.state === "on" ? "In use for games" : "Starting";
+        li.append(inUse);
+      }
       if (!active) {
         var use = document.createElement("button");
         use.className = "secondary";
@@ -451,6 +510,27 @@
     });
     el.gameStatus.textContent = game.message || "";
     el.gameOff.hidden = !game.active;
+    var on = game.active && game.address;
+    el.gameAddressRow.hidden = !on;
+    el.gameAddress.textContent = on ? game.address + (game.network ? "  (network " + game.network + ")" : "") : "";
+    el.gameMembers.textContent = "";
+    (game.members || []).forEach(function (member) {
+      var li = document.createElement("li");
+      var where = document.createElement("span");
+      where.className = "mono-text";
+      where.textContent = member.address;
+      var way = document.createElement("span");
+      way.className = "muted";
+      way.textContent = WAY_WORDS[member.way || ""] || member.way;
+      li.append(where, way);
+      el.gameMembers.append(li);
+    });
+    updateMembersCard();
+  }
+
+  // The members card shows when there is a member to list or a path to explain; the relay summary fills the lines in it.
+  function updateMembersCard() {
+    el.gameMembersCard.hidden = !el.gameMembers.children.length && el.pathWays.hidden && el.pathProblems.hidden;
   }
 
   el.gameOff.addEventListener("click", function () {
@@ -480,6 +560,7 @@
     var problems = friend.problems || [];
     el.pathProblems.textContent = problems.length ? "Cannot reach " + problems.join(" ") : "";
     el.pathProblems.hidden = !problems.length;
+    updateMembersCard();
   }
 
   el.saveRelay.addEventListener("click", function () {

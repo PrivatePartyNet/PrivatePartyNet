@@ -301,7 +301,9 @@ async function main() {
 
   const sam = await newMemberTab(browser);
   await sam.fakeScreen(640, 360);
-  if (process.env.E2E_SHOTS) await sam.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+  // Sam's page is the size the app opens a room at. Below 940 pixels the chat panel slides over the screens instead of
+  // sitting beside them, so the side panel checks need a desktop width.
+  await sam.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
   check("Sam joins by the join link", await joinParty(sam, "Sam"));
   check("everyone sees three people online", await waitFor(async () =>
     (await host.evaluate("document.getElementById('count').textContent")).startsWith("3 people") &&
@@ -593,7 +595,7 @@ async function main() {
 
   // 7b. Channels: the server starts with a text and a voice channel, the owner adds one, and it reaches everyone.
   check("a new server lists its text and voice channels", await sam.evaluate(
-    "[...document.querySelectorAll('#channelList .channel-name')].map(function (n) { return n.textContent.replace(/\\s+/g, ' '); }).join('|') === '# general|Voice Voice 1'"));
+    "[...document.querySelectorAll('#channelList .channel')].map(function (c) { return (c.classList.contains('voice') ? 'voice:' : 'text:') + c.querySelector('.channel-name').textContent; }).join('|') === 'text:general|voice:Voice 1'"));
   check("only the owner and admins are offered the add-channel buttons", await sam.evaluate("document.getElementById('addText').hidden") &&
     await host.evaluate("!document.getElementById('addText').hidden"));
   await host.evaluate(`(function () {
@@ -628,8 +630,11 @@ async function main() {
     "document.getElementById('chatTitle').textContent === 'general' && !document.getElementById('messages').textContent.includes('a message in maps') && !!document.querySelector('#channelList .unread')")));
   await sam.evaluate("[...document.querySelectorAll('#channelList .channel.text .channel-row')].find(function (r) { return r.textContent.includes('general'); }).click()");
 
-  // 7c. Pictures: a big picture is saved again in the page at its own size, uploaded, and shows for everyone at that size.
-  await sam.evaluate(`(async function () {
+  // 7c. Pictures: a big picture is dragged onto the window (onto the screens, not the chat: the whole window takes a drop)
+  // with a text file beside it. The picture is saved again in the page at its own size, uploaded, and shows for everyone at
+  // that size; the text file is refused with a message; the window stays on the party.
+  const samUrl = await sam.evaluate("location.href");
+  const dropState = await sam.evaluate(`(async function () {
     var canvas = document.createElement('canvas');
     canvas.width = 3200; canvas.height = 1800;
     var ctx = canvas.getContext('2d');
@@ -637,10 +642,23 @@ async function main() {
     var blob = await new Promise(function (r) { canvas.toBlob(r, 'image/png'); });
     var data = new DataTransfer();
     data.items.add(new File([blob], 'big.png', { type: 'image/png' }));
-    var input = document.getElementById('attachFile');
-    input.files = data.files;
-    input.dispatchEvent(new Event('change'));
+    data.items.add(new File(['notes'], 'notes.txt', { type: 'text/plain' }));
+    var stage = document.getElementById('tiles');
+    var opts = { bubbles: true, cancelable: true, dataTransfer: data };
+    stage.dispatchEvent(new DragEvent('dragenter', opts));
+    var hint = document.body.classList.contains('dropping') && getComputedStyle(document.getElementById('dropHint')).display !== 'none' &&
+      document.getElementById('dropChannel').textContent === '#general';
+    var over = new DragEvent('dragover', opts);
+    stage.dispatchEvent(over);
+    var drop = new DragEvent('drop', opts);
+    stage.dispatchEvent(drop);
+    return { hint: hint, taken: over.defaultPrevented && drop.defaultPrevented, cleared: !document.body.classList.contains('dropping') };
   })()`);
+  check("dragging files over the window says where a drop goes", dropState.hint === true);
+  check("the whole window takes the drop, and the hint goes away", dropState.taken === true && dropState.cleared === true);
+  check("a file that is not a picture is refused with a message", await waitFor(() => sam.evaluate(
+    "document.getElementById('status').textContent.includes('One file was not sent')")));
+  check("and the window stays on the party", (await sam.evaluate("location.href")) === samUrl);
   check("a picture sent by a member reaches the host at its full 3200 by 1800", await waitFor(() => host.evaluate(
     "(function () { var i = document.querySelector('#messages img.chat-image'); return !!i && i.complete && i.naturalWidth === 3200 && i.naturalHeight === 1800; })()")));
   check("and shows for the sender too", await waitFor(() => sam.evaluate("!!document.querySelector('#messages img.chat-image')")));
@@ -665,6 +683,40 @@ async function main() {
   check("and the other hears them", await waitFor(() => sam.evaluate(
     "(function () { var a = document.querySelectorAll('audio'); return a.length === 1 && a[0].srcObject.getAudioTracks()[0].muted === false; })()"), 20000));
   check("someone outside the voice channel plays no audio", await alex.evaluate("document.querySelectorAll('audio').length === 0"));
+  // With E2E_SHOTS, pictures of the room with voice, chat and a picture in it: the Members tab, narrower windows, light.
+  if (process.env.E2E_SHOTS) {
+    await shot(sam, "7-voice-chat");
+    await sam.evaluate("document.getElementById('tabMembers').click()");
+    await shot(sam, "8-members");
+    await sam.evaluate("document.getElementById('tabChat').click()");
+    await sam.evaluate("document.documentElement.dataset.theme = 'light'");
+    await sleep(300);
+    await shot(sam, "9-light");
+    await sam.evaluate("document.documentElement.dataset.theme = 'dark'");
+    // the channel list made wider and the chat panel narrower by their handles, and the Online group folded
+    await sam.evaluate(pointerScript("#sidebar .resize-handle", 90, 0));
+    await sam.evaluate(pointerScript("#side .resize-handle", 60, 0));
+    await sam.evaluate("document.getElementById('tabMembers').click()");
+    await sam.evaluate("document.querySelector('#roster li.group button.fold').click()");
+    await sleep(400);
+    await shot(sam, "9b-resized-folded");
+    await sam.evaluate("document.querySelector('#roster li.group button.fold').click()");
+    await sam.evaluate("document.getElementById('tabChat').click()");
+    for (const sel of ["#sidebar .resize-handle", "#side .resize-handle"]) {
+      await sam.evaluate(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+    }
+    for (const [width, height, name] of [[1000, 700, "10-medium"], [760, 600, "11-narrow"]]) {
+      await sam.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await sleep(600);
+      await shot(sam, name);
+    }
+    await sam.evaluate("document.getElementById('sidebarBtn').click()");
+    await sleep(400);
+    await shot(sam, "12-narrow-channels");
+    await sam.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
+    await sam.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    await sleep(400);
+  }
   await host.evaluate("document.getElementById('muteBtn').click()");
   check("Mute says so", await host.evaluate("document.getElementById('muteBtn').textContent === 'Unmute' && document.getElementById('voiceState').textContent === 'Muted'"));
   await host.evaluate("document.getElementById('muteBtn').click()");
@@ -680,7 +732,7 @@ async function main() {
 
   // 8. The host removes Sam. Sam is told, and the roster shrinks for the others.
   await host.evaluate(`(function () {
-    var row = [...document.querySelectorAll('#roster li')].find(function (li) { return li.querySelector('.name').textContent.startsWith('Sam'); });
+    var row = [...document.querySelectorAll('#roster li[data-id]')].find(function (li) { return li.querySelector('.name').textContent.startsWith('Sam'); });
     row.querySelector('button[aria-label^="Actions for"]').click();
   })()`);
   await host.evaluate(`[...document.querySelectorAll('#ctxMenu button')].find(function (b) { return b.textContent.startsWith('Remove'); }).click()`);

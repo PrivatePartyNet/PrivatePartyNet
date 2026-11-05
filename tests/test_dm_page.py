@@ -53,7 +53,7 @@ class DirectMessagesPageTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, folder, True)
         web = web_dir()
         html = (web / "dm.html").read_text(encoding="utf-8")
-        for name in ("theme.css", "dm.css", "chat.js", "dm.js"):
+        for name in ("theme.css", "ui.css", "dm.css", "icons.js", "panels.js", "chat.js", "dm.js"):
             html = html.replace(f'"{name}"', f'"{(web / name).as_uri()}"')
         html = html.replace('<script src="' + (web / "chat.js").as_uri(), STUB + '<script src="' + (web / "chat.js").as_uri(), 1)
         html = html.replace("</body>", after_load + "</body>")
@@ -91,6 +91,30 @@ class DirectMessagesPageTests(unittest.TestCase):
                   'document.body.setAttribute("data-sent", JSON.stringify(window.__sent)); }, 400); }, 300);</script>')
         dom = self.dump(script)
         self.assertIn('data-sent="[[&quot;ann&quot;,&quot;typed&quot;,null]]"', dom)
+
+
+    def test_a_picture_dropped_anywhere_on_the_window_is_sent(self):
+        """There is no picture button: a picture dragged onto the window goes to the open conversation, and a file that is
+        not a picture is refused with a note."""
+        # Encoding is covered by the party e2e test and tests/js; here it is stood in for, because headless Edge's virtual
+        # clock does not wait for work done off the page, and this test is about where a drop goes.
+        script = ('<script>PartyChat.preparePicture = function (file) { return Promise.resolve({ blob: file, w: 40, h: 30 }); }; '
+                  'setTimeout(function () { document.querySelector("li.contact").click(); '
+                  'setTimeout(function () { var bytes = new Uint8Array(64); bytes.set([137, 80, 78, 71, 13, 10, 26, 10]); '
+                  'var data = new DataTransfer(); data.items.add(new File([bytes], "p.png", { type: "image/png" })); '
+                  'data.items.add(new File(["x"], "x.txt", { type: "text/plain" })); '
+                  'var drop = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: data }); '
+                  'document.getElementById("pick").dispatchEvent(drop); '
+                  'document.body.setAttribute("data-taken", String(drop.defaultPrevented)); }, 400); }, 300); '
+                  # record each send as it happens: the picture is encoded off the page's clock, so a timer could look too early
+                  'var send = window.pywebview.api.dm_send; window.pywebview.api.dm_send = function () { '
+                  'var answer = send.apply(this, arguments); '
+                  'document.body.setAttribute("data-sent", JSON.stringify(window.__sent.map(function (s) { '
+                  'return [s[0], s[1], typeof s[2] === "string" && s[2].length > 20]; }))); return answer; };</script>')
+        dom = self.dump(script)
+        self.assertIn('data-taken="true"', dom, "the window takes the drop instead of opening the file")
+        self.assertIn('data-sent="[[&quot;ann&quot;,&quot;&quot;,true]]"', dom, "one picture went to Ann")
+        self.assertIn("One file was not sent", dom)
 
 
 if __name__ == "__main__":

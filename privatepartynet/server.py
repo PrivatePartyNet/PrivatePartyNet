@@ -42,9 +42,17 @@ STATIC_TYPES = {
     "room.js": "application/javascript; charset=utf-8",
     "chat.js": "application/javascript; charset=utf-8",
     "voice.js": "application/javascript; charset=utf-8",
+    "icons.js": "application/javascript; charset=utf-8",
+    "shell.js": "application/javascript; charset=utf-8",
+    "panels.js": "application/javascript; charset=utf-8",
+    "appearance.js": "application/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
     "theme.css": "text/css; charset=utf-8",
+    "ui.css": "text/css; charset=utf-8",
 }
+# Cookie names. Each party adds its server id (Party.cookie_name): the app's one window keeps every server's rooms in one
+# cookie jar, cookies are not kept apart by port, and two servers reached on one address (two outside servers, each
+# through its own tunnel on 127.0.0.1) would otherwise overwrite each other's sign-in.
 MEMBER_COOKIE = "privatepartynet_member"
 HOST_COOKIE = "privatepartynet_host"
 VIEWER_COOKIE = "privatepartynet_viewer"  # a pop-out window's own session; it must never replace its parent's cookie
@@ -297,6 +305,7 @@ class Party:
         self.untrusted = set()
         self.store = store  # the encrypted chat store; None keeps chat in memory for this run only
         self.server_id = server_id or secrets.token_hex(8)
+        self._cookie_suffix = "".join(c for c in self.server_id.lower() if c in "0123456789abcdef")[:16] or "party"
         self._host_user_id = host_user_id
         self._signer = owner.sign if owner is not None else None  # the host identity's sign(data); it signs the game network's list of members
         self.theme = theme  # "system", "light" or "dark"; every page the party serves uses it
@@ -1322,6 +1331,10 @@ class Party:
             target["queue"].put({**signal, "type": "signal", "from": sender_id})
             return True
 
+    def cookie_name(self, base):
+        """This party's own name for one of its cookies (MEMBER_COOKIE, HOST_COOKIE or VIEWER_COOKIE)."""
+        return f"{base}_{self._cookie_suffix}"
+
     def set_theme(self, theme):
         """Change the theme of this party and tell every open party page, so the change shows without a reload."""
         with self._lock:
@@ -1426,7 +1439,7 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._from_host_pc():
                 self._send(403, TEXT, b"The host page only opens on the PC that runs PrivatePartyNet.")
                 return
-            self._send_with_cookie(HOST_COOKIE, self.server.party.host_token, self._render("room.html", capture="frames"))
+            self._send_with_cookie(self.server.party.cookie_name(HOST_COOKIE), self.server.party.host_token, self._render("room.html", capture="frames"))
         elif path == "/frames":
             self._frames()
         elif path == "/monitors":
@@ -1451,6 +1464,10 @@ class _Handler(BaseHTTPRequestHandler):
                   "/signal": self._signal, "/name": self._name, "/kick": self._kick, "/popout": self._popout,
                   "/channel": self._channel, "/role": self._role, "/ban": self._ban, "/voice": self._voice,
                   "/decide": self._decide, "/ask": self._ask, "/blob": self._blob_put, "/net": self._net_link}
+        refused = self._post_refused(path)
+        if refused:
+            self._send(403, TEXT, refused.encode("utf-8"))
+            return
         if path == "/log":
             self._page_log()
             return
@@ -1492,7 +1509,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.server.party.note_join_address(self.client_address[0])
         rest = {key: values for key, values in query.items() if key != "token"}
         # A pop-out window shares the app's cookie jar with the window that opened it, so it gets a cookie of its own.
-        cookie = VIEWER_COOKIE if self.server.party.role_for(session) == "viewer" else MEMBER_COOKIE
+        cookie = self.server.party.cookie_name(VIEWER_COOKIE if self.server.party.role_for(session) == "viewer" else MEMBER_COOKIE)
         self._redirect("/" + (("?" + urlencode(rest, doseq=True)) if rest else ""), cookie, session)
 
     def _leave(self):
@@ -1909,8 +1926,8 @@ class _Handler(BaseHTTPRequestHandler):
         from_viewer = viewer
         if from_viewer is None:
             from_viewer = self.headers.get(VIEWER_MARKER) == "1" or parse_qs(urlsplit(self.path).query).get("as") == ["viewer"]
-        for name in ((VIEWER_COOKIE,) if from_viewer else (MEMBER_COOKIE, HOST_COOKIE)):
-            morsel = jar.get(name)
+        for base in ((VIEWER_COOKIE,) if from_viewer else (MEMBER_COOKIE, HOST_COOKIE)):
+            morsel = jar.get(party.cookie_name(base))
             if morsel is not None:
                 member = party.member_for(morsel.value)
                 if member is not None:
@@ -1957,8 +1974,28 @@ class _Handler(BaseHTTPRequestHandler):
         text = text.replace("{{error}}", html.escape(error)).replace("{{capture}}", capture).replace("{{theme}}", theme)
         return text.encode("utf-8")
 
+    def _post_refused(self, path):
+        """Why a POST is refused, or "" to let it through. Every page and app client of the party sends its body declared
+        as JSON (or as raw bytes, for a picture) and, from a page, from the party's own address. A page from anywhere else
+        may send a plain form or text POST without asking first, and the party's cookie may ride along (rooms run inside
+        the app's one window, next to other servers' rooms), so both are checked. Python clients send no Origin."""
+        origin = self.headers.get("Origin")
+        if origin is not None:
+            host = self.headers.get("Host", "")
+            own = ("https://" if self.server.secure else "http://") + host
+            if not host or origin != own:
+                return "That request came from another page."
+        declared = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        wanted = "application/octet-stream" if path == "/blob" else "application/json"
+        if declared != wanted:
+            return "That request was not understood."
+        return ""
+
     def _cookie_flags(self):
-        return "HttpOnly; Secure; SameSite=Strict" if self.server.secure else "HttpOnly; SameSite=Strict"
+        # An HTTPS party's room runs in a frame of the app's window, which is another site (the app's own page on
+        # 127.0.0.1), so its cookie has to be SameSite=None to be sent there. _post_refused keeps other pages out. The
+        # host's own room is plain HTTP on 127.0.0.1, the same site as the app's page, and keeps Strict.
+        return "HttpOnly; Secure; SameSite=None" if self.server.secure else "HttpOnly; SameSite=Strict"
 
     def _redirect(self, location, cookie=None, token=None):
         self.send_response(303)
