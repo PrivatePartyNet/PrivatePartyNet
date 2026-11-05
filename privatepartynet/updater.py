@@ -214,10 +214,20 @@ def candidates(releases, current, include_test, skipped=""):
 
 
 def asset(release, name):
-    for item in release.get("assets") or []:
+    for item in _list(release.get("assets")):
         if isinstance(item, dict) and item.get("name") == name:
             return item
     return None
+
+
+def _list(value):
+    """`value` when it is a list, else an empty one: GitHub's answer is not trusted to have the shape it should."""
+    return value if isinstance(value, list) else []
+
+
+def _size(value):
+    """A size from GitHub's answer, or -1 when it is not a whole number."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else -1
 
 
 # --- the network -----------------------------------------------------------------------------------------------------
@@ -404,7 +414,10 @@ class Updater:
             if self._stop.is_set():
                 return
             if self.automatic:
-                self.check(manual=False)
+                try:
+                    self.check(manual=False)
+                except Exception:  # never let one bad check end the schedule
+                    log.exception("Update check failed")
             delay = max(CHECK_SECONDS, self._memory.get("backoff_until", 0) - self._clock())
 
     # --- checking ----------------------------------------------------------------------------------------------
@@ -427,6 +440,11 @@ class Updater:
         except UpdateError as error:
             log.info("Update check: %s", error)
             self._set("error", f"Could not check for updates: {error}", checked_at=now)
+            return self.view()
+        except Exception:  # anything unforeseen must not leave the view stuck at "checking"
+            log.exception("Update check failed")
+            self._set("error", "Could not check for updates: something unexpected went wrong (see the log).",
+                      checked_at=now)
             return self.view()
         self.view_state["checked_at"] = now
         self._memory["checked_at"] = now
@@ -462,6 +480,8 @@ class Updater:
                 releases = json.loads(body)
             except ValueError:
                 raise UpdateError("GitHub's answer could not be read") from None
+            if not isinstance(releases, list):
+                raise UpdateError("GitHub's answer is not a list of releases")
             self._memory["etag"] = answer.get("ETag") or answer.get("etag") or ""
             self._memory["releases"] = [_slim(r) for r in releases if isinstance(r, dict)][:30]
             self._memory.pop("backoff_until", None)
@@ -515,7 +535,7 @@ class Updater:
             raise UpdateError(f"the release has no {kind}")
         entry = found["files"][kind]
         download = asset(release, entry["name"])
-        if download is None or int(download.get("size") or -1) != entry["size"]:
+        if download is None or _size(download.get("size")) != entry["size"]:
             raise UpdateError(f"the release's {entry['name']} is not the one the manifest signs")
         found.update(kind=kind, file=entry, url=download.get("browser_download_url"))
         return found
@@ -716,4 +736,4 @@ def _slim(release):
     return {"tag_name": release.get("tag_name"), "draft": bool(release.get("draft")),
             "prerelease": bool(release.get("prerelease")), "body": plain_notes(release.get("body")),
             "assets": [{"name": a.get("name"), "size": a.get("size"), "browser_download_url": a.get("browser_download_url")}
-                       for a in release.get("assets") or [] if isinstance(a, dict)]}
+                       for a in _list(release.get("assets")) if isinstance(a, dict)]}

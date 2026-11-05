@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -384,6 +385,31 @@ class FlowTests(unittest.TestCase):
         calls = len(self.github.calls)
         up.check(manual=False)  # an automatic check waits out the back-off
         self.assertEqual(len(self.github.calls), calls)
+
+    def test_a_malformed_answer_from_github_is_an_error_not_a_crash(self):
+        self.github.publish("3.2.1", {"installer": b"x" * 10})
+        good = self.github.releases[0]
+        for answer in (5, [dict(good, assets=7)], [dict(good, assets=[dict(a, size="big") for a in good["assets"]])],
+                       [dict(good, assets=[dict(a, size=[1]) for a in good["assets"]])]):
+            with self.subTest(answer=answer):
+                self.github.releases = answer
+                self.assertEqual(self.updater().check(manual=True)["state"], "error")
+
+    def test_the_schedule_keeps_going_when_a_check_fails_unexpectedly(self):
+        up = self.updater()
+        calls = []
+
+        def check(manual):
+            calls.append(manual)
+            if len(calls) == 1:
+                raise RuntimeError("something nobody foresaw")
+            up.stop()
+
+        up.check = check
+        with unittest.mock.patch.object(updater, "FIRST_CHECK", (0, 0)), \
+                unittest.mock.patch.object(updater, "CHECK_SECONDS", 0):
+            up._run()
+        self.assertEqual(calls, [False, False])
 
     def test_old_downloads_are_deleted(self):
         updates = self.folder / "data" / "updates"
