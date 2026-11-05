@@ -23,6 +23,7 @@ the app has closed (the user's data is in %LOCALAPPDATA%, not in the app's folde
 installed during a party, a call or while the game network is on; the control panel says it is waiting.
 """
 
+import email.message
 import hashlib
 import json
 import logging
@@ -271,8 +272,9 @@ class Fetcher:
         self.timeout = timeout
 
     def get(self, url, hosts, headers=None, limit=MAX_MANIFEST, into=None):
-        """(status, headers, body). With `into` (a file object), the body is written there instead and body is the
-        number of bytes. Raises UpdateError on a host that is not allowed or a body over `limit`."""
+        """(status, headers, body). The headers are looked up whatever their case (GitHub sends some in lower case).
+        With `into` (a file object), the body is written there instead and body is the number of bytes. Raises
+        UpdateError on a host that is not allowed or a body over `limit`."""
         if not _allowed(url, hosts):
             raise UpdateError(f"{urllib.parse.urlsplit(str(url)).hostname} is not a host updates come from")
         opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=self.context), _Redirects(hosts))
@@ -280,7 +282,7 @@ class Fetcher:
         try:
             response = opener.open(request, timeout=self.timeout)
         except urllib.error.HTTPError as error:
-            return error.code, dict(error.headers or {}), b""
+            return error.code, error.headers or email.message.Message(), b""
         except UpdateError:
             raise
         except (urllib.error.URLError, OSError, ValueError) as error:
@@ -299,7 +301,7 @@ class Fetcher:
                     into.write(chunk)
                 else:
                     chunks.append(chunk)
-            return response.status, dict(response.headers), total if into is not None else b"".join(chunks)
+            return response.status, response.headers, total if into is not None else b"".join(chunks)
 
 
 # --- where this copy runs ------------------------------------------------------------------------------------------
@@ -521,7 +523,7 @@ class Updater:
                 raise UpdateError("GitHub's answer could not be read") from None
             if not isinstance(releases, list):
                 raise UpdateError("GitHub's answer is not a list of releases")
-            self._memory["etag"] = answer.get("ETag") or answer.get("etag") or ""
+            self._memory["etag"] = answer.get("ETag") or ""
             self._memory["releases"] = [_slim(r) for r in releases if isinstance(r, dict)][:30]
             self._memory.pop("backoff_until", None)
             self._memory.pop("backoff", None)
@@ -549,7 +551,7 @@ class Updater:
             except (TypeError, ValueError, KeyError):
                 pass
         try:
-            wait = max(wait, float(headers.get("X-RateLimit-Reset") or headers.get("x-ratelimit-reset") or 0) - now)
+            wait = max(wait, float(headers.get("X-RateLimit-Reset") or 0) - now)
         except ValueError:
             pass
         wait = min(wait, MAX_BACKOFF)

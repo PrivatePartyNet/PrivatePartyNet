@@ -237,6 +237,7 @@ class FakeGitHub:
 
     def __init__(self, folder):
         self.releases, self.files, self.status, self.calls, self.redirect = [], {}, None, [], {}
+        self.wait_header = ("Retry-After", "3600")
         server = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -247,7 +248,7 @@ class FakeGitHub:
                 server.calls.append((self.path, self.headers.get("If-None-Match")))
                 if server.status:
                     self.send_response(server.status)
-                    self.send_header("Retry-After", "3600")
+                    self.send_header(*server.wait_header)
                     self.end_headers()
                     return
                 if self.path.startswith("/releases"):
@@ -549,6 +550,13 @@ class FlowTests(unittest.TestCase):
                 unittest.mock.patch.object(updater, "CHECK_SECONDS", 0):
             up._run()
         self.assertEqual(calls, [False, False])
+
+    def test_a_retry_after_in_lower_case_is_heeded_too(self):
+        self.github.status = 403
+        self.github.wait_header = ("retry-after", "90000")  # longer than the longest back-off
+        up = self.updater()
+        up.check(manual=True)
+        self.assertGreaterEqual(up._memory["backoff_until"] - time.time(), updater.MAX_BACKOFF - 60)
 
     def test_old_downloads_are_deleted(self):
         updates = self.folder / "data" / "updates"
