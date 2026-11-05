@@ -5,6 +5,15 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const U = require("../../privatepartynet/web/updates.js");
 
+test("the About page keeps asking while a check or a download is under way", () => {
+  assert.equal(U.busy({ state: "checking" }), true);
+  assert.equal(U.busy({ state: "downloading", message: "Downloading PrivatePartyNet 3.2.1... 40%" }), true);
+  for (const state of ["ready", "error", "current", "idle", "available"]) assert.equal(U.busy({ state }), false, state);
+  assert.equal(U.busy(null), false);
+  assert.equal(U.about({ state: "downloading", message: "Downloading PrivatePartyNet 3.2.1... 40%" }, 0).status,
+    "Downloading PrivatePartyNet 3.2.1... 40%");
+});
+
 test("a checked update offers Restart now and Later", () => {
   const card = U.card({ state: "ready", version: "3.2.1", notes: "Fixes.", waiting: "" });
   assert.equal(card.show, true);

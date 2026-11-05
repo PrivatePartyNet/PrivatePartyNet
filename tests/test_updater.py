@@ -584,6 +584,7 @@ class FlowTests(unittest.TestCase):
         self.github.publish("3.2.1", {"installer": b"x" * 10})
         up = self.updater()
         up.check(manual=True)
+        up.join_download()
         up.check(manual=True)
         listing = [etag for path, etag in self.github.calls if path.startswith("/releases")]
         self.assertIsNone(listing[0])
@@ -631,10 +632,44 @@ class FlowTests(unittest.TestCase):
             return time.time()
 
         up._clock = clock
-        self.assertEqual(up.check(manual=True)["state"], "ready")
+        up.check(manual=True)
+        up.join_download()
+        self.assertEqual(up.view()["state"], "ready")
         fetched = [path for path, _ in self.github.calls]
         self.assertEqual(fetched.count("/releases"), 1, fetched)
         self.assertEqual(fetched.count("/assets/PrivatePartyNetSetup-3.2.1.exe"), 1, fetched)
+
+    def test_a_manual_check_returns_at_once_and_the_download_shows_its_progress(self):
+        installer = os.urandom(300 * 1024)
+        self.github.publish("3.2.1", {"installer": installer})
+        up = self.updater()
+        go, seen = threading.Event(), []
+        plain = up.fetcher.get
+
+        def get(url, hosts, headers=None, limit=updater.MAX_MANIFEST, into=None, progress=None):
+            if into is None:
+                return plain(url, hosts, headers, limit)
+
+            def step(done):
+                seen.append(up.view()["message"])
+                progress(done)
+                if done >= 64 * 1024:
+                    go.wait(10)  # the download stays under way until the test has looked
+
+            return plain(url, hosts, headers, limit, into=into, progress=step)
+
+        up.fetcher.get = get
+        view = up.check(manual=True)
+        self.assertEqual(view["state"], "downloading", "the button's call returns once the check is done")
+        for _ in range(100):
+            if any("%" in m for m in seen):
+                break
+            time.sleep(0.05)
+        self.assertRegex(up.view()["message"], r"^Downloading PrivatePartyNet 3\.2\.1\.\.\. \d+%$")
+        self.assertGreater(up.view()["progress"], 0)
+        go.set()
+        up.join_download()
+        self.assertEqual(up.view()["state"], "ready")
 
     def test_the_schedule_keeps_going_when_a_check_fails_unexpectedly(self):
         up = self.updater()

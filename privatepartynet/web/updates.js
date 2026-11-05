@@ -54,6 +54,11 @@
     return none;
   }
 
+  // True while a check or a download is under way: the About page keeps asking until it ends.
+  function busy(view) {
+    return !!view && (view.state === "checking" || view.state === "downloading");
+  }
+
   // The About page's lines: { status, checked }.
   function about(view, now) {
     if (!view || typeof view !== "object") return { status: "", checked: "" };
@@ -75,5 +80,5 @@
     return new Date(seconds * 1000).toLocaleDateString();
   }
 
-  return { card: card, about: about };
+  return { card: card, about: about, busy: busy };
 });

@@ -322,10 +322,11 @@ class Fetcher:
         self.context = context or ssl.create_default_context()
         self.timeout = timeout
 
-    def get(self, url, hosts, headers=None, limit=MAX_MANIFEST, into=None):
+    def get(self, url, hosts, headers=None, limit=MAX_MANIFEST, into=None, progress=None):
         """(status, headers, body). The headers are looked up whatever their case (GitHub sends some in lower case).
-        With `into` (a file object), the body is written there instead and body is the number of bytes. Raises
-        UpdateError on a host that is not allowed or a body over `limit`."""
+        With `into` (a file object), the body is written there instead and body is the number of bytes; `progress`, if
+        given, is called with the bytes so far. Raises UpdateError on a host that is not allowed or a body over
+        `limit`."""
         if not _allowed(url, hosts):
             raise UpdateError(f"{urllib.parse.urlsplit(str(url)).hostname} is not a host updates come from")
         opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=self.context), _Redirects(hosts))
@@ -350,6 +351,8 @@ class Fetcher:
                     raise UpdateError("a download was larger than it may be")
                 if into is not None:
                     into.write(chunk)
+                    if progress is not None:
+                        progress(total)
                 else:
                     chunks.append(chunk)
             return response.status, response.headers, total if into is not None else b"".join(chunks)
@@ -454,6 +457,7 @@ class Updater:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread = None
+        self._downloading = None  # the thread of a download started by a button, which returns before it ends
         self.found = None  # the checked release being offered: check_manifest's record, and the file to use
         self.ready = None  # Path of the checked download (installer) or unpacked folder (portable)
         self._unpacked = {}  # the unpacked folder's files (path inside it -> SHA-256), from the checked zip itself
@@ -579,7 +583,7 @@ class Updater:
             self._offer_ready()  # the same version, already checked and waiting
             return self.view()
         if self.automatic:
-            self.download()
+            self.download(background=manual)  # a button's call returns now; the panel shows the download's progress
         else:
             self._set("available", f"{APP} {found['version']} is out.", version=str(found["version"]),
                       notes=found["notes"])
@@ -674,8 +678,9 @@ class Updater:
 
     # --- downloading -------------------------------------------------------------------------------------------
 
-    def download(self):
-        """Fetch the offered file, check its size and hash, and (portable) unpack it. Then offer Restart now."""
+    def download(self, background=False):
+        """Fetch the offered file, check its size and hash, and (portable) unpack it. Then offer Restart now. With
+        `background`, the state says "downloading" at once and the rest runs in its own thread (join_download)."""
         found = self.found
         if found is None:
             return self.view()
@@ -687,14 +692,42 @@ class Updater:
         with self._lock:  # Update pressed while a download is already under way: that one carries on
             if self.view_state["state"] == "downloading":
                 return self.view()
-            self._set("downloading", f"Downloading {APP} {version}...", version=str(version), notes=found["notes"])
+            self._set("downloading", f"Downloading {APP} {version}...", version=str(version), notes=found["notes"],
+                      progress=0.0)
+        if background:
+            self._downloading = threading.Thread(target=self._fetch, args=(found,), name="privatepartynet-update-download",
+                                                 daemon=True)
+            self._downloading.start()
+            return self.view()
+        return self._fetch(found)
+
+    def join_download(self, timeout=None):
+        """Wait for a download started in the background to end."""
+        thread = self._downloading
+        if thread is not None:
+            thread.join(timeout)
+
+    def _progress(self, version, size):
+        """A callback for the fetcher: the share downloaded, in the view's progress (0 to 1) and message."""
+        shown = [-1]
+
+        def step(done):
+            percent = min(100, done * 100 // max(1, size))
+            if percent != shown[0]:
+                shown[0] = percent
+                self._set("downloading", f"Downloading {APP} {version}... {percent}%", progress=percent / 100)
+        return step
+
+    def _fetch(self, found):
+        version, entry = found["version"], found["file"]
         target = self.folder / entry["name"]
         partial = target.with_name(target.name + ".part")
         try:
             self.folder.mkdir(parents=True, exist_ok=True)
             if not (target.is_file() and target.stat().st_size == entry["size"] and sha256_file(target) == entry["sha256"]):
                 with open(partial, "wb") as file:
-                    status, _, size = self.fetcher.get(found["url"], self.asset_hosts, limit=entry["size"], into=file)
+                    status, _, size = self.fetcher.get(found["url"], self.asset_hosts, limit=entry["size"], into=file,
+                                                       progress=self._progress(version, entry["size"]))
                 if status != 200 or size != entry["size"]:
                     raise UpdateError(f"the download stopped short ({status}, {size} of {entry['size']} bytes)")
                 if sha256_file(partial) != entry["sha256"]:
