@@ -94,6 +94,7 @@
     direct: "Direct through the routers",
     relay: "Through the relay server",
     "link-direct-lan": "Direct on the same network",
+    "link-vpn": "Direct over a VPN (Radmin VPN, Hamachi or Tailscale)",
     "link-direct-ipv6": "Direct over IPv6",
     "link-direct": "Direct to a public address or an opened port",
     "link-punched": "Direct through both routers",
@@ -112,7 +113,12 @@
       var whose = choice.source === "mylink" ? "Your connection to the host" : name + "'s connection to the host";
       return [whose + " is " + choice.state + "."];
     }
-    if (!number(choice.rtt)) return ["Ping not known yet (the host's PrivatePartyNet may be older)."];
+    if (!number(choice.rtt)) {
+      // A host that sends a link with no round trip does not ping that member (an older app); no link at all is an
+      // older host.
+      return [choice.source === "host" ? "Ping not known: the host has no heartbeat with " + name +
+        " (their PrivatePartyNet may be older)." : "Ping not known yet (the host's PrivatePartyNet may be older)."];
+    }
     var first = "Ping " + Math.round(choice.rtt) + " ms";
     if (number(choice.jitter)) first += "  ·  jitter " + Math.round(choice.jitter) + " ms";
     first += "  ·  loss " + lossText(choice.loss === null ? 0 : choice.loss);

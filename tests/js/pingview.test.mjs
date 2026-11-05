@@ -128,3 +128,18 @@ test("the connection bar's numbers read the same as the members list's", () => {
   assert.equal(P.summaryQuality({ state: "connected", rtt: 160, loss: 0 }), "poor");
   assert.equal(P.summaryQuality({ state: "connecting", rtt: 10, loss: 0 }), "unknown", "only a live connection has a ping");
 });
+
+test("a member on an older app, whom the host does not ping, is grey and never unstable", () => {
+  const old = { id: "b", link: { state: "ok", rtt: null, loss: null, since: 1793865000 } };
+  const got = P.pick({ member: old });
+  assert.equal(P.quality(got.rtt, got.loss), "unknown");
+  assert.equal(P.text(got), "—");
+  assert.deepEqual(P.detail(got, "Alex"),
+    ["Ping not known: the host has no heartbeat with Alex (their PrivatePartyNet may be older)."]);
+  assert.equal(P.pick({ member: old, summary: connected }).source, "direct", "their own connection still gives a ping");
+});
+
+test("a link over a VPN says so", () => {
+  const got = P.pick({ member: { id: "b", link: { state: "ok", rtt: 30, loss: 0, path: "vpn" } } });
+  assert.equal(P.detail(got, "Alex")[1], "Direct over a VPN (Radmin VPN, Hamachi or Tailscale)");
+});
