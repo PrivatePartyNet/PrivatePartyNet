@@ -29,6 +29,7 @@ from privatepartynet.cpu import sample_detail as cpu_detail
 from privatepartynet.discovery import clean_name
 from privatepartynet.frames import clamp_fps, clamp_height
 from privatepartynet import gamenet
+from privatepartynet.hangups import HangupsLogged, describe, is_hangup
 from privatepartynet import relayproto
 from privatepartynet.identity import user_id_of, verify
 from privatepartynet.paths import web_dir
@@ -1400,12 +1401,22 @@ class _Server(ThreadingHTTPServer):
             self._slots.release()
 
     def handle_error(self, request, client_address):
+        """A request ended in an exception. The other end hanging up is noted and nothing more; anything else goes in
+        the log with its traceback, and the control panel says so in plain words (never the exception itself)."""
         exc = sys.exc_info()[1]
-        self.party.last_error = f"{type(exc).__name__}: {exc}"
+        where = "party" if self.secure else "party window"
+        if is_hangup(exc):
+            _Handler.hangup_log.info("The %s connection from %s closed early (%s)", where, client_address[0], describe(exc))
+            return
+        _Handler.hangup_log.error("The %s server could not answer a request from %s", where, client_address[0],
+                                  exc_info=True)
+        self.party.last_error = ("The party server could not answer one request; the party keeps running. The details "
+                                 "are in the log (Options, Open data folder).")
 
 
-class _Handler(BaseHTTPRequestHandler):
+class _Handler(HangupsLogged, BaseHTTPRequestHandler):
     server_version = "PrivatePartyNet"
+    hangup_what = "party"
     timeout = 60  # a silent client gives up after this; also bounds the TLS handshake
 
     def log_message(self, format, *args):
@@ -1850,8 +1861,11 @@ class _Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(struct.pack(">I", len(jpeg)) + jpeg)
                 self.wfile.flush()
-        except OSError:
-            pass  # the host's page stopped reading (Go Live was turned off); the capture stops below
+        except OSError as exc:
+            # The host's page stopped reading: Go Live was turned off, or restarted the feed at another size. The
+            # connection is finished too, or the next read on it would fail the same way (WinError 10053 in 3.1.0).
+            self.close_connection = True
+            self.hangup_log.info("The host window's frame feed ended (%s)", describe(exc) if is_hangup(exc) else exc)
         finally:
             frames.close()
 
@@ -1879,8 +1893,10 @@ class _Handler(BaseHTTPRequestHandler):
                 if message is _STOP:
                     break
                 self.wfile.write(b"data: " + json.dumps(message).encode("utf-8") + b"\n\n")
-        except OSError:
-            pass
+        except OSError as exc:
+            self.close_connection = True  # the page has gone (closed, reloaded, or its network dropped)
+            self.hangup_log.info("A party page's event stream from %s closed (%s)", self.client_address[0],
+                                 describe(exc) if is_hangup(exc) else exc)
         finally:
             party.detach(member, listener)
 
