@@ -22,6 +22,13 @@
     requests: document.getElementById("requests"),
     requestList: document.getElementById("requestList"),
     themeItems: document.querySelectorAll("#optionsMenu [data-choice]"),
+    autoUpdate: document.getElementById("autoUpdate"),
+    testVersions: document.getElementById("testVersions"),
+    checkUpdates: document.getElementById("checkUpdates"),
+    updateCard: document.getElementById("updateCard"),
+    updateText: document.getElementById("updateText"),
+    updateNotes: document.getElementById("updateNotes"),
+    updateButtons: document.getElementById("updateButtons"),
     openFolder: document.getElementById("openFolder"),
     reach: document.getElementById("reach"),
     serverPassword: document.getElementById("serverPassword"),
@@ -89,6 +96,7 @@
     renderReach(state.reach);
     renderGame(state.game);
     renderRelay(state.relay, state.friend_relay);
+    renderUpdate(state.update);
     el.unlockBox.hidden = !state.locked;
     el.openMessages.disabled = state.locked;
     el.dmUnread.textContent = state.dm_unread ? state.dm_unread + " unread" : "";
@@ -256,6 +264,50 @@
     });
   });
   el.openFolder.addEventListener("click", function () { api().open_data_folder(); });
+
+  // --- updates ---------------------------------------------------------------------------------------------
+
+  var lastUpdate = "";
+
+  function renderUpdate(view) {
+    if (!view) return;
+    el.autoUpdate.setAttribute("aria-checked", view.automatic ? "true" : "false");
+    el.testVersions.setAttribute("aria-checked", view.include_test ? "true" : "false");
+    var shown = window.PrivatePartyNetUpdates.card(view);
+    var key = JSON.stringify(shown);
+    if (key === lastUpdate) return;
+    lastUpdate = key;
+    el.updateCard.hidden = !shown.show;
+    el.updateText.textContent = shown.text;
+    el.updateNotes.textContent = shown.notes;
+    el.updateNotes.hidden = !shown.notes;
+    el.updateButtons.textContent = "";
+    shown.buttons.forEach(function (spec) {
+      var button = document.createElement("button");
+      button.className = spec.primary ? "primary" : "secondary";
+      button.textContent = spec.label;
+      button.disabled = spec.disabled;
+      button.addEventListener("click", function () {
+        var call = { restart: "update_restart", later: "update_later", skip: "update_skip" }[spec.action];
+        api()[call]().then(function (result) { if (result && result.message && !result.ok) say(result.message); });
+      });
+      el.updateButtons.append(button);
+    });
+  }
+
+  [[el.autoUpdate, "auto_update"], [el.testVersions, "update_prerelease"]].forEach(function (pair) {
+    pair[0].addEventListener("click", function () {
+      var on = pair[0].getAttribute("aria-checked") !== "true";
+      api().set_update_option(pair[1], on).then(function (result) { if (result.update) renderUpdate(result.update); });
+    });
+  });
+  el.checkUpdates.addEventListener("click", function () {
+    say("Checking for updates...");
+    api().check_updates().then(function (view) {
+      renderUpdate(view);
+      say(window.PrivatePartyNetUpdates.card(view).show ? "" : view.message);
+    });
+  });
   el.openHow.addEventListener("click", function () {
     api().open_how().then(function (result) { say(result.message); });
   });

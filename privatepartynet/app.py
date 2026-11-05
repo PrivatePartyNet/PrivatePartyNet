@@ -40,6 +40,7 @@ from privatepartynet.paths import data_dir, web_dir
 from privatepartynet.server import Forbidden, NotFound, Party, generate_password
 from privatepartynet.settings import THEMES, load_settings, save_settings, valid_mbps, valid_port
 from privatepartynet.store import Store
+from privatepartynet.updater import Updater
 from privatepartynet.vault import Locked, Vault, VaultError, WrongPassword
 
 LOG_FILE = "privatepartynet.log"
@@ -329,6 +330,11 @@ class Controller:
         # The game network's PathManager (pathway.py) while it runs, set by whoever starts it; with .names, a dict of
         # user id -> name, when it knows them. The control panel shows its relaying and its problems from it.
         self.path_manager = None
+        self._party_windows = set()  # joined parties' windows that are open: an update waits for them to close
+        self.updater = Updater(lambda: self._settings, self._save, self._data_dir, self._update_busy,
+                               quit=self._quit_for_update)
+        if self._probe_network:  # a test or diagnostic run (discovery port 0) never asks GitHub
+            self.updater.start()
         self._tunnels = {}  # joined server key -> the punch-through tunnel it is reached by
 
     # --- the key, the identity and the chat store ----------------------------------------------------------
@@ -903,6 +909,7 @@ class Controller:
         if game.get("mesh") is not None:
             game["mesh"].stop()
         game["paths"].stop()
+        self.updater.busy_changed()
         return {"ok": True, "message": "The game network is off."}
 
     # --- backup and import ---------------------------------------------------------------------------------
@@ -1032,6 +1039,7 @@ class Controller:
             "reach": self._reach_view(),
             "game": self.game_state(),
             "relay": party.relay_view() if party else None,
+            "update": self.updater.view(),
             "friend_relay": {"on": self._settings.get("friend_relay") is True,
                              "mbps": self._settings.get("friend_relay_mbps", 8), **self._paths_view()},
         }
@@ -1143,6 +1151,7 @@ class Controller:
         if self._discovery is not None:
             self._discovery.set_sharing(None, None)
         log.info("Party stopped")
+        self.updater.busy_changed()
         return {"ok": True, "message": "Party closed."}
 
     def set_server_password(self, password):
@@ -1323,7 +1332,15 @@ class Controller:
             url += f"&theme={theme}"
         parts = urlsplit(data["url"])
         api = WindowApi(f"{parts.scheme}://{parts.netloc}", store=lambda: self._store)
-        api._attach(webview.create_window(f"PrivatePartyNet party: {data['name']}", url=url, width=1280, height=820, js_api=api))
+        window = webview.create_window(f"PrivatePartyNet party: {data['name']}", url=url, width=1280, height=820, js_api=api)
+        api._attach(window)
+        self._party_windows.add(window)
+
+        def closed(*_):
+            self._party_windows.discard(window)
+            self.updater.busy_changed()
+
+        window.events.closed += closed
         log.info("Joined %s", data["name"])
 
     # --- the Info menu ----------------------------------------------------------------------------------------
@@ -1342,6 +1359,7 @@ class Controller:
             "data_folder": str(self._data_dir),
             "log_file": str(self._data_dir / LOG_FILE),
             "libraries": [{"name": label, "version": library_version(dist), "purpose": purpose} for label, dist, purpose in CREDITS],
+            "update": self.updater.view(),
         }
 
     def open_about(self):
@@ -1349,6 +1367,49 @@ class Controller:
 
     def open_how(self):
         return self._open_info("how", f"How {APP_NAME} works", 760, 820)
+
+    # --- updates ---------------------------------------------------------------------------------------------
+
+    def _update_busy(self):
+        """What an update must wait for, in words for the control panel, or "" when nothing is going on."""
+        if self._party is not None:
+            return "your party"
+        if self._party_windows:
+            return "the party (and any call in it)"
+        if self._game is not None:
+            return "the game network"
+        return ""
+
+    def _quit_for_update(self):
+        """The installer (or the portable swap) is running: close every window so it can replace the app."""
+        for window in list(webview.windows):
+            try:
+                window.destroy()
+            except Exception:
+                log.debug("A window would not close for the update", exc_info=True)
+
+    def update_state(self):
+        return self.updater.view()
+
+    def check_updates(self):
+        """The Check for updates button: asks GitHub now, whatever the automatic setting."""
+        return self.updater.check(manual=True)
+
+    def update_restart(self):
+        return self.updater.restart_now()
+
+    def update_later(self):
+        return self.updater.later()
+
+    def update_skip(self):
+        return self.updater.skip()
+
+    def set_update_option(self, name, on):
+        """Automatic updates, or Include test versions, on or off."""
+        if name not in ("auto_update", "update_prerelease"):
+            return {"ok": False, "message": "There is no such option."}
+        self._save(**{name: bool(on)})
+        return {"ok": True, "message": "", "update": self.updater.view()}
 
     def _open_info(self, page, title, width, height):
         """One About window and one How window at a time. A second click says so instead of opening a copy."""
@@ -1380,6 +1441,8 @@ class Controller:
         if self._store is not None:
             self._store.close()
             self._store = None
+        self.updater.stop()
+        self.updater.on_exit()  # a checked update waiting for the app to close installs now, without starting it again
 
     # --- helpers ------------------------------------------------------------------------------------------
 

@@ -579,6 +579,24 @@ class ReviewControllerTests(unittest.TestCase):
         self.one.set_friend_relay(True, 4)
         self.assertEqual(paths.changed, (True, 4), "a running game network follows the setting at once")
 
+    def test_updates_wait_for_a_party_and_the_options_follow_the_menu(self):
+        self.assertIsNone(self.one.updater._thread, "a test run never asks GitHub")
+        self.assertEqual(self.one._update_busy(), "")
+        view = self.one.state()["update"]
+        self.assertEqual((view["automatic"], view["include_test"]), (True, True))
+        self.assertTrue(self.one.start("Desk", free_port())["ok"])
+        self.assertEqual(self.one._update_busy(), "your party")
+        self.one.stop()
+        self.assertEqual(self.one._update_busy(), "")
+        self.one._game = {"key": "own"}
+        self.assertEqual(self.one._update_busy(), "the game network")
+        self.one._game = None
+        self.assertTrue(self.one.set_update_option("auto_update", False)["ok"])
+        self.assertTrue(self.one.set_update_option("update_prerelease", False)["ok"])
+        self.assertFalse(self.one.set_update_option("theme", "dark")["ok"])
+        view = self.one.about_info()["update"]
+        self.assertEqual((view["automatic"], view["include_test"]), (False, False))
+
     def test_relay_addresses_are_read_with_or_without_a_port(self):
         from privatepartynet.app import _split_address
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="reviewed-for-version" content="3.1.0">
+<meta name="reviewed-for-version" content="3.2.0">
 <title>How PrivatePartyNet works</title>
 <link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="info.css">
@@ -43,7 +43,11 @@
   <p>Hover a name for the details: each screen in each direction with its rate, frame rate, size and the share of the PC spent encoding or decoding it (an estimate from the codec's own timing), whether the encoder is being limited by this PC's processor or the network, the round trip time and the packet loss. When there are too many names for the bar, every chip gives up detail first, and the last few names collapse into a "+" count.</p>
 
   <h2>The menus</h2>
-  <p>In the control panel, Options sets the appearance (Match Windows, Light or Dark), which changes the control panel and every party window at once, and opens the data folder. Info opens this page and the About page.</p>
+  <p>In the control panel, Options sets the appearance (Match Windows, Light or Dark), which changes the control panel and every party window at once, turns automatic updates and test versions on or off, checks for updates, and opens the data folder. Info opens this page and the About page.</p>
+
+  <h2>Updates</h2>
+  <p>With Automatic updates on (the default), <span class="appname">PrivatePartyNet</span> asks GitHub a few minutes after it starts, and every six hours, whether there is a newer version, downloads it in the background and checks it. The control panel then says it is ready: Restart now installs it and starts the app again, and Later installs it when you next close the app. It never restarts during a party, a call or while the game network is on; it says it is waiting instead. With Automatic updates off, nothing is asked of GitHub until you press Check for updates (in Options or on the About page); a newer version then offers Update, Later or Skip this version. Include test versions (on by default) also offers versions that are still being tried out.</p>
+  <p>Every update is signed. The app carries the public key it checks the signature with, and installs only a file whose size and fingerprint (SHA-256) are the signed ones, from a version newer than the one running. An installed copy runs the new installer for you, with its progress showing; a portable copy unpacks the new version beside its folder and swaps the two once it has closed. Your settings, chats and keys stay where they are.</p>
 
   <h2>Servers, channels and roles</h2>
   <p>A party keeps its name, channels, roles and chat between runs. The side panel lists the channels: a hash sign marks a text channel and "Voice" a voice channel. Click a text channel to read it; a number beside a channel is how many messages you have not read. Scroll to the top of a channel to load older messages. The owner and the admins add, rename and delete channels (a deleted channel's messages stay saved). Roles are Owner, Admin, Member and Guest. A guest reads the chat and watches screens but cannot post, talk or share. The owner and admins change roles and remove people from the three dots beside a name; the owner makes admins.</p>
@@ -86,7 +90,7 @@
     <li>A screen looks black: it may be hidden. Right-click it, or press Show hidden streams in View options.</li>
   </ul>
 
-  <p class="muted stamp">This page describes version <span class="appversion">3.1.0</span>. It is updated with every version.</p>
+  <p class="muted stamp">This page describes version <span class="appversion">3.2.0</span>. It is updated with every version.</p>
 </main>
 <script src="info.js"></script>
 </body>

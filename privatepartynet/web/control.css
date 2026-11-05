@@ -17,6 +17,9 @@ button.secondary { background: var(--surface-2); color: var(--text); }
 button.danger { background: var(--danger); color: #ffffff; }
 .notice { padding: 8px 10px; border-radius: 6px; background: var(--notice-bg); color: var(--notice-text); }
 .notice[hidden] { display: none; }
+.update p { margin: 0 0 6px; }
+.update .notes { max-height: 140px; overflow: auto; margin: 6px 0; white-space: pre-wrap; font: inherit; font-size: 12px; }
+.update .notes[hidden] { display: none; }
 .addresses { list-style: none; margin: 4px 0 8px; padding: 0; font-family: Consolas, monospace; font-size: 15px; }
 .addresses li { padding: 2px 0; user-select: text; }
 .code { font-family: Consolas, monospace; font-size: 30px; font-weight: 700; letter-spacing: 4px; margin: 2px 0 8px; user-select: text; }

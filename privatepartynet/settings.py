@@ -11,6 +11,9 @@ DEFAULTS = {"port": 8765, "name": None, "theme": "system", "server_id": None, "g
 # on, since it uses their upload, and then never more than this many megabits a second for everyone together.
 DEFAULTS.update({"friend_relay": False, "friend_relay_mbps": 8})
 MAX_FRIEND_MBPS = 1000
+# Updates (updater.py): checked for and downloaded by themselves, test versions included, unless the person says not.
+# update_skip is a version the person chose to skip.
+DEFAULTS.update({"auto_update": True, "update_prerelease": True, "update_skip": ""})
 SETTINGS_FILE = "settings.json"
 MAX_SAVED_NAME = 200  # the window trims names properly; this only stops a damaged file from growing huge
 
@@ -54,6 +57,12 @@ def load_settings(folder=None):
             settings["friend_relay"] = saved["friend_relay"]
         if valid_mbps(saved.get("friend_relay_mbps")):
             settings["friend_relay_mbps"] = saved["friend_relay_mbps"]
+        for flag in ("auto_update", "update_prerelease"):
+            if isinstance(saved.get(flag), bool):
+                settings[flag] = saved[flag]
+        skip = saved.get("update_skip")
+        if isinstance(skip, str) and len(skip) <= 40 and all(c.isalnum() or c in ".-+" for c in skip):
+            settings["update_skip"] = skip
     return settings
 
 

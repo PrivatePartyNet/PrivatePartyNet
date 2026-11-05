@@ -22,6 +22,22 @@
     document.querySelectorAll(".appversion").forEach(function (node) { node.textContent = info.version; });
     document.title = document.title.replace("PrivatePartyNet", info.name);
     if (document.getElementById("facts")) fillAbout(info);
+    if (document.getElementById("updateStatus")) fillUpdates(info.update);
+  }
+
+  function fillUpdates(view) {
+    var lines = window.PrivatePartyNetUpdates.about(view, Date.now());
+    document.getElementById("updateStatus").textContent = lines.status;
+    document.getElementById("updateChecked").textContent = lines.checked;
+  }
+
+  var check = document.getElementById("checkUpdates");
+  if (check) {
+    check.addEventListener("click", function () {
+      check.disabled = true;
+      document.getElementById("updateStatus").textContent = "Checking for updates...";
+      window.pywebview.api.check_updates().then(fillUpdates).finally(function () { check.disabled = false; });
+    });
   }
 
   function fillAbout(info) {

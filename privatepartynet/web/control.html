@@ -17,6 +17,11 @@
       <button role="menuitemradio" aria-checked="false" data-choice="light">Light</button>
       <button role="menuitemradio" aria-checked="false" data-choice="dark">Dark</button>
       <hr>
+      <div class="group">Updates</div>
+      <button role="menuitemcheckbox" aria-checked="true" id="autoUpdate">Automatic updates</button>
+      <button role="menuitemcheckbox" aria-checked="true" id="testVersions">Include test versions</button>
+      <button role="menuitem" id="checkUpdates">Check for updates</button>
+      <hr>
       <button role="menuitem" id="openFolder">Open data folder</button>
     </div>
   </div>
@@ -33,6 +38,12 @@
   <h1 class="appname">PrivatePartyNet</h1>
   <span id="version" class="muted"></span>
 </header>
+
+<div id="updateCard" class="notice update" role="status" hidden>
+  <p id="updateText"></p>
+  <pre id="updateNotes" class="notes" hidden></pre>
+  <div id="updateButtons" class="row"></div>
+</div>
 
 <section>
   <label class="field">Your name in the party and on the network (changes apply at once)
@@ -199,6 +210,7 @@
   <ul id="requestList" class="requests"></ul>
 </section>
 
+<script src="updates.js"></script>
 <script src="control.js"></script>
 <script src="gamereach.js"></script>
 </body>
