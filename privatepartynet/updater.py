@@ -679,6 +679,18 @@ class Updater:
                 log.warning("The update could not be installed on exit: %s", error)
 
     def _install(self, restart, quitting=False):
+        try:
+            self._start_install(restart)
+        except OSError as error:  # the file is gone, the disk is full, or Windows would not start it
+            self.ready = None
+            self._set("error", f"The update could not be started: {error}")
+            raise UpdateError(f"it could not be started ({error.strerror or error})") from None
+        log.info("Installing %s %s (%s)", APP, self.found["version"], self.found["kind"])
+        self._set("installing", f"Installing {APP} {self.found['version']}...")
+        if not quitting:
+            self._quit()
+
+    def _start_install(self, restart):
         found, ready = self.found, self.ready
         if found["kind"] == "installer":
             if sha256_file(ready) != found["file"]["sha256"]:  # hashed again just before it runs
@@ -693,10 +705,6 @@ class Updater:
             script.write_text(SWAP_SCRIPT.format(pid=os.getpid(), old=old, app=self.app_dir, new=ready,
                                                  restart="1" if restart else "0", exe=f"{APP}.exe"), encoding="ascii")
             self._launch(["cmd.exe", "/c", str(script)])
-        log.info("Installing %s %s (%s)", APP, found["version"], found["kind"])
-        self._set("installing", f"Installing {APP} {found['version']}...")
-        if not quitting:
-            self._quit()
 
     def _spawn(self, command):
         subprocess.Popen(command, close_fds=True, creationflags=DETACHED | NO_WINDOW, cwd=str(self.folder))

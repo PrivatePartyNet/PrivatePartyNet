@@ -318,6 +318,28 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.launched, [], "nothing was run")
         self.assertEqual(up.view()["state"], "error")
 
+    def test_an_installer_that_is_gone_or_will_not_start_is_an_error_not_a_crash(self):
+        self.github.publish("3.2.1", {"installer": b"x" * 100})
+        up = self.updater()
+        up.check(manual=False)
+        up.ready.unlink()  # removed by a virus scanner, say
+        answer = up.restart_now()
+        self.assertFalse(answer["ok"])
+        self.assertEqual(self.quits, [])
+        up.on_exit()  # and the app still closes cleanly
+
+        def refuse(command):
+            raise PermissionError(5, "Access is denied")
+
+        up = self.updater()
+        up.check(manual=False)
+        up._launch = refuse
+        answer = up.restart_now()
+        self.assertFalse(answer["ok"])
+        self.assertIn("denied", answer["message"])
+        self.assertEqual(self.quits, [], "the app stays open when the installer did not start")
+        self.assertEqual(up.view()["state"], "error")
+
     def test_an_update_waits_for_a_party_a_call_or_the_game_network(self):
         self.github.publish("3.2.1", {"installer": b"x" * 100})
         up = self.updater()
