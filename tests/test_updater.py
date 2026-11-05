@@ -153,8 +153,11 @@ class KeyRotationTests(unittest.TestCase):
 class NoBackDoorTests(unittest.TestCase):
     def test_no_environment_variable_or_setting_changes_the_key_or_the_address(self):
         source = Path(updater.__file__).read_text(encoding="utf-8")
+        # The one use of os.environ hands it on, with the swap's folders added, to the process that swaps them.
+        spawn = "env={**os.environ, **env} if env else None"
+        self.assertEqual(source.count(spawn), 1)
         for reading in ("os.environ", "getenv", "sys.argv"):
-            self.assertNotIn(reading, source)
+            self.assertNotIn(reading, source.replace(spawn, ""))
         app = (Path(updater.__file__).parent / "app.py").read_text(encoding="utf-8")
         call = app[app.index("self.updater = Updater("):app.index("self.updater = Updater(") + 220]
         for argument in ("api_url", "keys", "hosts", "fetcher"):
@@ -257,14 +260,40 @@ class FlowTests(unittest.TestCase):
         self.addCleanup(self.github.close)
         self.settings = {"auto_update": True, "update_prerelease": True, "update_skip": ""}
         self.busy = ""
-        self.launched, self.quits = [], []
+        self.launched, self.quits, self.envs = [], [], []
 
     def updater(self, kind="installed", app_dir=None):
         return Updater(lambda: self.settings, lambda **c: self.settings.update(c), self.folder / "data",
                        lambda: self.busy, current="3.2.0", kind=kind, api_url=f"{self.github.base}/releases",
                        keys=(PUBLIC,), api_hosts={"127.0.0.1"}, asset_hosts={"127.0.0.1"},
-                       fetcher=Fetcher(self.github.client_context(), timeout=5), launcher=self.launched.append,
+                       fetcher=Fetcher(self.github.client_context(), timeout=5), launcher=self.launch,
                        app_dir=app_dir or self.folder / "app" / "PrivatePartyNet", quit=lambda: self.quits.append(1))
+
+    def launch(self, command, env=None):
+        self.launched.append(command)
+        self.envs.append(env)
+
+    def portable(self, app, files=None):
+        """A portable copy at `app` and a release of 3.2.1 whose zip holds `files` {name: bytes}."""
+        app.mkdir(parents=True)
+        (app / "PrivatePartyNet.exe").write_bytes(b"old app")
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for name, content in (files or {"PrivatePartyNet/PrivatePartyNet.exe": b"new app",
+                                            "PrivatePartyNet/_internal/web.txt": b"new page"}).items():
+                archive.writestr(name, content)
+        self.github.publish("3.2.1", {"portable": buffer.getvalue()})
+        return self.updater(kind="portable", app_dir=app)
+
+    def run_swap(self):
+        """Run the launched swap as it would run once this copy has closed (an ended process stands in for it), without
+        starting the app afterwards."""
+        command, env = self.launched[-1], dict(self.envs[-1] or {})
+        gone = subprocess.Popen(["cmd.exe", "/c", "exit"], creationflags=updater.NO_WINDOW)
+        gone.wait()
+        env.update(PPN_PID=str(gone.pid), PPN_RESTART="0")
+        return subprocess.run(command, capture_output=True, timeout=60, env={**os.environ, **env},
+                              creationflags=updater.NO_WINDOW)
 
     def test_automatic_download_check_prompt_and_launch_of_the_installer(self):
         installer = os.urandom(4096)
@@ -328,7 +357,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.quits, [])
         up.on_exit()  # and the app still closes cleanly
 
-        def refuse(command):
+        def refuse(command, env):
             raise PermissionError(5, "Access is denied")
 
         up = self.updater()
@@ -461,31 +490,27 @@ class FlowTests(unittest.TestCase):
 
     def test_a_portable_copy_unpacks_beside_itself_and_swaps_once_closed(self):
         app = self.folder / "portable" / "PrivatePartyNet"
-        app.mkdir(parents=True)
-        (app / "PrivatePartyNet.exe").write_bytes(b"old app")
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w") as archive:
-            archive.writestr("PrivatePartyNet/PrivatePartyNet.exe", b"new app")
-            archive.writestr("PrivatePartyNet/_internal/web.txt", b"new page")
-        self.github.publish("3.2.1", {"portable": buffer.getvalue()})
-        up = self.updater(kind="portable", app_dir=app)
+        up = self.portable(app)
         self.assertEqual(up.check(manual=False)["state"], "ready")
         self.assertEqual((up.ready / "PrivatePartyNet.exe").read_bytes(), b"new app")
         self.assertEqual(up.ready.parent.parent, app.parent, "unpacked beside the app's own folder")
         self.assertTrue(up.restart_now()["ok"])
         (command,) = self.launched
         self.assertEqual(command[:2], ["cmd.exe", "/c"])
-        # Run the swap as it would run once this copy has closed (a process that has ended stands in for it).
-        gone = subprocess.Popen(["cmd.exe", "/c", "exit"], creationflags=updater.NO_WINDOW)
-        gone.wait()
-        script = Path(command[2])
-        script.write_text(script.read_text(encoding="ascii").replace(str(os.getpid()), str(gone.pid))
-                          .replace('if "1"=="1" start', 'if "1"=="0" start'), encoding="ascii")
-        run = subprocess.run(["cmd.exe", "/c", str(script)], capture_output=True, timeout=60,
-                             creationflags=updater.NO_WINDOW)
+        run = self.run_swap()
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual((app / "PrivatePartyNet.exe").read_bytes(), b"new app")
         self.assertEqual((app / "_internal" / "web.txt").read_bytes(), b"new page")
+        self.assertEqual((app.parent / "PrivatePartyNet.old" / "PrivatePartyNet.exe").read_bytes(), b"old app")
+
+    def test_a_portable_copy_in_a_folder_with_accents_or_a_percent_sign_swaps_too(self):
+        app = self.folder / "José's 100%games" / "PrivatePartyNet"
+        up = self.portable(app)
+        self.assertEqual(up.check(manual=False)["state"], "ready")
+        self.assertTrue(up.restart_now()["ok"])
+        run = self.run_swap()
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual((app / "PrivatePartyNet.exe").read_bytes(), b"new app")
         self.assertEqual((app.parent / "PrivatePartyNet.old" / "PrivatePartyNet.exe").read_bytes(), b"old app")
 
     def test_a_portable_copy_whose_folder_cannot_change_unpacks_into_updates_and_says_so(self):

@@ -309,25 +309,27 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+# The folders come in environment variables (PPN_*), not written into the script: cmd reads a script in the console's
+# code page and expands % signs in it, so a folder named with accents or a % would break the swap.
 SWAP_SCRIPT = r"""@echo off
 rem PrivatePartyNet's portable update: once the app has closed, swap its folder for the checked new one.
 setlocal
 set /a tries=0
 :wait
-tasklist /FI "PID eq {pid}" 2>NUL | find "{pid}" >NUL
+tasklist /FI "PID eq %PPN_PID%" 2>NUL | find "%PPN_PID%" >NUL
 if not errorlevel 1 (
   set /a tries+=1
   if %tries% GEQ 120 goto failed
   ping -n 2 127.0.0.1 >NUL
   goto wait
 )
-if exist "{old}" rmdir /s /q "{old}"
-move "{app}" "{old}" >NUL || goto failed
-move "{new}" "{app}" >NUL || (move "{old}" "{app}" >NUL & goto failed)
-if "{restart}"=="1" start "" "{app}\{exe}"
+if exist "%PPN_OLD%" rmdir /s /q "%PPN_OLD%"
+move "%PPN_APP%" "%PPN_OLD%" >NUL || goto failed
+move "%PPN_NEW%" "%PPN_APP%" >NUL || (move "%PPN_OLD%" "%PPN_APP%" >NUL & goto failed)
+if "%PPN_RESTART%"=="1" start "" "%PPN_APP%\%PPN_EXE%"
 exit /b 0
 :failed
-if "{restart}"=="1" if exist "{app}\{exe}" start "" "{app}\{exe}"
+if "%PPN_RESTART%"=="1" if exist "%PPN_APP%\%PPN_EXE%" start "" "%PPN_APP%\%PPN_EXE%"
 exit /b 1
 """
 
@@ -705,16 +707,19 @@ class Updater:
                 self._set("error", "The downloaded installer changed on disk; it was not run.")
                 raise UpdateError("the installer's SHA-256 changed since it was checked")
             arguments = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1"] + ([] if restart else ["/NOLAUNCH=1"])
-            self._launch([str(ready), *arguments])
+            self._launch([str(ready), *arguments], None)
         else:
             script = self.folder / "swap.cmd"
             old = self.app_dir.parent / f"{self.app_dir.name}.old"
-            script.write_text(SWAP_SCRIPT.format(pid=os.getpid(), old=old, app=self.app_dir, new=ready,
-                                                 restart="1" if restart else "0", exe=f"{APP}.exe"), encoding="ascii")
-            self._launch(["cmd.exe", "/c", str(script)])
+            script.write_text(SWAP_SCRIPT, encoding="ascii")
+            self._launch(["cmd.exe", "/c", str(script)],
+                         {"PPN_PID": str(os.getpid()), "PPN_OLD": str(old), "PPN_APP": str(self.app_dir),
+                          "PPN_NEW": str(ready), "PPN_RESTART": "1" if restart else "0", "PPN_EXE": f"{APP}.exe"})
 
-    def _spawn(self, command):
-        subprocess.Popen(command, close_fds=True, creationflags=DETACHED | NO_WINDOW, cwd=str(self.folder))
+    def _spawn(self, command, env):
+        """Start `command` on its own; `env` adds variables for it (the portable swap's folders), never read back."""
+        subprocess.Popen(command, close_fds=True, creationflags=DETACHED | NO_WINDOW, cwd=str(self.folder),
+                         env={**os.environ, **env} if env else None)
 
     def _in_updates(self):
         """The name of the updates folder's entry that holds what is ready, when it is in there (an installer, or a
