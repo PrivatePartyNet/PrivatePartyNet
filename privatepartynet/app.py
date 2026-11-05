@@ -28,7 +28,7 @@ from privatepartynet import APP_NAME, __version__
 from privatepartynet import backup, connect, gamenet
 from privatepartynet.gameclient import GameMesh, GameSession
 from privatepartynet.netlink import NetLink
-from privatepartynet.cert import ensure_certificate
+from privatepartynet.cert import ensure_certificate, pins_of_pem
 from privatepartynet.discovery import DEFAULT_PORT as DISCOVERY_PORT
 from privatepartynet.discovery import Discovery, clean_name
 from privatepartynet.dm import DmService, scope_for
@@ -630,10 +630,11 @@ class Controller:
             candidates = self._reach["candidates"]
         self._start_host_punch()
         secret = self._party.new_invite_secret()
-        return connect.encode_invite(self._name, self._party.passcode, candidates, connect.certificate_fingerprint(self._cert_pem),
+        whole, spki = pins_of_pem(self._cert_pem)
+        return connect.encode_invite(self._name, self._party.passcode, candidates, whole,
                                      server_id=self._settings.get("server_id") or "",
                                      host_sign=self._identity.sign_public.hex() if self._identity else "",
-                                     secret=secret, relays=self._party.invite_relays(bytes.fromhex(secret)))
+                                     secret=secret, relays=self._party.invite_relays(bytes.fromhex(secret)), spki=spki)
 
     def invite(self):
         """The invite code for this party: the name, the password, where to try and the certificate to check."""
@@ -706,12 +707,13 @@ class Controller:
         if self._store is None:
             return
         fingerprint = invite["fingerprint"] or joiner.seen_fingerprint
+        spki = invite.get("spki") or joiner.seen_spki
         key = invite["server_id"] or (fingerprint[:16] if fingerprint else "")
         if not key:
             return
         self._store.save_server("joined-" + key, {"name": invite["name"], "candidates": invite["candidates"],
                                                     "password": invite["password"], "fingerprint": fingerprint,
-                                                    "server_id": invite["server_id"], "joined": True,
+                                                    "spki": spki, "server_id": invite["server_id"], "joined": True,
                                                     "host_sign": invite.get("host_sign", ""),
                                                     "secret": invite.get("secret", "")})
         if joiner.tunnel is not None:
@@ -732,8 +734,9 @@ class Controller:
         if not record or not str(key).startswith("joined-"):
             return {"ok": False, "message": "That party is no longer in your list."}
         return self._begin_join({"name": record["name"], "password": record["password"], "candidates": record["candidates"],
-                                 "fingerprint": record.get("fingerprint", ""), "server_id": record.get("server_id", ""),
-                                 "host_sign": record.get("host_sign", ""), "secret": record.get("secret", "")})
+                                 "fingerprint": record.get("fingerprint", ""), "spki": record.get("spki", ""),
+                                 "server_id": record.get("server_id", ""), "host_sign": record.get("host_sign", ""),
+                                 "secret": record.get("secret", "")})
 
     def forget_joined(self, key):
         if self._store is not None and str(key).startswith("joined-"):
@@ -813,7 +816,7 @@ class Controller:
             server_key = self._party.server_id
         else:
             record = self._store.server(key) if self._store is not None and key.startswith("joined-") else None
-            if not record or not record.get("fingerprint"):
+            if not record or not (record.get("fingerprint") or record.get("spki")):
                 return {"ok": False, "message": "That server is not in your list."}
             tunnel = self._tunnels.get(key)
             ordered = [["punch", "127.0.0.1", tunnel.port]] if tunnel is not None else connect._order(record.get("candidates") or [])
@@ -866,8 +869,8 @@ class Controller:
                 self._use_relay(paths, relay, host_sign)
                 game["mesh"].apply(roster)
 
-            link = NetLink(address, port, record["fingerprint"], self._identity, public, on_roster,
-                           candidates=paths.local_candidates(), host_sign=host_sign,
+            link = NetLink(address, port, (record.get("fingerprint", ""), record.get("spki", "")), self._identity,
+                           public, on_roster, candidates=paths.local_candidates(), host_sign=host_sign,
                            server_id=record.get("server_id", ""))
             game["link"] = link
             paths.set_on_candidates(link.set_candidates)
@@ -1149,7 +1152,7 @@ class Controller:
         if party.invite_secrets():
             self._start_host_punch()
         if self._discovery is not None:
-            self._discovery.set_sharing(port, "party", party.fingerprint)
+            self._discovery.set_sharing(port, "party", party.fingerprint, party.spki)
         log.info("Party started on port %s", port)
         self.open_room()
         return {"ok": True, "message": "Party is open."}
@@ -1289,9 +1292,10 @@ class Controller:
         peer = next((p for p in self._discovery.peer_list() if p["id"] == peer_id), None)
         if peer is None:
             return {"ok": False, "message": "That PC is no longer in the list."}
-        if peer.get("sharing") and peer.get("port") and peer.get("fp"):
+        if peer.get("sharing") and peer.get("port") and (peer.get("fp") or peer.get("spki")):
             invite = {"name": peer["name"], "password": "", "candidates": [["lan", peer["address"], peer["port"]]],
-                      "fingerprint": peer["fp"], "server_id": "", "host_sign": peer.get("sign") or ""}
+                      "fingerprint": peer.get("fp") or "", "spki": peer.get("spki") or "", "server_id": "",
+                      "host_sign": peer.get("sign") or ""}
             result = self._begin_join(invite)
             if result["ok"]:
                 result["message"] = "Asked. Waiting for the other person to say yes."

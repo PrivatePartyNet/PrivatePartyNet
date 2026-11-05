@@ -436,6 +436,23 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         self.assertTrue(invite["candidates"])
         self.assertEqual(invite["fingerprint"], connect.certificate_fingerprint(self.host._cert_pem))
 
+    def test_an_invite_carries_both_pins_and_a_remembered_party_keeps_the_key_pin(self):
+        from privatepartynet import connect
+        from privatepartynet.cert import pins_of_pem
+
+        whole, spki = pins_of_pem(self.host._cert_pem)
+        invite = connect.decode_invite(self.host.invite()["invite"])
+        self.assertEqual((invite["fingerprint"], invite["spki"]), (whole, spki), "f stays what 3.0/3.1 check")
+        code = connect.encode_invite(invite["name"], invite["password"], [["lan", "127.0.0.1", self.host._party.port]],
+                                     whole, invite["server_id"], invite["host_sign"], spki=spki)
+        self.guest.join_invite(code)
+        self.wait_state(self.guest, "waiting")
+        (request,) = self.host._party.pending_requests()
+        self.host._party.decide_request(self.host._party.host_id, request["id"], True)
+        self.wait_state(self.guest, "joined")
+        record = self.guest._store.server("joined-" + invite["server_id"])
+        self.assertEqual((record["fingerprint"], record["spki"]), (whole, spki))
+
     def test_there_is_no_invite_when_no_party_is_open(self):
         self.assertFalse(self.guest.invite()["ok"])
 

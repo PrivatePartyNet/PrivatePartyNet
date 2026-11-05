@@ -254,11 +254,15 @@ def relay_hosts(relay):
 
 
 def certificate_fingerprint_file(certfile):
-    import ssl as _ssl
+    return certificate_pins_file(certfile)[0]
+
+
+def certificate_pins_file(certfile):
+    """(whole-certificate SHA-256, public-key SHA-256) of the first certificate in `certfile`."""
+    from privatepartynet.cert import pins_of_pem
 
     text = Path(certfile).read_text(encoding="utf-8")
-    first = text[:text.index("-----END CERTIFICATE-----") + len("-----END CERTIFICATE-----")]
-    return hashlib.sha256(_ssl.PEM_cert_to_DER_cert(first)).hexdigest()
+    return pins_of_pem(text[:text.index("-----END CERTIFICATE-----") + len("-----END CERTIFICATE-----")])
 
 
 def default_channels():
@@ -317,7 +321,8 @@ class Party:
         # The password belongs to the server and is kept with it, so an invite and a remembered server keep working
         # after the host restarts. `passcode` is only the password a brand-new server starts with.
         self.passcode = record.get("password") or passcode
-        self.fingerprint = certificate_fingerprint_file(certfile)
+        self.fingerprint = certificate_fingerprint_file(certfile)  # the whole certificate's SHA-256, as 3.0/3.1 pin it
+        self.spki = certificate_pins_file(certfile)[1]  # its public key's, which a renewal keeps (cert.py)
         self._challenges = {}  # nonce -> expires at
         self._net_subnet = record.get("net")  # this server's game network, chosen once and kept
         self._net_vips = dict(record.get("vips") or {})

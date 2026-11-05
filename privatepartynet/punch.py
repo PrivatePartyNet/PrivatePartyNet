@@ -271,7 +271,8 @@ class TunnelHost:
 
 
 class TunnelClient:
-    """QUIC from one punched socket to the host, pinned to the host certificate's fingerprint. Connections to the
+    """QUIC from one punched socket to the host, pinned to the host certificate (a pin or a list of pins: the whole
+    certificate's SHA-256 or its public key's, cert.matches). Connections to the
     loopback port `port` are carried to the party, one QUIC stream each."""
 
     def __init__(self, sock, remote, fingerprint, connect_seconds=CONNECT_SECONDS, bridge=None):
@@ -312,8 +313,9 @@ class TunnelClient:
             certificate = connection.tls._peer_certificate
             from cryptography.hazmat.primitives.serialization import Encoding
 
-            seen = hashlib.sha256(certificate.public_bytes(Encoding.DER)).hexdigest() if certificate else ""
-            if seen != fingerprint:
+            from privatepartynet.cert import matches
+
+            if not matches(fingerprint, certificate.public_bytes(Encoding.DER) if certificate else b""):
                 protocol.close()
                 raise PunchError("the host at that address is not the one this invite is for (its certificate differs)")
 

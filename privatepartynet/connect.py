@@ -33,6 +33,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import zlib
 
+from privatepartynet.cert import pins_of_der
 from privatepartynet.netinfo import LOOPBACK, lan_addresses
 from privatepartynet.server import ask_message
 
@@ -419,11 +420,14 @@ def certificate_fingerprint(pem_text):
     return hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem_text)).hexdigest()
 
 
-def encode_invite(name, password, candidates, fingerprint, server_id="", host_sign="", secret="", relays=()):
+def encode_invite(name, password, candidates, fingerprint, server_id="", host_sign="", secret="", relays=(), spki=""):
     """`secret` (hex) lets the joiner find the host through the DHT when no address answers (punch.py). `relays`
-    (Party.invite_relays) are where the two can meet when no direct way works at all."""
+    (Party.invite_relays) are where the two can meet when no direct way works at all. `fingerprint` is the whole
+    certificate's SHA-256, which 3.0/3.1 check; `spki`, its public key's, which outlasts a renewal (cert.py)."""
     data = {"v": 1, "n": str(name)[:40], "p": str(password), "c": [list(c) for c in candidates][:MAX_CANDIDATES],
             "f": fingerprint, "s": server_id, "k": host_sign, "r": secret}
+    if spki:
+        data["g"] = spki
     if relays:
         data["y"] = [list(r) for r in relays][:MAX_RELAYS]
     packed = zlib.compress(json.dumps(data, separators=(",", ":")).encode("utf-8"), 9)
@@ -461,8 +465,9 @@ def decode_invite(code):
         raise ConnectError("That invite does not carry the host's certificate, so it cannot be checked.")
     secret = data.get("r") if isinstance(data.get("r"), str) and re.fullmatch(r"[0-9a-f]{32}", data.get("r") or "") else ""
     host_sign = data.get("k") if isinstance(data.get("k"), str) and re.fullmatch(r"[0-9a-f]{64}", data.get("k") or "") else ""
+    spki = data.get("g") if isinstance(data.get("g"), str) and re.fullmatch(r"[0-9a-f]{64}", data.get("g") or "") else ""
     return {"name": str(data.get("n") or "Party")[:40], "password": str(data.get("p") or ""), "candidates": candidates,
-            "fingerprint": fingerprint, "server_id": str(data.get("s") or "")[:40], "host_sign": host_sign,
+            "fingerprint": fingerprint, "spki": spki, "server_id": str(data.get("s") or "")[:40], "host_sign": host_sign,
             "secret": secret, "relays": _read_relays(data.get("y"))}
 
 
@@ -507,18 +512,26 @@ def _order(candidates, my_lan=None):
 
 
 def _connect(address, port, fingerprint, timeout):
-    """An HTTPS connection to the host whose certificate matches the pinned fingerprint, or ConnectError."""
+    """An HTTPS connection to the host whose certificate matches the pin, or ConnectError. `fingerprint` is a pin or a
+    list of pins, each the whole certificate's SHA-256 or its public key's (cert.py); with none, any certificate does
+    and what was seen is noted (seen_fingerprint, seen_spki)."""
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE  # replaced by the fingerprint check just below
     connection = http.client.HTTPSConnection(address, port, timeout=timeout, context=context)
     connection.connect()
     der = connection.sock.getpeercert(binary_form=True)
-    seen = hashlib.sha256(der).hexdigest() if der else ""
-    if fingerprint and seen != fingerprint:
+    try:
+        seen, seen_spki = pins_of_der(der) if der else ("", "")
+    except ValueError:
+        seen, seen_spki = hashlib.sha256(der).hexdigest(), ""
+    pins = {fingerprint} if isinstance(fingerprint, str) else set(fingerprint or ())
+    pins.discard("")
+    if pins and not pins & {seen, seen_spki}:
         connection.close()
         raise ConnectError("The party at that address is not the one this invite is for (its certificate differs).")
-    connection.seen_fingerprint = seen  # with no fingerprint to check against, the first one seen is what gets remembered
+    # With no pin to check against, the first certificate seen is what gets remembered.
+    connection.seen_fingerprint, connection.seen_spki = seen, seen_spki
     return connection
 
 
@@ -544,12 +557,16 @@ class Joiner:
         self._poll = poll
         self._timeout = timeout
         self._cancel = threading.Event()
-        self.seen_fingerprint = ""
+        self.seen_fingerprint = self.seen_spki = ""
         self.tunnel = None  # the punch-through tunnel, when that is how the party was reached (kept open by the app)
         self.status = {"state": "trying", "message": "Looking for the party...", "url": ""}
 
     def cancel(self):
         self._cancel.set()
+
+    def _pins(self):
+        """What the host's certificate is checked against: the invite's whole-certificate and key pins."""
+        return self.invite.get("fingerprint") or "", self.invite.get("spki") or ""
 
     def _set(self, state, message, url=""):
         self.status = {"state": state, "message": message, "url": url}
@@ -590,7 +607,7 @@ class Joiner:
         invite = self.invite
         relays = invite.get("relays") or []
         findable = invite.get("host_sign") and invite.get("server_id")
-        if not (invite.get("secret") and invite["fingerprint"] and (findable or relays)):
+        if not (invite.get("secret") and any(self._pins()) and (findable or relays)):
             return False
         if self._cancel.is_set():
             return False
@@ -601,7 +618,7 @@ class Joiner:
                             "No address answered; trying a direct connection through both routers (this takes up to a minute)...")
         try:
             tunnel = punch.join_through(invite.get("host_sign", ""), invite.get("server_id", ""),
-                                        bytes.fromhex(invite["secret"]), invite["fingerprint"], relays=relays,
+                                        bytes.fromhex(invite["secret"]), self._pins(), relays=relays,
                                         ipv6=global_ipv6_addresses)
         except Exception as exc:
             why = "; ".join(sorted(set(tried))[:2])
@@ -628,31 +645,34 @@ class Joiner:
         return True
 
     def _ask(self, address, port):
-        fingerprint = self.invite["fingerprint"]
+        pins = self._pins()
         body = {"name": self.name, "password": self.invite["password"]}
         if self.identity is not None:
-            connection = _connect(address, port, fingerprint, self._timeout)
+            connection = _connect(address, port, pins, self._timeout)
             try:
                 connection.request("GET", "/ask?challenge=1")
                 response = connection.getresponse()
                 challenge = json.loads(response.read())
-                seen = connection.seen_fingerprint
+                seen, seen_spki = connection.seen_fingerprint, connection.seen_spki
             finally:
                 connection.close()
             if response.status != 200 or not isinstance(challenge.get("nonce"), str):
                 raise ConnectError("The party did not answer the sign-in step.")
-            if not fingerprint:
+            if not any(pins):
                 # Joining by address: the first certificate seen is the one trusted from now on, for every later
                 # connection of this attempt and for the remembered server.
-                fingerprint = self.invite["fingerprint"] = seen
+                self.invite["fingerprint"], self.invite["spki"] = seen, seen_spki
+                pins = self._pins()
             # Sign what this side checked itself: the certificate it saw, not anything the server said about itself.
             message = ask_message(seen, challenge["nonce"], self._clean_name())
             body.update(card=self.identity.card(self.name), nonce=challenge["nonce"],
                         sig=self.identity.sign(message).hex())
-        connection = _connect(address, port, fingerprint, self._timeout)
-        self.seen_fingerprint = connection.seen_fingerprint
-        if not self.invite["fingerprint"]:
+        connection = _connect(address, port, pins, self._timeout)
+        self.seen_fingerprint, self.seen_spki = connection.seen_fingerprint, connection.seen_spki
+        if not self.invite.get("fingerprint"):
             self.invite["fingerprint"] = self.seen_fingerprint
+        if not self.invite.get("spki"):  # this connection passed the check (or is the first seen): its key is the host's
+            self.invite["spki"] = self.seen_spki
         try:
             connection.request("POST", "/ask", body=json.dumps(body), headers={"Content-Type": "application/json"})
             response = connection.getresponse()
@@ -681,7 +701,7 @@ class Joiner:
         deadline = time.monotonic() + self._answer_wait
         while time.monotonic() < deadline and not self._cancel.is_set():
             try:
-                connection = _connect(address, port, self.invite["fingerprint"], self._timeout)
+                connection = _connect(address, port, self._pins(), self._timeout)
                 try:
                     connection.request("GET", "/ask?ticket=" + urllib.parse.quote(ticket))
                     answer = json.loads(connection.getresponse().read())
