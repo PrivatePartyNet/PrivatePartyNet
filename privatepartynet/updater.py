@@ -555,9 +555,12 @@ class Updater:
             before = dict(self.view_state)
             self._set("checking", "Checking for updates...")
         now = self._clock()
-        if not manual and now < self._memory.get("backoff_until", 0):
+        until = self._memory.get("backoff_until", 0)
+        if now < until:  # GitHub asked to wait: neither the schedule nor the button asks again before then
             with self._lock:
                 self.view_state = before
+            if manual:
+                self._set("error", f"GitHub asked us to wait; try again after {_clock_time(until, now)}.")
             return self.view()
         try:
             found = self._find()
@@ -944,6 +947,13 @@ class Updater:
         if view["state"] == "available" and self.dismissed == view.get("version"):
             view["state"] = "dismissed"
         return view
+
+
+def _clock_time(when, now):
+    """`when` (seconds since 1970) as this PC's HH:MM, with " tomorrow" when that is not today."""
+    moment, today = time.localtime(when), time.localtime(now)
+    later = (moment.tm_year, moment.tm_yday) != (today.tm_year, today.tm_yday)
+    return time.strftime("%H:%M", moment) + (" tomorrow" if later else "")
 
 
 def _slim(release):

@@ -595,6 +595,13 @@ class FlowTests(unittest.TestCase):
         calls = len(self.github.calls)
         up.check(manual=False)  # an automatic check waits out the back-off
         self.assertEqual(len(self.github.calls), calls)
+        until = up._memory["backoff_until"]
+        for _ in range(3):  # and so does the button, however often it is pressed
+            view = up.check(manual=True)
+        self.assertEqual(len(self.github.calls), calls, "GitHub is not asked again")
+        self.assertEqual(up._memory["backoff_until"], until, "the back-off does not grow")
+        self.assertEqual(view["state"], "error")
+        self.assertRegex(view["message"], r"^GitHub asked us to wait; try again after \d\d:\d\d( tomorrow)?\.$")
 
     def test_a_malformed_answer_from_github_is_an_error_not_a_crash(self):
         self.github.publish("3.2.1", {"installer": b"x" * 10})
