@@ -53,9 +53,23 @@ class LinkMeterTests(unittest.TestCase):
             self.assertEqual(meter.state, "ok" if n == 2 else "reconnecting")
         self.assertEqual(meter.since, 16.1)
 
+    def test_answers_that_come_late_still_show_the_member_is_there(self):
+        """A link with seconds of queueing (bufferbloat): every answer comes 5 s after its ping, later than counts."""
+        meter, sent = LinkMeter(0.0, 0.0), []
+        for t in range(0, 60):
+            if t % 2 == 0:
+                sent.append((meter.ping(float(t)), float(t)))
+            while sent and sent[0][1] + 5 <= t:
+                meter.pong(sent.pop(0)[0], float(t))
+            meter.update(float(t), float(t))
+            self.assertNotEqual(meter.state, "reconnecting", f"at {t} s")
+        self.assertEqual(meter.public()["rtt"], 5000)
+        self.assertEqual(meter.loss, 0.0, "once the round trip is known, an answer within 3 of them is not lost")
+
     def test_the_path_is_named_from_the_address_the_host_sees(self):
         self.assertEqual(path_of("192.168.0.12"), "direct-lan")
-        self.assertEqual(path_of("26.10.20.30"), "direct-lan", "a VPN both PCs are on")
+        self.assertEqual(path_of("26.10.20.30"), "vpn", "a VPN both PCs are on (Radmin VPN)")
+        self.assertEqual(path_of("100.101.102.103"), "vpn", "Tailscale")
         self.assertEqual(path_of("2a00:1450:4001::5"), "direct-ipv6")
         self.assertEqual(path_of("1.2.3.4"), "direct")
         self.assertEqual(path_of("127.1.4.9"), "punched")
@@ -76,7 +90,7 @@ class Base(ServerTestCase):
     def joined(self, party, name="Alex", identity=None):
         """A member who joined with an identity, as through the app: (member id, session, identity, resume token)."""
         identity = identity or Identity.create()
-        token = party.join_token(name, user=identity.user_id)
+        token = party.join_token(name, user=identity.user_id, caps=["link"])  # a 3.3 app says it can keep its link
         resume = party._join_resume[token]  # what GET /ask?ticket= hands the app with the allowed answer
         session = party.redeem(token)
         return party.member_for(session), session, identity, resume
@@ -200,7 +214,7 @@ class ResumeTests(Base):
         self.joined(party, identity=identity)  # known now: the next ask comes straight in
         nonce = party.challenge()
         ticket = party.ask("Alex", "", "203.0.113.5", identity.card("Alex"), nonce,
-                           identity.sign(ask_message(party.fingerprint, nonce, "Alex")).hex())
+                           identity.sign(ask_message(party.fingerprint, nonce, "Alex")).hex(), caps=["link"])
         answer = party.answer(ticket)
         self.assertEqual(answer["state"], "allowed")
         self.assertTrue(answer["resume"])
@@ -237,6 +251,32 @@ class CatchUpTests(Base):
                              headers={"Cookie": f"privatepartynet_member={session}"})
         caught = read_until(response, "history", lambda e: e["channel"] == "general")
         self.assertNotIn("since", caught, "too much was missed to add on: the page replaces what it has")
+
+
+class HousekeepingTests(Base):
+    def test_resume_tokens_of_joins_never_used_are_forgotten(self):
+        from unittest import mock
+
+        from privatepartynet import server
+
+        party = self.party()
+        with mock.patch.object(server, "JOIN_SECONDS", -1):
+            token = party.join_token("Alex", user=Identity.create().user_id, caps=["link"])
+        self.assertIn(token, party._join_resume)
+        party.pulse()
+        self.assertNotIn(token, party._join_resume)
+        self.assertNotIn(token, party._join_caps)
+
+    def test_a_tunnels_way_is_forgotten_when_it_closes(self):
+        from privatepartynet import punch
+
+        host = punch.TunnelHost.__new__(punch.TunnelHost)
+        host.sources = {"127.1.9.9"}
+        host._loop = type("Loop", (), {"stop": lambda self, closing=(): None})()
+        host.server = host.transport = None
+        linkstate.TUNNEL_WAYS["127.1.9.9"] = "relay"
+        host.close()
+        self.assertNotIn("127.1.9.9", linkstate.TUNNEL_WAYS)
 
 
 class GameNetworkGraceTests(Base):

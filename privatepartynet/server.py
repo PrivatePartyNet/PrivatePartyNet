@@ -31,8 +31,6 @@ from privatepartynet.frames import clamp_fps, clamp_height
 from privatepartynet import gamenet
 from privatepartynet.hangups import HangupsLogged, describe, is_hangup
 from privatepartynet import linkstate
-
-log = logging.getLogger("privatepartynet.server")
 from privatepartynet import relayproto
 from privatepartynet.identity import user_id_of, verify
 from privatepartynet.paths import web_dir
@@ -43,6 +41,7 @@ STATIC_TYPES = {
     "layout.js": "application/javascript; charset=utf-8",
     "netstats.js": "application/javascript; charset=utf-8",
     "capturesize.js": "application/javascript; charset=utf-8",
+    "link.js": "application/javascript; charset=utf-8",
     "room.js": "application/javascript; charset=utf-8",
     "chat.js": "application/javascript; charset=utf-8",
     "voice.js": "application/javascript; charset=utf-8",
@@ -198,6 +197,18 @@ def net_message(fingerprint, nonce, key):
     return f"PrivatePartyNet net|{fingerprint}|{nonce}|{key}".encode("utf-8")
 
 
+log = logging.getLogger("privatepartynet.server")
+
+# What a joining app can do, as it says in POST /ask ("caps"). "link": it keeps its party window's link through a
+# dropout and resumes with a signed token (3.3 on). A member whose app does not say so gets 3.2's behaviour: no
+# heartbeat, no grace, no resume, offline the moment their connection closes.
+CAPS = frozenset({"link"})
+
+
+def clean_caps(caps):
+    return frozenset(c for c in (caps if isinstance(caps, (list, tuple, set, frozenset)) else ()) if c in CAPS)
+
+
 def resume_message(fingerprint, nonce, token):
     """What a member signs to come back after a dropout (POST /resume), bound to this host's certificate."""
     return f"PrivatePartyNet resume|{fingerprint}|{nonce}|{token}".encode("utf-8")
@@ -315,6 +326,7 @@ class Party:
         self._clock = clock or (time.monotonic, time.time)
         self._resume = {}  # resume token -> member id: a member coming back after a dropout, without a new approval
         self._join_resume = {}  # join token -> the resume token its member will get
+        self._join_caps = {}  # join token -> what the joining app can do (CAPS)
         self._net_graced = {}  # member id -> (user, key): a game network link that dropped; they stay on the list
         self.trust_local = trust_local  # people on this network ask without the password (they still wait for a yes)
         # Addresses that look local but must not be trusted as such: the router, because some routers hand on
@@ -456,7 +468,7 @@ class Party:
 
     # --- members and sessions -------------------------------------------------------------------------------
 
-    def join_token(self, name, role="member", parent=None, user=None):
+    def join_token(self, name, role="member", parent=None, user=None, caps=()):
         """A single-use join token for one person, valid for JOIN_SECONDS. The host's approval hands it to the
         joiner's app, which opens the party window with it. A browser cannot get one. A viewer token makes a
         pop-out window, which receives one screen and never shares its own, and closes with the member that opened it.
@@ -464,7 +476,10 @@ class Party:
         token = secrets.token_urlsafe(24)
         with self._lock:
             self._joins[token] = (clean_name(name or "Guest"), time.monotonic() + JOIN_SECONDS, role, parent, user)
-            if user is not None and role != "viewer":
+            caps = clean_caps(caps)
+            if caps:
+                self._join_caps[token] = caps
+            if user is not None and role != "viewer" and "link" in caps:
                 # Handed to the joiner's app with the answer (GET /ask?ticket=), never to the page: with it, and a
                 # signature by the same identity, the member comes back after a dropout without a new approval.
                 self._join_resume[token] = secrets.token_urlsafe(32)
@@ -503,6 +518,7 @@ class Party:
         with self._lock:
             entry = self._joins.pop(token, None)
             resume = self._join_resume.pop(token, None)
+            caps = self._join_caps.pop(token, frozenset())
             if entry is None or time.monotonic() > entry[1]:
                 return None
             name, _, role, parent, user = entry
@@ -524,7 +540,9 @@ class Party:
             self._members[member_id] = {
                 "id": member_id, "name": name, "role": role, "parent": parent, "user": user, "voice": None,
                 "online": False, "shares": {}, "queue": None, "resume": resume, "suspended": False, "leaving": False,
-                "meter": linkstate.LinkMeter(now, wall, *self.link_seconds),
+                "caps": caps,
+                # a heartbeat only for a member whose app keeps its link through a dropout; the others get 3.2's ways
+                "meter": linkstate.LinkMeter(now, wall, *self.link_seconds) if "link" in caps else None,
             }
             if resume:
                 self._resume[resume] = member_id
@@ -575,7 +593,7 @@ class Party:
                 member["meter"].connected(self._clock[0]())
             listener.put({"type": "hello", "you": self._public(member), "party": self.party_name, "host": self._host_id,
                           "theme": self.theme, "server": self.server_id, "channels": self._channels_public(),
-                          "stun": self.remote, "turn": self._turn_locked(member)})
+                          "stun": self.remote, "turn": self._turn_locked(member), "grace": self.reconnect_grace})
             for channel in self._channels:
                 if channel["kind"] == "text":
                     listener.put(self._history_since_locked(channel["id"], (since or {}).get(channel["id"])))
@@ -596,8 +614,8 @@ class Party:
             if member["role"] == "viewer":
                 self._remove_locked(member_id, notice=None)
                 return
-            if member["role"] == "host" or member.get("leaving") or self.reconnect_grace <= 0:
-                self._offline_locked(member)
+            if member["role"] == "host" or member.get("leaving") or self.reconnect_grace <= 0 or member.get("meter") is None:
+                self._offline_locked(member)  # (an app without the link: as in 3.2, offline at once)
                 return
             log.info("%s's party connection dropped; keeping their place for up to %.0f seconds", member["name"],
                      self.reconnect_grace)
@@ -624,18 +642,18 @@ class Party:
 
     def _history_since_locked(self, channel_id, since):
         """The history message for one text channel: all of it, or with `since` only what came after that seq."""
-        log = list(self._log.get(channel_id, ()))
+        kept = list(self._log.get(channel_id, ()))
         if since is None:
-            return {"type": "history", "channel": channel_id, "messages": log}
+            return {"type": "history", "channel": channel_id, "messages": kept}
         try:
             since = int(since)
         except (TypeError, ValueError):
-            return {"type": "history", "channel": channel_id, "messages": log}
-        oldest = log[0].get("seq", 0) if log else self._seq.get(channel_id, 0) + 1
+            return {"type": "history", "channel": channel_id, "messages": kept}
+        oldest = kept[0].get("seq", 0) if kept else self._seq.get(channel_id, 0) + 1
         if since + 1 < oldest:
-            return {"type": "history", "channel": channel_id, "messages": log}  # more was missed than is kept: all
+            return {"type": "history", "channel": channel_id, "messages": kept}  # more was missed than is kept: all
         return {"type": "history", "channel": channel_id, "since": since,
-                "messages": [m for m in log if m.get("seq", 0) > since]}
+                "messages": [m for m in kept if m.get("seq", 0) > since]}
 
     def pong(self, member_id, ping_id, address=None):
         """A member's page answered a ping. Returns that member's link as everyone sees it, or None."""
@@ -720,6 +738,12 @@ class Party:
         sends everyone the links of all members ({"type": "links"}), so the round trips stay fresh between rosters."""
         now, wall = self._clock[0](), self._clock[1]()
         with self._lock:
+            stale = time.monotonic()
+            for token in [t for t, entry in self._joins.items() if entry[1] < stale]:
+                del self._joins[token]
+            for spare in (self._join_resume, self._join_caps):
+                for token in [t for t in spare if t not in self._joins]:
+                    del spare[token]
             changed = False
             for member in list(self._members.values()):
                 meter = member.get("meter")
@@ -835,7 +859,7 @@ class Party:
 
     # --- who may come in -------------------------------------------------------------------------------------
 
-    def request_join(self, name, user=None, address=""):
+    def request_join(self, name, user=None, address="", caps=()):
         """Someone outside is asking to join. The owner and every admin online see the request and one of them decides.
         Returns the request id (for the people deciding) and a ticket (the asker's own handle) as (id, ticket)."""
         request_id, ticket = secrets.token_hex(6), secrets.token_urlsafe(16)
@@ -847,7 +871,8 @@ class Party:
             if len(self._requests) >= MAX_REQUESTS or sum(1 for r in self._requests.values() if r["address"] == address and address) >= MAX_REQUESTS_PER_ADDRESS:
                 raise Full("too many people are waiting to be let in; try again in a minute")
             self._requests[request_id] = {"id": request_id, "ticket": ticket, "name": clean_name(name or "Guest"),
-                                          "user": user, "address": address, "until": time.monotonic() + REQUEST_SECONDS}
+                                          "user": user, "address": address, "until": time.monotonic() + REQUEST_SECONDS,
+                                          "caps": clean_caps(caps)}
             self._notify_staff_locked({"type": "join_request", **self._requests_public_locked()[-1]})
         return request_id, ticket
 
@@ -934,7 +959,7 @@ class Party:
             if len(self._fails) > 4096:  # a flood from many addresses must not grow this without end
                 self._fails.pop(next(iter(self._fails)))
 
-    def ask(self, name, password, address="", card=None, nonce=None, signature=None):
+    def ask(self, name, password, address="", card=None, nonce=None, signature=None, caps=()):
         """The front door for someone who is not in the party yet. Returns the ticket they ask about.
 
         * Someone the server has let in before, who proves it is them (their card and a signature over a fresh
@@ -955,7 +980,7 @@ class Party:
             returning = user is not None and user in self._known
         if returning:
             ticket = secrets.token_urlsafe(16)
-            token = self.join_token(name, user=user)
+            token = self.join_token(name, user=user, caps=caps)
             with self._lock:
                 self._answers[ticket] = self._allowed_locked(token, time.monotonic() + JOIN_SECONDS)
             return ticket
@@ -965,7 +990,7 @@ class Party:
             self._failed(address)
             time.sleep(self.failed_login_delay)
             raise Forbidden("That password is not right.")
-        return self.request_join(name, user, address)[1]
+        return self.request_join(name, user, address, caps=caps)[1]
 
     def answer(self, ticket):
         """Where a request stands, for the person who asked: {"state": "pending"} while it waits, {"state": "denied"},
@@ -993,7 +1018,7 @@ class Party:
             if not allow:
                 self._answers[request["ticket"]] = {"state": "denied", "until": time.monotonic() + REQUEST_SECONDS}
                 return None
-            token = self.join_token(request["name"], user=request["user"])
+            token = self.join_token(request["name"], user=request["user"], caps=request.get("caps", ()))
             self._answers[request["ticket"]] = self._allowed_locked(token, time.monotonic() + JOIN_SECONDS)
             return token
 
@@ -1262,7 +1287,8 @@ class Party:
             if link is None or link[0] is not stop:
                 return
             member = self._members.get(member_id)
-            if member is None or member.get("leaving") or not member["online"] or self.reconnect_grace <= 0:
+            if member is None or member.get("leaving") or not member["online"] or self.reconnect_grace <= 0 or \
+                    member.get("meter") is None:
                 self._end_net_locked(member_id)
                 return
             self._net_links.pop(member_id)
@@ -1546,8 +1572,10 @@ class Party:
 
     def _link_public(self, member):
         meter = member.get("meter")
-        if meter is None:  # the host: on this PC
+        if member["role"] == "host":  # on this PC
             return {"state": "ok", "rtt": 0, "loss": 0.0, "since": int(self._started)}
+        if meter is None:  # an app before 3.3 (or a Nearby accept): no heartbeat, so nothing is known but the connection
+            return {"state": "ok", "rtt": None, "loss": None, "since": int(self._started)}
         return meter.public()
 
     def _end_net_locked(self, member_id):
@@ -1555,14 +1583,10 @@ class Party:
         link = self._net_links.pop(member_id, None)
         graced = self._net_graced.pop(member_id, None)
         if link is not None:
-            stop, user, key = link
-            stop.set()
-        elif graced is not None:
-            user, key = graced
-        else:
-            return
-        if self._net is not None:
-            self._net.leave(user, key)
+            link[0].set()
+        for entry in (graced, link[1:] if link is not None else None):
+            if entry is not None and self._net is not None:
+                self._net.leave(*entry)  # with the key: only if it is still the one on the list
 
     def _remove_locked(self, member_id, notice):
         self._end_net_locked(member_id)
@@ -1957,7 +1981,7 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
         except ValueError:
             way = f"from {source}"
         if self._attempt(lambda: self.server.party.ask(body["name"], body.get("password") or "", source,
-                                                       card, body.get("nonce"), body.get("sig"))):
+                                                       card, body.get("nonce"), body.get("sig"), body.get("caps"))):
             self._send(200, JSON_TYPE, json.dumps({"ticket": self._result}).encode("utf-8"))
             logging.getLogger("privatepartynet.server").info("A request to join %s (%s): taken; the owner or an admin "
                                                              "is asked, or a returning member comes in", way,

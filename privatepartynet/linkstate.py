@@ -22,7 +22,7 @@ RECONNECTING_SECONDS = 10.0
 GOOD_BEATS = 3
 LOSS_WINDOW = 30.0
 RECONNECT_GRACE = 120.0
-PATHS = ("direct-lan", "direct-ipv6", "direct", "punched", "relay", "friend")
+PATHS = ("direct-lan", "vpn", "direct-ipv6", "direct", "punched", "relay", "friend")
 TUNNEL_WAYS = {}  # a tunnelled member's source address on the host (127.1.x.y) -> "punched" or "relay" (punch.py)
 
 
@@ -41,6 +41,7 @@ class LinkMeter:
         self.path = None
         self._next = 0
         self._sent = {}  # ping id -> sent at
+        self._late = {}  # ping id -> sent at, for pings counted as lost whose answer may still come
         self._results = deque()  # (sent at, answered) for pings old enough to count
 
     def ping(self, now):
@@ -53,12 +54,18 @@ class LinkMeter:
     def pong(self, ping_id, now):
         """The member answered ping `ping_id`. False for an id never sent, or answered already."""
         try:
-            sent = self._sent.pop(int(ping_id))
-        except (KeyError, TypeError, ValueError):
+            ping_id = int(ping_id)
+        except (TypeError, ValueError):
+            return False
+        late = ping_id not in self._sent
+        sent = self._late.pop(ping_id, None) if late else self._sent.pop(ping_id)
+        if sent is None:
             return False
         sample = max(0.0, now - sent)
         self.rtt = sample if self.rtt is None else self.rtt * 0.75 + sample * 0.25
-        self._results.append((sent, True))
+        if not late:
+            self._results.append((sent, True))
+        # A late answer (a link with seconds of queueing) still shows the member is there; it stays lost for the loss.
         self.heard = now
         self.streak += 1
         return True
@@ -74,6 +81,9 @@ class LinkMeter:
             if now - sent > late:
                 del self._sent[ping_id]
                 self._results.append((sent, False))
+                self._late[ping_id] = sent
+        for ping_id in [p for p, sent in self._late.items() if now - sent > self.window]:
+            del self._late[ping_id]
         while self._results and now - self._results[0][0] > self.window:
             self._results.popleft()
 
@@ -128,7 +138,9 @@ def path_of(address, tunnel_ways=None):
         return None  # the host's own window
     if ip.version == 6:
         return "direct-lan" if ip.is_private or ip.is_link_local else "direct-ipv6"
-    if ip.is_private or ip in ipaddress.ip_network("100.64.0.0/10") or ip in ipaddress.ip_network("26.0.0.0/8") \
+    if ip in ipaddress.ip_network("100.64.0.0/10") or ip in ipaddress.ip_network("26.0.0.0/8") \
             or ip in ipaddress.ip_network("25.0.0.0/8"):
-        return "direct-lan"  # this network, or a VPN both PCs are on (Radmin VPN, Hamachi, Tailscale)
+        return "vpn"  # a VPN both PCs are on (Tailscale, Radmin VPN, Hamachi)
+    if ip.is_private:
+        return "direct-lan"
     return "direct"
