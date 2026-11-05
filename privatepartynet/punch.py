@@ -340,6 +340,9 @@ class TunnelHost:
         if remote[:2] not in self.peers:
             way = "IPv6" if ":" in str(remote[0]) else "a relay" if str(remote[0]).startswith("127.") else "IPv4"
             log.info("A joiner's tunnel to the party opened, over %s, from %s port %s", way, remote[0], remote[1])
+            from privatepartynet import linkstate
+
+            linkstate.TUNNEL_WAYS[tunnel_source(remote[:2])] = "relay" if way == "a relay" else "punched"
         self.peers.add(remote[:2])
         try:
             party_reader, party_writer = await asyncio.wait_for(asyncio.open_connection(

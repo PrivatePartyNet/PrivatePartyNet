@@ -895,13 +895,16 @@ class VoicePresenceTests(ServerTestCase):
         party.join_voice(next(m["id"] for m in party.roster() if m["name"] == "P0"), None)
         self.assertEqual(self.post(party, "/voice", {"channel": "voice-1"}, session)[0], 202)
 
-    def test_disconnecting_leaves_the_voice_channel(self):
+    def test_a_dropout_keeps_the_voice_seat_and_closing_the_window_leaves_it(self):
         party = self.party()
         alex, session = self.member(party, "Alex")
         stream = self.stream(party, session)
         read_until(stream, "hello")
         party.join_voice(alex, "voice-1")
-        stream.close()
+        stream.close()  # the connection dropped: the seat waits for them through the reconnect grace (3.3)
+        time.sleep(1.0)
+        self.assertEqual(next(m for m in party.roster() if m["id"] == alex)["voice"], "voice-1")
+        self.assertEqual(self.post(party, "/bye", {}, session)[0], 202)  # the page said goodbye on its way out
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             if next(m for m in party.roster() if m["id"] == alex)["voice"] is None:
