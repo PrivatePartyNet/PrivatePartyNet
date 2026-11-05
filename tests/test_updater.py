@@ -513,6 +513,25 @@ class FlowTests(unittest.TestCase):
         self.assertEqual((app / "PrivatePartyNet.exe").read_bytes(), b"new app")
         self.assertEqual((app.parent / "PrivatePartyNet.old" / "PrivatePartyNet.exe").read_bytes(), b"old app")
 
+    def test_the_unpacked_portable_copy_is_checked_again_just_before_the_swap(self):
+        for change in ("changed", "added", "removed"):
+            with self.subTest(change=change):
+                self.launched.clear()
+                app = self.folder / change / "PrivatePartyNet"
+                up = self.portable(app)
+                up.check(manual=False)
+                if change == "changed":
+                    (up.ready / "PrivatePartyNet.exe").write_bytes(b"evil app")
+                elif change == "added":
+                    (up.ready / "_internal" / "version.dll").write_bytes(b"planted")
+                else:
+                    (up.ready / "_internal" / "web.txt").unlink()
+                answer = up.restart_now()
+                self.assertFalse(answer["ok"], answer)
+                self.assertIn("changed", answer["message"])
+                self.assertEqual(self.launched, [], "nothing was swapped in")
+                self.assertEqual(up.view()["state"], "error")
+
     def test_the_portable_swap_waits_for_the_app_whatever_find_is_first_on_the_path(self):
         app = self.folder / "portable" / "PrivatePartyNet"
         up = self.portable(app)

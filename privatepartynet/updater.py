@@ -364,6 +364,7 @@ class Updater:
         self._thread = None
         self.found = None  # the checked release being offered: check_manifest's record, and the file to use
         self.ready = None  # Path of the checked download (installer) or unpacked folder (portable)
+        self._unpacked = {}  # the unpacked folder's files (path inside it -> SHA-256), from the checked zip itself
         self.dismissed = None  # a version the person said Later to, with automatic updates off
         self.install_on_exit = False
         self.view_state = {"state": "idle", "message": "", "version": "", "notes": "", "checked_at": None}
@@ -629,10 +630,34 @@ class Updater:
                 if total > MAX_FILE * 2:
                     raise UpdateError("the zip unpacks to more than it may")
             zipped.extractall(staging)
+            unpacked = {}
+            for info in zipped.infolist():
+                parts = Path(info.filename).parts
+                if info.is_dir() or len(parts) < 2 or parts[0] != APP:
+                    continue
+                digest = hashlib.sha256()
+                with zipped.open(info) as member:
+                    for chunk in iter(lambda: member.read(1 << 20), b""):
+                        digest.update(chunk)
+                unpacked[Path(*parts[1:]).as_posix().lower()] = digest.hexdigest()
         app = staging / APP
         if not (app / f"{APP}.exe").is_file():
             raise UpdateError("the zip does not hold PrivatePartyNet")
+        self._unpacked = unpacked
         return app
+
+    def _check_unpacked(self, folder):
+        """Refuse an unpacked folder whose files are not exactly the checked zip's: one changed, added or removed since
+        it was unpacked. It may have waited days beside the app's folder for the app to close."""
+        found = {}
+        for path in folder.rglob("*"):
+            if path.is_symlink() or path.is_junction():
+                raise UpdateError("the unpacked update changed on disk (a link appeared in it)")
+            if path.is_file():
+                found[path.relative_to(folder).as_posix().lower()] = path
+        if set(found) != set(self._unpacked) or any(sha256_file(found[name]) != digest
+                                                    for name, digest in self._unpacked.items()):
+            raise UpdateError("the unpacked update changed on disk since it was checked")
 
     # --- installing ----------------------------------------------------------------------------------------------
 
@@ -710,6 +735,12 @@ class Updater:
             arguments = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1"] + ([] if restart else ["/NOLAUNCH=1"])
             self._launch([str(ready), *arguments], None)
         else:
+            try:  # checked again just before it is swapped in
+                self._check_unpacked(ready)
+            except UpdateError:
+                self.ready = None
+                self._set("error", "The unpacked update changed on disk; it was not installed.")
+                raise
             script = self.folder / "swap.cmd"
             old = self.app_dir.parent / f"{self.app_dir.name}.old"
             script.write_text(SWAP_SCRIPT, encoding="ascii")
