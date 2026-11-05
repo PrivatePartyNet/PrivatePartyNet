@@ -9,7 +9,7 @@ const PEM = "-----BEGIN CERTIFICATE-----\nMIIDKDCCAhCgAwIBAgIUFq2LkVc0d0YQ4m1d8Y
 
 test("plain messages are shown as they are", () => {
   for (const text of ["Party is open.", "Could not reach the party (timed out).", "",
-    "Could not create the certificate: [Errno 13] Permission denied: 'C:\\Users\\Ann\\AppData\\Local\\PrivatePartyNet\\privatepartynet-cert.pem'",
+    "Could not create the certificate: [Errno 13] Permission denied: 'D:\\Games\\Party data\\PrivatePartyNet\\privatepartynet-cert.pem'",
     "Could not check for updates: objects.githubusercontent.com is not a host updates come from"]) {
     assert.equal(S.secretLike(text), "", text);
   }
