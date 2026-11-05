@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 import privatepartynet.app as app_module
-from privatepartynet.app import Controller, WindowApi, webview_options
+from privatepartynet import app
+from privatepartynet.app import Controller, WindowApi, browser_arguments, webview_options
 from privatepartynet.settings import load_settings
 
 
@@ -97,6 +98,35 @@ class WebviewOptionsTests(unittest.TestCase):
             self.assertTrue(options["storage_path"].endswith("webview"))
             self.assertTrue(__import__("os").path.isdir(options["storage_path"]))
 
+    def test_certificate_checks_are_never_turned_off_for_every_window(self):
+        # Party windows accept the one certificate their join checked (windowpins.py). The flag that accepted any
+        # certificate at all is taken out, even when something else on the PC put it in the variable, and the
+        # variable's other arguments are kept.
+        flag = "--ignore-certificate-errors"
+        self.assertEqual(browser_arguments(None), "")
+        self.assertEqual(browser_arguments(flag), "")
+        self.assertEqual(browser_arguments("--disable-gpu"), "--disable-gpu")
+        self.assertEqual(browser_arguments(f"--disable-gpu {flag} --lang=en"), "--disable-gpu --lang=en")
+        source = (Path(app.__file__)).read_text(encoding="utf-8")
+        self.assertNotIn('setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"', source)
+        main = source[source.index("def main("):]
+        self.assertIn("browser_arguments(", main)
+        self.assertLess(main.index("windowpins.install()"), main.index("webview.start("), "before any window opens")
+
+    def test_the_app_ends_at_once_after_its_windows_close(self):
+        # pywebview answers a page's last bridge calls from threads of its own; once the window stack has stopped,
+        # such an answer reaching into .NET while Python shuts down crashed the process (an access violation, exit 127).
+        from unittest import mock
+
+        with mock.patch.object(app.os, "_exit") as end, mock.patch.object(app.logging, "shutdown") as flush:
+            app.exit_now(3)
+        flush.assert_called_once_with()
+        end.assert_called_once_with(3)
+        source = (Path(app.__file__)).read_text(encoding="utf-8")
+        main = source[source.index("def main("):]
+        self.assertIn("exit_now(window_test())", main)
+        self.assertLess(main.index("webview.start("), main.index("exit_now(0)"))
+
     def test_every_start_of_the_window_stack_uses_those_options(self):
         import re
         from pathlib import Path
@@ -142,6 +172,25 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual([lib["name"] for lib in info["libraries"]][:2], ["pywebview", "mss"])
         self.assertTrue(all(lib["version"] for lib in info["libraries"]))
         self.assertEqual(self.controller.state()["app_name"], APP_NAME)
+
+    def test_a_message_the_panel_hid_is_logged_by_where_never_by_what(self):
+        with self.assertLogs("privatepartynet", "WARNING") as logged:
+            self.assertEqual(self.controller.hidden_message("join status", "a certificate or key"), {"ok": True})
+        self.assertIn("join status", logged.output[0])
+        self.assertIn("a certificate or key", logged.output[0])
+        with self.assertLogs("privatepartynet", "WARNING") as logged:
+            self.controller.hidden_message("-----BEGIN CERTIFICATE-----\nMIID", "x" * 500)
+        self.assertNotIn("BEGIN", logged.output[0], "only a short plain label reaches the log")
+        self.assertLess(len(logged.output[0]), 300)
+
+    def test_every_status_box_in_the_control_panel_goes_through_the_guard(self):
+        source = (Path(app.__file__).parent / "web" / "control.js").read_text(encoding="utf-8")
+        for unguarded in ("textContent = result.message", "textContent = status.message",
+                          "textContent = game.message", "textContent = state.join.message",
+                          "textContent = reach.advice", "notice.textContent = text"):
+            self.assertFalse(unguarded in source, unguarded)
+        html = (Path(app.__file__).parent / "web" / "control.html").read_text(encoding="utf-8")
+        self.assertLess(html.index("safetext.js"), html.index("control.js"))
 
     def test_state_carries_everything_the_panel_shows(self):
         state = self.controller.state()
@@ -422,6 +471,46 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         self.assertTrue(invite["candidates"])
         self.assertEqual(invite["fingerprint"], connect.certificate_fingerprint(self.host._cert_pem))
 
+    def test_an_invite_carries_both_pins_and_a_remembered_party_keeps_the_key_pin(self):
+        from privatepartynet import connect
+        from privatepartynet.cert import pins_of_pem
+
+        whole, spki = pins_of_pem(self.host._cert_pem)
+        invite = connect.decode_invite(self.host.invite()["invite"])
+        self.assertEqual((invite["fingerprint"], invite["spki"]), (whole, spki), "f stays what 3.0/3.1 check")
+        code = connect.encode_invite(invite["name"], invite["password"], [["lan", "127.0.0.1", self.host._party.port]],
+                                     whole, invite["server_id"], invite["host_sign"], spki=spki)
+        self.guest.join_invite(code)
+        self.wait_state(self.guest, "waiting")
+        (request,) = self.host._party.pending_requests()
+        self.host._party.decide_request(self.host._party.host_id, request["id"], True)
+        self.wait_state(self.guest, "joined")
+        record = self.guest._store.server("joined-" + invite["server_id"])
+        self.assertEqual((record["fingerprint"], record["spki"]), (whole, spki))
+
+    def test_opening_a_party_window_pins_its_origin_first(self):
+        from unittest import mock
+
+        from privatepartynet import windowpins
+        from privatepartynet.cert import pins_of_pem
+
+        self.addCleanup(windowpins.forget_all)
+        whole, spki = pins_of_pem(self.host._cert_pem)
+        url = f"https://127.0.0.1:{self.host._party.port}/join?token=x"
+        guest = Controller(data_folder=self.folder + "/window", discovery_port=0, grabber=FakeGrabber())
+        self.addCleanup(guest.shutdown)
+        seen = []
+
+        def create_window(*args, **kwargs):
+            seen.append(windowpins.allowed(kwargs["url"], self.host._cert_pem))
+            return mock.MagicMock()
+
+        with mock.patch.object(app.webview, "create_window", create_window):
+            guest._join({"url": url, "name": "Host", "pins": (whole, spki)})
+            guest._join({"url": url.replace("token=x", "token=y"), "name": "Host",
+                         "cert": self.host._cert_pem})  # a Nearby accept carries the certificate itself
+        self.assertEqual(seen, [True, True])
+
     def test_there_is_no_invite_when_no_party_is_open(self):
         self.assertFalse(self.guest.invite()["ok"])
 
@@ -434,6 +523,9 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         self.assertEqual(self.wait_state(self.guest, "joined")["state"], "joined")
         (opened,) = self.opened
         self.assertIn("/join?token=", opened["url"])
+        from privatepartynet.cert import pins_of_pem
+        self.assertEqual(set(opened["pins"]), set(pins_of_pem(self.host._cert_pem)),
+                         "the window is pinned to the certificate the join checked")
         self.assertEqual(opened["name"], "Host")
         self.assertEqual(self.guest.join_status()["state"], "joined")
         self.assertEqual(len(self.opened), 1, "the window opens once")
@@ -596,6 +688,24 @@ class ReviewControllerTests(unittest.TestCase):
         self.assertEqual(view["problems"], ["Sam: Both of your routers give a new port for every connection."])
         self.one.set_friend_relay(True, 4)
         self.assertEqual(paths.changed, (True, 4), "a running game network follows the setting at once")
+
+    def test_updates_wait_for_a_party_and_the_options_follow_the_menu(self):
+        self.assertIsNone(self.one.updater._thread, "a test run never asks GitHub")
+        self.assertEqual(self.one._update_busy(), "")
+        view = self.one.state()["update"]
+        self.assertEqual((view["automatic"], view["include_test"]), (True, True))
+        self.assertTrue(self.one.start("Desk", free_port())["ok"])
+        self.assertEqual(self.one._update_busy(), "your party")
+        self.one.stop()
+        self.assertEqual(self.one._update_busy(), "")
+        self.one._game = {"key": "own"}
+        self.assertEqual(self.one._update_busy(), "the game network")
+        self.one._game = None
+        self.assertTrue(self.one.set_update_option("auto_update", False)["ok"])
+        self.assertTrue(self.one.set_update_option("update_prerelease", False)["ok"])
+        self.assertFalse(self.one.set_update_option("theme", "dark")["ok"])
+        view = self.one.about_info()["update"]
+        self.assertEqual((view["automatic"], view["include_test"]), (False, False))
 
     def test_relay_addresses_are_read_with_or_without_a_port(self):
         from privatepartynet.app import _split_address

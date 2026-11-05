@@ -16,6 +16,9 @@ DEFAULTS.update({"accent": None, "text_scale": 100, "density": "default"})
 DENSITIES = ("compact", "default", "spacious")
 TEXT_SCALES = (90, 130)  # smallest and largest text size, in percent
 MAX_FRIEND_MBPS = 1000
+# Updates (updater.py): checked for and downloaded by themselves, test versions included, unless the person says not.
+# update_skip is a version the person chose to skip.
+DEFAULTS.update({"auto_update": True, "update_prerelease": True, "update_skip": ""})
 SETTINGS_FILE = "settings.json"
 MAX_SAVED_NAME = 200  # the window trims names properly; this only stops a damaged file from growing huge
 
@@ -75,6 +78,12 @@ def load_settings(folder=None):
             settings["text_scale"] = saved["text_scale"]
         if saved.get("density") in DENSITIES:
             settings["density"] = saved["density"]
+        for flag in ("auto_update", "update_prerelease"):
+            if isinstance(saved.get(flag), bool):
+                settings[flag] = saved[flag]
+        skip = saved.get("update_skip")
+        if isinstance(skip, str) and len(skip) <= 40 and all(c.isalnum() or c in ".-+" for c in skip):
+            settings["update_skip"] = skip
     return settings
 
 

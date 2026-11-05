@@ -375,7 +375,7 @@ class RendezvousThroughRoutersTests(Base):
         self.assertTrue(host.seen)
 
     def test_two_symmetric_routers_are_refused_which_is_the_gap_a_relay_closes(self):
-        with self.assertRaisesRegex(PunchError, "new port for every destination"):
+        with self.assertRaisesRegex(PunchError, "new port for every connection"):
             self.join(natsim.SYMMETRIC, natsim.SYMMETRIC)
 
 

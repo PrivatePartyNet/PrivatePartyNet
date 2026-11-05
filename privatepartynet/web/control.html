@@ -34,6 +34,14 @@
 
   <main id="pages">
     <p id="notice" class="notice" role="status" hidden></p>
+    <div id="updateCard" class="update-banner" role="status" hidden>
+      <svg class="ic lg"><use href="#i-download"></use></svg>
+      <div class="grow">
+        <p id="updateText"></p>
+        <pre id="updateNotes" class="notes" hidden></pre>
+      </div>
+      <div id="updateButtons" class="row"></div>
+    </div>
 
     <!-- Home -->
     <section class="page" id="page-home" data-page="home">
@@ -176,6 +184,12 @@
           <button id="ask" class="primary" disabled>Ask to join</button>
           <span id="askNote" class="muted"></span>
         </div>
+        <div id="askPasswordRow" class="row bottom" hidden>
+          <label class="field">Party password
+            <input id="askPassword" type="password" autocomplete="off">
+          </label>
+          <button id="askWithPassword" class="secondary">Ask with the password</button>
+        </div>
       </div>
     </section>
 
@@ -317,7 +331,14 @@
             <button role="radio" aria-checked="false" data-density="spacious">Spacious</button>
           </div>
         </div>
-        <p class="muted">These are this PC's own choices; nobody else sees them. Party rooms follow them once they open inside this window (the one-window version).</p>
+        <p class="muted">These are this PC's own choices; nobody else sees them. Every window on this PC follows them, the parties you join included.</p>
+      </div>
+
+      <div class="card" id="updatesCard">
+        <div class="card-head"><svg class="ic lg"><use href="#i-download"></use></svg><div class="grow"><h2>Updates</h2><p class="muted">New versions come from <span class="appname">PrivatePartyNet</span>'s releases on GitHub. Each is checked against the release signature before it installs.</p></div></div>
+        <label class="switch"><input id="autoUpdate" type="checkbox"><span>Update automatically (checks every six hours; asks before restarting)</span></label>
+        <label class="switch"><input id="testVersions" type="checkbox"><span>Include test versions</span></label>
+        <div class="row"><button id="checkUpdates" class="secondary"><svg class="ic"><use href="#i-download"></use></svg>Check for updates</button><span id="updateStatus" class="muted"></span></div>
       </div>
 
       <div class="card">
@@ -339,6 +360,8 @@
 
 <script src="icons.js"></script>
 <script src="appearance.js"></script>
+<script src="updates.js"></script>
+<script src="safetext.js"></script>
 <script src="control.js"></script>
 <script src="gamereach.js"></script>
 <script src="nav.js"></script>

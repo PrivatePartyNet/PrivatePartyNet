@@ -10,6 +10,7 @@ from pathlib import Path
 
 from privatepartynet import connect
 from privatepartynet.cert import ensure_certificate
+from privatepartynet.cert import pins_of_pem
 from privatepartynet.connect import (ConnectError, Joiner, UpnpMapping, certificate_fingerprint, classify_public_ip, decode_invite,
                               encode_invite, gather, stun_probe)
 from privatepartynet.server import Party
@@ -343,6 +344,15 @@ class InviteTests(unittest.TestCase):
         self.assertEqual((got["name"], got["password"], got["fingerprint"], got["server_id"]), ("Heroes night", "428617", FINGERPRINT, "s1"))
         self.assertEqual(got["candidates"], [["lan", "192.168.0.5", 8765], ["ipv6", "2603::1", 8765]])
 
+    def test_an_invite_carries_the_key_pin_too_and_one_without_it_still_reads(self):
+        spki = "ab" * 32
+        got = decode_invite(encode_invite("P", "1", [["lan", "192.168.0.5", 8765]], FINGERPRINT, spki=spki))
+        self.assertEqual((got["fingerprint"], got["spki"]), (FINGERPRINT, spki))
+        old = decode_invite(encode_invite("P", "1", [["lan", "192.168.0.5", 8765]], FINGERPRINT))  # as 3.0/3.1 wrote
+        self.assertEqual((old["fingerprint"], old["spki"]), (FINGERPRINT, ""))
+        bad = decode_invite(encode_invite("P", "1", [["lan", "192.168.0.5", 8765]], FINGERPRINT, spki="nope"))
+        self.assertEqual(bad["spki"], "")
+
     def test_spaces_and_line_breaks_from_pasting_are_ignored(self):
         code = encode_invite("A", "1", [["lan", "10.0.0.2", 8765]], FINGERPRINT)
         pasted = " " + code[:20] + "\n" + code[20:] + "  "
@@ -398,10 +408,11 @@ class JoinTests(unittest.TestCase):
         self.party.start()
         self.addCleanup(self.party.stop)
         self.fingerprint = certificate_fingerprint(Path(certfile).read_text(encoding="utf-8"))
+        self.spki = pins_of_pem(Path(certfile).read_text(encoding="utf-8"))[1]
 
-    def invite(self, password="428617", fingerprint=None, port=None, address="127.0.0.1"):
+    def invite(self, password="428617", fingerprint=None, port=None, address="127.0.0.1", spki=""):
         return decode_invite(encode_invite("Heroes night", password, [["lan", address, port or self.party.port]],
-                                           fingerprint or self.fingerprint))
+                                           fingerprint or self.fingerprint, spki=spki))
 
     def joiner(self, invite, **options):
         options.setdefault("my_lan", ["127.0.0.1"])
@@ -456,6 +467,20 @@ class JoinTests(unittest.TestCase):
         self.assertTrue(self.wait_for(joiner, "failed"))
         self.assertIn("certificate", joiner.status["message"])
         self.assertEqual(self.party.pending_requests(), [])
+
+    def test_the_key_pin_alone_lets_a_joiner_in_after_the_certificate_was_renewed(self):
+        joiner = self.joiner(self.invite(fingerprint="00" * 32, spki=self.spki))  # the old certificate's hash, the key's
+        self.run_in_thread(joiner)
+        self.assertTrue(self.wait_for(joiner, "waiting"))
+        self.assertEqual(joiner.seen_spki, self.spki)
+
+    def test_a_connection_is_checked_against_either_kind_of_pin(self):
+        for pins in (self.fingerprint, self.spki, ("", self.spki), (self.fingerprint, "")):
+            connection = connect._connect("127.0.0.1", self.party.port, pins, 3.0)
+            self.assertEqual((connection.seen_fingerprint, connection.seen_spki), (self.fingerprint, self.spki))
+            connection.close()
+        with self.assertRaisesRegex(ConnectError, "certificate differs"):
+            connect._connect("127.0.0.1", self.party.port, ("00" * 32, "11" * 32), 3.0)
 
     def test_a_dead_address_falls_through_to_the_next_and_says_why_when_none_work(self):
         dead = socket.socket()
@@ -514,6 +539,7 @@ class JoinTests(unittest.TestCase):
         self.run_in_thread(joiner)
         self.assertTrue(self.wait_for(joiner, "waiting"))
         self.assertEqual(invite["fingerprint"], self.fingerprint)
+        self.assertEqual(invite["spki"], self.spki, "and its key, which outlasts a renewal")
 
     def test_the_closest_addresses_are_tried_first(self):
         order = connect._order([["public", "9.9.9.9", 1], ["ipv6", "2603::1", 1], ["lan", "10.9.9.9", 1], ["lan", "192.168.0.5", 1]],

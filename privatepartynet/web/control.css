@@ -87,3 +87,16 @@ html.rail-compact .navbadge { min-width: 16px; padding: 0 4px; font-size: 10px; 
   .navbadge { min-width: 16px; padding: 0 4px; font-size: 10px; }
   #pages { padding: var(--sp-5) var(--sp-4) 48px; }
 }
+
+/* A newer version found by the updater (updates.js decides the words and buttons), above every page. */
+.update-banner { display: flex; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); margin-bottom: var(--sp-4);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.update-banner[hidden] { display: none; }
+.update-banner > .ic { color: var(--accent-ink); margin-top: 2px; }
+.update-banner p { margin: 0; }
+.update-banner .notes { max-height: 160px; overflow: auto; margin: var(--sp-2) 0 0; white-space: pre-wrap; font: inherit; font-size: var(--fs-sm); color: var(--muted); }
+.update-banner .notes[hidden] { display: none; }
+.update-banner .row { margin: 0; flex: none; }
+.row[hidden] { display: none; }
+.row.bottom { align-items: flex-end; }

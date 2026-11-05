@@ -10,12 +10,14 @@ import hmac
 import json
 import secrets
 import struct
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from privatepartynet.cpu import sample_detail as cpu_detail
 from privatepartynet.frames import clamp_fps, clamp_height, list_monitors
+from privatepartynet.hangups import HangupsLogged, describe, is_hangup
 
 CORS = {
     "Access-Control-Allow-Origin": "*",
@@ -29,7 +31,7 @@ class FeedServer:
     def __init__(self, grabber):
         self.grabber = grabber
         self.token = None
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _FeedHandler)
+        self._httpd = _FeedServer(("127.0.0.1", 0), _FeedHandler)
         self._httpd.feed = self
         self._thread = threading.Thread(target=self._httpd.serve_forever, name="privatepartynet-feed", daemon=True)
 
@@ -56,8 +58,20 @@ class FeedServer:
         return self.grabber.monitors() if self.grabber is not None and hasattr(self.grabber, "monitors") else list_monitors()
 
 
-class _FeedHandler(BaseHTTPRequestHandler):
+class _FeedServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if is_hangup(exc):
+            _FeedHandler.hangup_log.info("The frame feed's connection closed early (%s)", describe(exc))
+        else:
+            _FeedHandler.hangup_log.error("The frame feed could not answer a request", exc_info=True)
+
+
+class _FeedHandler(HangupsLogged, BaseHTTPRequestHandler):
     server_version = "PartyFeed"
+    hangup_what = "frame feed"
 
     def log_message(self, format, *args):
         pass
@@ -116,7 +130,9 @@ class _FeedHandler(BaseHTTPRequestHandler):
             for jpeg in frames:
                 self.wfile.write(struct.pack(">I", len(jpeg)) + jpeg)
                 self.wfile.flush()
-        except OSError:
-            pass  # the party page stopped reading (Go Live was turned off)
+        except OSError as exc:
+            # The party page stopped reading: Go Live was turned off, or restarted the feed at another size.
+            self.close_connection = True
+            self.hangup_log.info("A party window's frame feed ended (%s)", describe(exc) if is_hangup(exc) else exc)
         finally:
             frames.close()

@@ -65,6 +65,14 @@ class TunnelTests(Base):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["server"], "feedfacecafebeef")
 
+    def test_the_tunnel_takes_the_certificates_key_pin_too(self):
+        from privatepartynet.cert import pins_of_pem
+
+        spki = pins_of_pem(Path(self.certfile).read_text(encoding="utf-8"))[1]
+        _, client = self.tunnel(fingerprint=("00" * 32, spki))  # an old whole-certificate pin, and the key's
+        status, _ = self.through(client.port, "GET", "/ask?challenge=1")
+        self.assertEqual(status, 200)
+
     def test_several_connections_share_one_tunnel(self):
         _, client = self.tunnel()
         results = []
@@ -203,7 +211,7 @@ class RendezvousTests(DhtBase):
         dht.put_mutable(self.host_identity._sign, record("203.0.113.5", 40000, "hard"), int(time.time()),
                         punch.host_salt("feedfacecafebeef"))
         dht.close()
-        with self.assertRaisesRegex(PunchError, "new port for every destination"):
+        with self.assertRaisesRegex(PunchError, "new port for every connection"):
             join_through(self.host_identity.sign_public.hex(), "feedfacecafebeef", self.secret, self.fingerprint,
                          dht_factory=self.dht, stun_servers=stun, connect_seconds=5)
 
