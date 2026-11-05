@@ -174,6 +174,37 @@ class ControllerTests(unittest.TestCase):
         html = (Path(app.__file__).parent / "web" / "control.html").read_text(encoding="utf-8")
         self.assertLess(html.index("safetext.js"), html.index("control.js"))
 
+    def test_the_game_network_line_says_each_members_way_and_latency(self):
+        class Paths:
+            names = {"u-alex": "Alex", "u-bea": "Bea", "u-cy": "Cy"}
+
+            def state(self):
+                return {"through": [], "peers": {"u-alex": {"kind": "ipv6", "rtt": 23, "ways": ["ipv6"]},
+                                                 "u-bea": {"kind": "friend", "rtt": 160, "ways": ["friend"]},
+                                                 "u-cy": {"kind": "", "rtt": None, "ways": []}}}
+
+            def problems(self):
+                return []
+
+        self.controller.path_manager = Paths()
+        view = self.controller.state()["friend_relay"]
+        self.assertEqual(view["members"], [
+            {"name": "Alex", "way": "direct over IPv6", "rtt": 23},
+            {"name": "Bea", "way": "through a member's PC", "rtt": 160},
+            {"name": "Cy", "way": "not connected yet", "rtt": None},
+        ])
+        self.assertEqual(view["ways"], ["Alex, direct over IPv6, 23 ms", "Bea, through a member's PC, 160 ms",
+                                        "Cy, not connected yet"])
+
+    def test_the_in_memory_paths_report_a_latency_too(self):
+        from privatepartynet.pathway import LoopbackHub, LoopbackPathManager
+
+        hub = LoopbackHub()
+        a, b = LoopbackPathManager("a", hub=hub, kind="ipv6"), LoopbackPathManager("b", hub=hub)
+        a.path_to("b", b.local_candidates())
+        self.assertEqual(a.state()["peers"]["b"]["kind"], "ipv6")
+        self.assertIsInstance(a.state()["peers"]["b"]["rtt"], int)
+
     def test_state_carries_everything_the_panel_shows(self):
         state = self.controller.state()
         for key in ("version", "theme", "name", "port", "running", "addresses", "passcode", "others", "peers", "requests"):
@@ -636,7 +667,7 @@ class ReviewControllerTests(unittest.TestCase):
 
     def test_relaying_for_others_is_off_until_turned_on_and_can_be_limited(self):
         self.assertEqual(self.one.state()["friend_relay"], {"on": False, "mbps": 8, "through": [], "problems": [],
-                                                            "ways": []})
+                                                            "ways": [], "members": []})
         self.assertFalse(self.one.set_friend_relay(True, "lots")["ok"])
         self.assertTrue(self.one.set_friend_relay(True, 20)["ok"])
         self.assertEqual(self.one.state()["friend_relay"]["on"], True)

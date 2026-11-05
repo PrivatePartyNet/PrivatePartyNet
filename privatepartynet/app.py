@@ -1283,16 +1283,21 @@ class Controller:
 
         manager = self.path_manager
         if manager is None:
-            return {"through": [], "problems": [], "ways": []}
+            return {"through": [], "problems": [], "ways": [], "members": []}
         try:
             state, problems = manager.state(), manager.problems()
         except Exception:
             log.exception("Reading the paths failed")
-            return {"through": [], "problems": [], "ways": []}
-        ways = sorted(f"{self._name_of(peer)}, {WAY_TEXT.get(info.get('kind') or '', 'not connected yet')}"
-                      for peer, info in (state.get("peers") or {}).items())
+            return {"through": [], "problems": [], "ways": [], "members": []}
+        # Each member's way and the game network's own latency to them: the round trip of the probes the paths send
+        # anyway (pathway.py), so showing it costs nothing.
+        members = sorted(({"name": self._name_of(peer), "way": WAY_TEXT.get(info.get("kind") or "", "not connected yet"),
+                           "rtt": info.get("rtt") if info.get("kind") and isinstance(info.get("rtt"), int) else None}
+                          for peer, info in (state.get("peers") or {}).items()), key=lambda m: (m["name"].lower(), m["way"]))
+        ways = [f"{m['name']}, {m['way']}" + (f", {m['rtt']} ms" if m["rtt"] is not None else "") for m in members]
         return {"through": [self._name_of(u) for u in state.get("through") or []],
-                "problems": [f"{self._name_of(p['peer'])}: {p['why']}" for p in problems], "ways": ways}
+                "problems": [f"{self._name_of(p['peer'])}: {p['why']}" for p in problems], "ways": ways,
+                "members": members}
 
     def rename(self, name):
         name = clean_name(name)
