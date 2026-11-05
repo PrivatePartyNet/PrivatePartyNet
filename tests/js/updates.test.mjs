@@ -8,14 +8,16 @@ const U = require("../../privatepartynet/web/updates.js");
 test("a checked update offers Restart now and Later", () => {
   const card = U.card({ state: "ready", version: "3.2.1", notes: "Fixes.", waiting: "" });
   assert.equal(card.show, true);
-  assert.equal(card.text, "PrivatePartyNet 3.2.1 is ready.");
+  assert.equal(card.text, "Ready: Restart now, or PrivatePartyNet 3.2.1 installs when you close PrivatePartyNet.");
   assert.deepEqual(card.buttons.map((b) => b.label), ["Restart now", "Later"]);
   assert.equal(card.notes, "Fixes.");
 });
 
 test("while a party, a call or the game network is on, Restart now waits and says why", () => {
   const card = U.card({ state: "ready", version: "3.2.1", waiting: "the game network" });
-  assert.match(card.text, /installs when the game network ends/);
+  assert.equal(card.text, "PrivatePartyNet 3.2.1 is ready. Restart now works once the game network ends, or it " +
+    "installs when you close PrivatePartyNet.");
+  assert.doesNotMatch(card.text, /installs when the game network ends/, "nothing installs by itself when it ends");
   assert.equal(card.buttons[0].disabled, true);
 });
 

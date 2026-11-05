@@ -24,7 +24,10 @@
       var waiting = String(view.waiting || "");
       return {
         show: true,
-        text: name + " is ready." + (waiting ? " It installs when " + waiting + " ends, or when PrivatePartyNet closes." : ""),
+        // As updater.py's ready_message: nothing restarts by itself; closing the app installs it.
+        text: waiting
+          ? name + " is ready. Restart now works once " + waiting + " ends, or it installs when you close PrivatePartyNet."
+          : "Ready: Restart now, or " + name + " installs when you close PrivatePartyNet.",
         notes: notes,
         buttons: [
           { action: "restart", label: "Restart now", primary: true, disabled: !!waiting },

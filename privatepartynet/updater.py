@@ -137,6 +137,15 @@ def parse_version(text):
         return None
 
 
+def ready_message(version, waiting=""):
+    """What the panel says of a checked update. Nothing restarts the app by itself: Restart now does, or closing it
+    installs the update (and while `waiting`, a party, a call or the game network, Restart now waits for it to end)."""
+    if waiting:
+        return (f"{APP} {version} is ready. Restart now works once {waiting} ends, or it installs when you close "
+                f"{APP}.")
+    return f"Ready: Restart now, or {APP} {version} installs when you close {APP}."
+
+
 def manifest_name(version):
     return f"{APP}-{version}-update.json"
 
@@ -711,8 +720,7 @@ class Updater:
                       f"in place. Close {APP} and replace the folder with the one that opens.", version=str(version),
                       waiting="")
             return
-        message = f"{APP} {version} is ready." + (f" It installs when {waiting} ends." if waiting else "")
-        self._set("ready", message, version=str(version), waiting=waiting)
+        self._set("ready", ready_message(version, waiting), version=str(version), waiting=waiting)
 
     def _unpack(self, archive, version):
         """Unpack a checked portable zip beside this copy's folder (or, when that cannot be written, into the updates
@@ -784,8 +792,7 @@ class Updater:
         if waiting:
             self.install_on_exit = True
             self._offer_ready()
-            return {"ok": False, "message": f"The update waits until {waiting} ends; it installs then or when "
-                                            f"{APP} closes."}
+            return {"ok": False, "message": ready_message(self.found["version"], waiting)}
         try:
             self._install(restart=True)
         except UpdateError as error:

@@ -531,9 +531,15 @@ class FlowTests(unittest.TestCase):
         self.assertFalse(answer["ok"])
         self.assertIn("the game network", answer["message"])
         self.assertEqual(self.launched, [])
+        self.assertNotIn("installs when the game network ends", up.view()["message"])
+        self.assertIn("installs when you close PrivatePartyNet", up.view()["message"])
+        self.assertNotIn("installs then", answer["message"])
         self.busy = ""
         up.busy_changed()
         self.assertEqual(up.view()["waiting"], "")
+        self.assertEqual(up.view()["message"],
+                         "Ready: Restart now, or PrivatePartyNet 3.2.1 installs when you close PrivatePartyNet.")
+        self.assertEqual(self.launched, [], "the party ending does not restart the app")
         self.assertTrue(up.restart_now()["ok"])
         self.assertEqual(len(self.launched), 1)
 
