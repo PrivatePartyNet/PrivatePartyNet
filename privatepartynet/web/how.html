@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="reviewed-for-version" content="3.1.0">
+<meta name="reviewed-for-version" content="3.2.0">
 <title>How PrivatePartyNet works</title>
 <link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="info.css">
@@ -17,7 +17,7 @@
   <p>Type your name and press Start party. The name is what other people see under Nearby PCs and in the party. Your PC then announces itself on the network (UDP port 8766), and the party listens on the port in the port box (8765 unless you change it). The first time, Windows may ask whether to allow the app through the firewall. Allow it on private networks.</p>
 
   <h2>Joining a party</h2>
-  <p>Under Nearby PCs, pick a PC that shows "party open" and press Ask to join. The host sees your request and presses Let in. A request that nobody answers within 30 seconds expires. When you are let in, your <span class="appname">PrivatePartyNet</span> opens the party in a window of its own. The link that lets you in works once and expires after two minutes.</p>
+  <p>Under Nearby PCs, pick a PC that shows "party open" and press Ask to join. PCs on a VPN you share, such as Radmin VPN, show up here too; such a party asks for its password, and a box for it appears under the list. The host sees your request and presses Let in. A request that nobody answers within 30 seconds expires. When you are let in, your <span class="appname">PrivatePartyNet</span> opens the party in a window of its own. The link that lets you in works once and expires after two minutes.</p>
 
   <h2>Inside the party room</h2>
   <p>The bar at the top has Go Live, with an arrow beside it for Stream settings, then View options, Picture in picture, Fullscreen, a button that hides the side panel, and Leave. The side panel lists the members and the party chat; hide it to give the screens the whole window, and the choice is remembered. Leave closes the party window and any windows you popped out of it. A party has room for up to 16 people.</p>
@@ -43,7 +43,11 @@
   <p>Hover a name for the details: each screen in each direction with its rate, frame rate, size and the share of the PC spent encoding or decoding it (an estimate from the codec's own timing), whether the encoder is being limited by this PC's processor or the network, the round trip time and the packet loss. When there are too many names for the bar, every chip gives up detail first, and the last few names collapse into a "+" count.</p>
 
   <h2>The menus</h2>
-  <p>In the control panel, Options sets the appearance (Match Windows, Light or Dark), which changes the control panel and every party window at once, and opens the data folder. Info opens this page and the About page.</p>
+  <p>In the control panel, Options sets the appearance (Match Windows, Light or Dark), which changes the control panel and every party window at once, turns automatic updates and test versions on or off, checks for updates, and opens the data folder. Info opens this page and the About page.</p>
+
+  <h2>Updates</h2>
+  <p>With Automatic updates on (the default), <span class="appname">PrivatePartyNet</span> asks GitHub a few minutes after it starts, and every six hours, whether there is a newer version, downloads it in the background and checks it. The control panel then says it is ready: Restart now installs it and starts the app again, and Later installs it when you next close the app. It never restarts during a party, a call or while the game network is on; it says it is waiting instead. With Automatic updates off, nothing is asked of GitHub until you press Check for updates (in Options or on the About page); a newer version then offers Update, Later or Skip this version. Include test versions (on by default) also offers versions that are still being tried out.</p>
+  <p>Every update is signed. The app carries the public key it checks the signature with, and installs only a file whose size and fingerprint (SHA-256) are the signed ones, from a version newer than the one running. An installed copy runs the new installer for you, with its progress showing; a portable copy unpacks the new version beside its folder and swaps the two once it has closed. Your settings, chats and keys stay where they are.</p>
 
   <h2>Servers, channels and roles</h2>
   <p>A party keeps its name, channels, roles and chat between runs. The side panel lists the channels: a hash sign marks a text channel and "Voice" a voice channel. Click a text channel to read it; a number beside a channel is how many messages you have not read. Scroll to the top of a channel to load older messages. The owner and the admins add, rename and delete channels (a deleted channel's messages stay saved). Roles are Owner, Admin, Member and Guest. A guest reads the chat and watches screens but cannot post, talk or share. The owner and admins change roles and remove people from the three dots beside a name; the owner makes admins.</p>
@@ -55,7 +59,7 @@
   <p>Open messages from the control panel to write to anyone on your network, with no party open. Add a person from Nearby; the first message from a stranger shows them as New. Messages are sealed so only the other person can read them, and your copy stays on your PC. A message to someone who is away waits and goes when they are seen again. Safety number shows twelve groups of digits: if both of you see the same number, nobody is in between.</p>
 
   <h2>Joining from outside your network</h2>
-  <p>Press Copy invite on the control panel and send the code to your friend; it contains the party's password. They paste it under Join a party from anywhere and press Ask to join, and you see their request in the side panel. Where the router allows it, PrivatePartyNet opens the port by itself. When nothing can reach your PC directly (an internet connection that shares one public address between many customers, such as Starlink, with no IPv6), the invite still works: the two PCs find each other's public address through the BitTorrent network's shared address book (signed records anyone can store and nobody can change), then both send at the same moment, which opens each router for the other. This takes up to a minute the first time. When both routers give a new port for every destination, that cannot work, and the invite goes through a relay instead (see below), if your group has one. Without a relay the app says so, and IPv6 or a forwarded port on either side fixes it.</p>
+  <p>Press Copy invite on the control panel and send the code to your friend; it contains the party's password. They paste it under Join a party from anywhere and press Ask to join, and you see their request in the side panel. Where the router allows it, PrivatePartyNet opens the port by itself. When nothing can reach your PC directly (an internet connection that shares one public address between many customers, such as Starlink, with no IPv6), the invite still works: the two PCs find each other's public address through the BitTorrent network's shared address book (signed records anyone can store and nobody can change), then both send at the same moment, which opens each router for the other. Where both PCs have IPv6, they try it at the same time, which also opens a firewall such as Starlink's. This takes up to two minutes the first time: the host looks for new joiners every few seconds, and the shared address book is slow to answer. Both PCs should run the same, newest version; an older host notices joiners too slowly for this to work. When both routers give a new port for every destination, that cannot work, and the invite goes through a relay instead (see below), if your group has one. Without a relay the app says so, and IPv6 or a forwarded port on either side fixes it.</p>
 
   <h2>Relays, for routers that let nothing through</h2>
   <p>Members reach each other the most direct way that works: the same network, IPv6, a port the router opened, or both PCs sending at once through their routers. IPv6 comes before every IPv4 way except the same network: it has no shared addresses, so it gets past carrier-grade NAT, and a game still sees its ordinary network address while what carries it goes over IPv6. The bar at the bottom of the party and the control panel say "Direct over IPv6" when that is the way. Some pairs of routers cannot be crossed that way. Then the two can go through a relay, which passes on what they send without being able to read it, since it is encrypted before it leaves their PCs. A connection on a relay keeps checking for a direct way and moves to it as soon as one opens.</p>
@@ -86,7 +90,7 @@
     <li>A screen looks black: it may be hidden. Right-click it, or press Show hidden streams in View options.</li>
   </ul>
 
-  <p class="muted stamp">This page describes version <span class="appversion">3.1.0</span>. It is updated with every version.</p>
+  <p class="muted stamp">This page describes version <span class="appversion">3.2.0</span>. It is updated with every version.</p>
 </main>
 <script src="info.js"></script>
 </body>

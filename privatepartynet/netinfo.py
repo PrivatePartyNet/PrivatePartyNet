@@ -3,10 +3,32 @@
 import socket
 
 LOOPBACK = "127.0.0.1"
+GAME_ADAPTER = "PrivatePartyNet"  # the game network's own adapter (wghelper/main.go): reached only through itself
 
 
-def lan_addresses():
-    """Return this PC's IPv4 addresses, the one used for outside traffic first. Falls back to loopback."""
+def adapter_ipv4():
+    """[(adapter name, IPv4 address)] for every adapter that is up, VPN adapters included (Radmin VPN, Hamachi,
+    ZeroTier, Tailscale), which the host name's addresses can leave out. [] when the adapters cannot be read."""
+    try:
+        import psutil
+
+        stats = psutil.net_if_stats()
+        found = []
+        for name, entries in psutil.net_if_addrs().items():
+            if name in stats and not stats[name].isup:
+                continue
+            for entry in entries:
+                if entry.family == socket.AF_INET and entry.address and not entry.address.startswith("127."):
+                    found.append((name, entry.address))
+        return found
+    except Exception:
+        return []
+
+
+def lan_addresses(adapters=None):
+    """Return this PC's IPv4 addresses, the one used for outside traffic first, then every other adapter's (VPNs
+    included), with self-assigned 169.254 addresses last. The game network's own adapter is left out: its address is
+    only reachable through the game network itself. Falls back to loopback. `adapters` is for tests (adapter_ipv4)."""
     found = []
     # A UDP connect sends no packets. It only asks the OS which interface would route toward the LAN.
     try:
@@ -19,9 +41,14 @@ def lan_addresses():
         _, _, others = socket.gethostbyname_ex(socket.gethostname())
     except OSError:
         others = []
+    adapters = adapter_ipv4() if adapters is None else adapters
+    others = list(others) + [address for _, address in adapters]
     for address in others:
         if address not in found and not address.startswith("127."):
             found.append(address)
+    game = {address for name, address in adapters if name == GAME_ADAPTER}
+    found = [a for a in found if a not in game]
+    found.sort(key=lambda a: a.startswith("169.254."))  # stable: the order above is kept otherwise
     return found or [LOOPBACK]
 
 

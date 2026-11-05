@@ -46,13 +46,35 @@ What leaves your PC:
   address records on the public BitTorrent DHT while an invite is active. These records contain your public address and port,
   signed with the server's key, and anyone watching the DHT can see them.
 - A relay, only when the group set one up or a member turned relaying on (both are off until someone chooses them).
-- There are no accounts and no update check. The app sends nothing to a company server.
+- With Automatic updates on (the default), a check of PrivatePartyNet's releases on GitHub (api.github.com) shortly
+  after the app starts and every six hours, and the download of a newer version from github.com. GitHub sees your
+  public address and that you run PrivatePartyNet. With Automatic updates off (Options), GitHub is only asked when you
+  press Check for updates.
+- There are no accounts. The app sends nothing to a company server.
+
+How updates are checked:
+
+- Each release carries `PrivatePartyNet-<version>-update.json`, naming each file with its size and SHA-256, and an
+  Ed25519 signature of it. The public key is built into the app; no setting, environment variable or command line can
+  change it, or the address updates come from. The private key is kept by the maintainer, off this repository, sealed
+  with Windows data protection.
+- The app installs a download only when the signature checks out, its size and SHA-256 are the signed ones (checked
+  again just before it runs), its version is newer than the one running (never older) and the manifest's version and
+  tag are the release's. It talks HTTPS only, with Windows' certificates, and takes files only from github.com and
+  GitHub's download hosts. Release notes are shown as text.
+- A signed manifest may name the next signing key, signed by the current one, so the key can be replaced without
+  a new install, and may retire a key (one that leaked, and every key it handed on). Installed copies keep these with
+  their signatures and check them again each time, so nothing written into their data folder adds or removes a key.
+  The signing key is kept sealed for one Windows account, with a passphrase-sealed backup kept off that PC. If both
+  were lost, installed copies could not be updated; they would keep working as they are.
 
 Known limits:
 
-- On a local network, the party's HTTPS certificate is made on the host PC and signed by nobody, and the app's own windows
-  accept it without checking it (Chromium's `--ignore-certificate-errors` is set for them). Anyone who can sit between two
-  PCs on a network could read and change what is sent over a local join, so use local joins only on networks you trust.
+- The party's HTTPS certificate is made on the host PC and signed by nobody. Every join checks it against a pin (the
+  certificate's or its public key's SHA-256), and each party window accepts only the certificate its join checked; any
+  other is refused. The pin comes from the invite code, or the host's network beacon for a Nearby PC; a join by address
+  alone trusts the first certificate it sees and remembers it. So a join by address, or a Nearby join on a network
+  someone else controls, is only as safe as that first contact: use invite codes on networks you do not trust.
 - The game network adds a virtual network adapter, which Windows only allows with administrator permission. A small helper is
   started with that permission when you turn the game network on, and it ends with the app. It only creates the adapter,
   moves other adapters' priority while the game network is on, and runs WireGuard on it. WireGuard opens no connection of

@@ -4,7 +4,7 @@
 ; Installing over an existing PrivatePartyNet is an upgrade: same AppId, same folder, settings and certificate kept.
 
 #ifndef AppVersion
-  #define AppVersion "3.1.0"
+  #define AppVersion "3.2.0"
 #endif
 #ifndef PrereqDir
   #define PrereqDir "..\installer\prereq"
@@ -63,7 +63,10 @@ Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app
 [Run]
 ; Rebuilds Explorer's icon cache without restarting Explorer, so the new icon shows on shortcuts and the taskbar now.
 Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden skipifdoesntexist; StatusMsg: "Refreshing icons..."
-Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+; Starts the app afterwards in a silent install too (that is how the app's own updates run), unless /NOLAUNCH=1 says
+; not (an update installed as the app closes). A scripted or deployed install that should not start the app passes it
+; too: PrivatePartyNetSetup-<version>.exe /SILENT /NOLAUNCH=1.
+Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; WorkingDir: "{app}"; Flags: nowait postinstall; Check: LaunchAfter
 
 ; The app's own data (settings, certificate, log, and chat history when it exists) is not in an UninstallDelete
 ; rule. Uninstalling asks whether to remove it, and a silent uninstall always keeps it. See CurUninstallStepChanged.
@@ -124,11 +127,32 @@ end;
 
 // --- the wizard ------------------------------------------------------------------------------------------------
 
+// The app starts this installer for its own updates with /UPDATE=1 and then closes. Wait for it to be gone, so the
+// "close PrivatePartyNet first" check (AppMutex) finds it closed instead of stopping the update.
+procedure WaitForAppToClose();
+var
+  Tries: Integer;
+begin
+  Tries := 0;
+  while CheckForMutexes('Local\PrivatePartyNet.HostWindow') and (Tries < 120) do
+  begin
+    Sleep(500);
+    Tries := Tries + 1;
+  end;
+end;
+
+function LaunchAfter(): Boolean;
+begin
+  Result := ExpandConstant('{param:NOLAUNCH|0}') <> '1';
+end;
+
 function InitializeSetup(): Boolean;
 var
   Installed: String;
 begin
   Result := True;
+  if ExpandConstant('{param:UPDATE|0}') = '1' then
+    WaitForAppToClose();
   Installed := '';
   if RegQueryStringValue(HKCU, UninstallKey, 'DisplayVersion', Installed) and (Installed <> '') then
   begin

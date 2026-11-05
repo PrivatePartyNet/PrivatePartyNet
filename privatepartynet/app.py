@@ -25,10 +25,10 @@ from urllib.parse import quote, urlsplit
 import webview
 
 from privatepartynet import APP_NAME, __version__
-from privatepartynet import backup, connect, gamenet
+from privatepartynet import backup, connect, gamenet, windowpins
 from privatepartynet.gameclient import GameMesh, GameSession
 from privatepartynet.netlink import NetLink
-from privatepartynet.cert import ensure_certificate
+from privatepartynet.cert import ensure_certificate, pins_of_pem
 from privatepartynet.discovery import DEFAULT_PORT as DISCOVERY_PORT
 from privatepartynet.discovery import Discovery, clean_name
 from privatepartynet.dm import DmService, scope_for
@@ -40,9 +40,15 @@ from privatepartynet.paths import data_dir, web_dir
 from privatepartynet.server import Forbidden, NotFound, Party, generate_password
 from privatepartynet.settings import THEMES, load_settings, save_settings, valid_mbps, valid_port
 from privatepartynet.store import Store
+from privatepartynet.updater import Updater
 from privatepartynet.vault import Locked, Vault, VaultError, WrongPassword
 
 LOG_FILE = "privatepartynet.log"
+# The control panel's boxes that hide a message looking like a certificate, key or token, and what kinds it tells apart
+# (web/safetext.js). Controller.hidden_message logs only these words.
+_HIDING_BOXES = frozenset({"notice", "ask note", "backup note", "reach", "invite note", "join status", "game network",
+                           "game network paths"})
+_HIDDEN_KINDS = frozenset({"a certificate or key", "a code or token"})
 DEFAULT_PORT = 8765
 REQUEST_LIFETIME = 30.0
 MUTEX_NAME = "Local\\PrivatePartyNet.HostWindow"
@@ -124,6 +130,14 @@ def webview_options(storage_path=None):
     folder = Path(storage_path) if storage_path else data_dir() / "webview"
     folder.mkdir(parents=True, exist_ok=True)
     return {"debug": False, "private_mode": False, "storage_path": str(folder)}
+
+
+def browser_arguments(current):
+    """The WebView2 browser arguments: `current` (the variable may already be set on this PC, by a game launcher or as a
+    WebView2 workaround) without --ignore-certificate-errors. That flag made every window accept any certificate at
+    all; party windows accept the one their join checked instead (windowpins.py), and the flag would keep WebView2
+    from ever asking."""
+    return " ".join(arg for arg in (current or "").split() if arg != "--ignore-certificate-errors")
 
 
 HEX = re.compile(r"^[0-9a-f]+$")
@@ -309,7 +323,7 @@ class Controller:
         except OSError as exc:
             log.exception("Could not start network discovery")
             self._discovery = None
-            self._discovery_error = f"Nearby PCs are unavailable: {exc}"
+            self._discovery_error = f"Nearby PCs are unavailable: {plain_error(exc)}"
         self._dm = None
         self._start_dm()
         self._probe_network = discovery_port != 0  # port 0 means a test or diagnostic run: no router or STUN calls
@@ -329,6 +343,11 @@ class Controller:
         # The game network's PathManager (pathway.py) while it runs, set by whoever starts it; with .names, a dict of
         # user id -> name, when it knows them. The control panel shows its relaying and its problems from it.
         self.path_manager = None
+        self._party_windows = set()  # joined parties' windows that are open: an update waits for them to close
+        self.updater = Updater(lambda: self._settings, self._save, self._data_dir, self._update_busy,
+                               quit=self._quit_for_update)
+        if self._probe_network:  # a test or diagnostic run (discovery port 0) never asks GitHub
+            self.updater.start()
         self._tunnels = {}  # joined server key -> the punch-through tunnel it is reached by
 
     # --- the key, the identity and the chat store ----------------------------------------------------------
@@ -350,7 +369,7 @@ class Controller:
             self._secure_error = "That is not the password."
         except (VaultError, OSError) as exc:
             log.exception("Could not open the encrypted store")
-            self._secure_error = f"Your saved chats could not be opened: {exc}"
+            self._secure_error = f"Your saved chats could not be opened: {plain_error(exc)}"
 
     def unlock(self, password):
         """Give the password that protects the saved chats. Returns {ok, message}."""
@@ -372,7 +391,8 @@ class Controller:
         except WrongPassword:
             return {"ok": False, "message": "That is not the current password."}
         except (Locked, VaultError, ValueError) as exc:
-            return {"ok": False, "message": str(exc)}
+            log.warning("The chat password was not changed: %s", exc)
+            return {"ok": False, "message": plain_error(exc)}
         return {"ok": True, "message": ""}
 
     # --- direct messages -------------------------------------------------------------------------------------
@@ -575,7 +595,7 @@ class Controller:
 
             try:
                 host = punch.HostPunch(self._identity._sign, party.server_id, str(certfile), str(keyfile), party.port,
-                                       party.invite_secrets, poll=15.0, relays=party.host_relays,
+                                       party.invite_secrets, relays=party.host_relays,
                                        ipv6=connect.global_ipv6_addresses)
             except Exception:
                 log.exception("Could not get ready to be reached through the routers")
@@ -603,15 +623,26 @@ class Controller:
     def _invite_code(self):
         if self._party is None or not self._cert_pem:
             return ""
-        candidates = [["lan", a, self._party.port] for a in self._addresses()]
         if self._reach and self._reach.get("state") == "done":
             candidates = self._reach["candidates"]
+        else:
+            # The reach check (router, STUN) takes a few seconds after the party starts. An invite made before it is in
+            # still carries every address this PC knows by itself, IPv6 included: 3.1 put only the LAN ones in it.
+            port = self._party.port
+            candidates = [["lan", a, port] for a in self._addresses()]
+            candidates += [["ipv6", a, port] for a in connect.global_ipv6_addresses()]
+            candidates = candidates[:connect.MAX_CANDIDATES]
         self._start_host_punch()
         secret = self._party.new_invite_secret()
-        return connect.encode_invite(self._name, self._party.passcode, candidates, connect.certificate_fingerprint(self._cert_pem),
+        whole, spki = pins_of_pem(self._cert_pem)
+        code = connect.encode_invite(self._name, self._party.passcode, candidates, whole,
                                      server_id=self._settings.get("server_id") or "",
                                      host_sign=self._identity.sign_public.hex() if self._identity else "",
-                                     secret=secret, relays=self._party.invite_relays(bytes.fromhex(secret)))
+                                     secret=secret, relays=self._party.invite_relays(bytes.fromhex(secret)), spki=spki)
+        log.info("Invite made: %s (addresses: %s)", connect.describe_invite(connect.decode_invite(code)),
+                 ", ".join(f"{address} ({kind}{', ' + connect.vpn_name(address) if connect.vpn_name(address) else ''})"
+                           for kind, address, _ in candidates) or "none")
+        return code
 
     def invite(self):
         """The invite code for this party: the name, the password, where to try and the certificate to check."""
@@ -643,33 +674,55 @@ class Controller:
             return {"ok": False, "message": "Enter the host's address as numbers (like 203.0.113.5) and a port from 1 to 65535."}
         kind = "ipv6" if ":" in address else "lan" if address.startswith(("10.", "192.168.", "172.")) else "public"
         invite = {"name": str(name or "Party")[:40], "password": str(password or ""), "candidates": [[kind, address, port]],
-                  "fingerprint": "", "server_id": "", "host_sign": ""}
+                  "fingerprint": "", "server_id": "", "host_sign": "", "source": "address"}
         return self._begin_join(invite)
 
-    def _begin_join(self, invite):
+    def _begin_join(self, invite, peer=None):
+        """`peer`: the Nearby PC this join asks, so its answer (a password wanted, say) shows there."""
         if self._joiner is not None and self._joiner.status["state"] in ("trying", "waiting"):
             return {"ok": False, "message": "Already asking to join a party. Cancel that first."}
-        if not invite["candidates"]:
+        if peer is None:
+            self._add_nearby(invite)
+        if not invite["candidates"] and not invite.get("secret"):
             return {"ok": False, "message": "That invite has no address to try."}
         if self._identity is None:
             return {"ok": False, "message": self._secure_error or "Enter the password for your saved chats first."}
         self._joiner = connect.Joiner(invite, self._name, identity=self._identity)
+        self._joiner.peer_id = peer
         self._joiner_opened = False
         threading.Thread(target=self._joiner.run, name="privatepartynet-join", daemon=True).start()
         return {"ok": True, "message": "Asking..."}
 
+    def _add_nearby(self, invite):
+        """When the invite's host is also in the Nearby list (seen over a VPN such as Radmin, or a network the invite
+        does not know of), its address there is tried first: the same certificate proves it is the same party."""
+        pins = {invite.get("fingerprint") or "", invite.get("spki") or ""} - {""}
+        if self._discovery is None or not pins:
+            return
+        known = {(address, port) for _, address, port in invite["candidates"]}
+        for peer in self._discovery.peer_list():
+            if peer.get("sharing") and pins & {peer.get("fp"), peer.get("spki")} and peer.get("port"):
+                if (peer["address"], peer["port"]) not in known:
+                    log.info("The invite's host is also nearby, at %s%s: trying that address first", peer["address"],
+                             f" ({connect.vpn_name(peer['address'])})" if connect.vpn_name(peer["address"]) else "")
+                    invite["candidates"].insert(0, ["lan", peer["address"], int(peer["port"])])
+
     def join_status(self):
-        """Where the join stands: {state, message}. When the owner has let you in, the party window opens here."""
+        """Where the join stands: {state, message, needs_password, peer}. When the owner has let you in, the party
+        window opens here. `peer` is the Nearby PC asked (None for an invite or an address); `needs_password` says
+        the party wants a password that was not given."""
         joiner = self._joiner
         if joiner is None:
             return {"state": "idle", "message": ""}
-        status = dict(joiner.status)
+        status = dict(joiner.status, needs_password=joiner.needs_password, peer=getattr(joiner, "peer_id", None))
         if status["state"] == "allowed":
             if not self._joiner_opened:
                 self._joiner_opened = True
                 invite = joiner.invite
                 self._remember_server(invite, joiner)
-                self._join({"url": status["url"], "name": invite["name"]})
+                # The window accepts the certificate this join checked, and no other.
+                self._join({"url": status["url"], "name": invite["name"],
+                            "pins": (joiner.seen_fingerprint, joiner.seen_spki)})
             status["state"], status["message"] = "joined", "Opening the party window."
         status.pop("url", None)
         return status
@@ -684,12 +737,13 @@ class Controller:
         if self._store is None:
             return
         fingerprint = invite["fingerprint"] or joiner.seen_fingerprint
+        spki = invite.get("spki") or joiner.seen_spki
         key = invite["server_id"] or (fingerprint[:16] if fingerprint else "")
         if not key:
             return
         self._store.save_server("joined-" + key, {"name": invite["name"], "candidates": invite["candidates"],
                                                     "password": invite["password"], "fingerprint": fingerprint,
-                                                    "server_id": invite["server_id"], "joined": True,
+                                                    "spki": spki, "server_id": invite["server_id"], "joined": True,
                                                     "host_sign": invite.get("host_sign", ""),
                                                     "secret": invite.get("secret", "")})
         if joiner.tunnel is not None:
@@ -710,8 +764,9 @@ class Controller:
         if not record or not str(key).startswith("joined-"):
             return {"ok": False, "message": "That party is no longer in your list."}
         return self._begin_join({"name": record["name"], "password": record["password"], "candidates": record["candidates"],
-                                 "fingerprint": record.get("fingerprint", ""), "server_id": record.get("server_id", ""),
-                                 "host_sign": record.get("host_sign", ""), "secret": record.get("secret", "")})
+                                 "fingerprint": record.get("fingerprint", ""), "spki": record.get("spki", ""),
+                                 "server_id": record.get("server_id", ""), "host_sign": record.get("host_sign", ""),
+                                 "secret": record.get("secret", ""), "source": "remembered"})
 
     def forget_joined(self, key):
         if self._store is not None and str(key).startswith("joined-"):
@@ -791,7 +846,7 @@ class Controller:
             server_key = self._party.server_id
         else:
             record = self._store.server(key) if self._store is not None and key.startswith("joined-") else None
-            if not record or not record.get("fingerprint"):
+            if not record or not (record.get("fingerprint") or record.get("spki")):
                 return {"ok": False, "message": "That server is not in your list."}
             tunnel = self._tunnels.get(key)
             ordered = [["punch", "127.0.0.1", tunnel.port]] if tunnel is not None else connect._order(record.get("candidates") or [])
@@ -803,7 +858,7 @@ class Controller:
             paths = self._make_paths()
         except Exception as exc:
             log.exception("The game network could not start")
-            return {"ok": False, "message": f"The game network could not start: {exc}"}
+            return {"ok": False, "message": f"The game network could not start: {plain_error(exc)}"}
         public = gamenet.public_key(private)
         game = {"key": key, "session": None, "link": None, "mesh": None, "paths": paths, "stop": stop,
                 "private": private, "public": public}
@@ -814,8 +869,9 @@ class Controller:
             try:
                 address = party.net_host(public, paths.local_candidates())
             except gamenet.NetError as exc:
+                log.warning("The game network could not start: %s", exc)
                 self.game_off()
-                return {"ok": False, "message": f"The game network could not start: {exc}"}
+                return {"ok": False, "message": f"The game network could not start: {plain_error(exc)}"}
             paths.set_on_candidates(lambda candidates: party.net_candidates(party.net_host_user, candidates))
             self._game_session(game, address, party.net_directory().network)
 
@@ -844,8 +900,8 @@ class Controller:
                 self._use_relay(paths, relay, host_sign)
                 game["mesh"].apply(roster)
 
-            link = NetLink(address, port, record["fingerprint"], self._identity, public, on_roster,
-                           candidates=paths.local_candidates(), host_sign=host_sign,
+            link = NetLink(address, port, (record.get("fingerprint", ""), record.get("spki", "")), self._identity,
+                           public, on_roster, candidates=paths.local_candidates(), host_sign=host_sign,
                            server_id=record.get("server_id", ""))
             game["link"] = link
             paths.set_on_candidates(link.set_candidates)
@@ -903,6 +959,7 @@ class Controller:
         if game.get("mesh") is not None:
             game["mesh"].stop()
         game["paths"].stop()
+        self.updater.busy_changed()
         return {"ok": True, "message": "The game network is off."}
 
     # --- backup and import ---------------------------------------------------------------------------------
@@ -983,7 +1040,7 @@ class Controller:
             return self._export_to(path, str(passphrase), bool(include_identity))
         except (backup.BackupError, OSError) as exc:
             log.exception("Export failed")
-            return {"ok": False, "message": f"The backup could not be saved: {exc}"}
+            return {"ok": False, "message": f"The backup could not be saved: {plain_error(exc)}"}
 
     def import_chats(self, passphrase, use_identity=False):
         """Merge a backup file into the saved chats. Asks which file. Nothing already here is changed or removed."""
@@ -998,7 +1055,8 @@ class Controller:
         try:
             return self._import_from(path, str(passphrase or ""), bool(use_identity))
         except (backup.BackupError, VaultError, OSError) as exc:
-            return {"ok": False, "message": str(exc)}
+            log.warning("Import failed", exc_info=isinstance(exc, OSError))
+            return {"ok": False, "message": plain_error(exc)}
 
     # --- wiring from the app entry point -----------------------------------------------------------------
 
@@ -1032,6 +1090,7 @@ class Controller:
             "reach": self._reach_view(),
             "game": self.game_state(),
             "relay": party.relay_view() if party else None,
+            "update": self.updater.view(),
             "friend_relay": {"on": self._settings.get("friend_relay") is True,
                              "mbps": self._settings.get("friend_relay_mbps", 8), **self._paths_view()},
         }
@@ -1102,7 +1161,7 @@ class Controller:
             certfile, keyfile = ensure_certificate(self._data_dir, ["localhost", "127.0.0.1", *addresses])
         except (OSError, ValueError) as exc:
             log.exception("Could not create the certificate")
-            return {"ok": False, "message": f"Could not create the certificate: {exc}"}
+            return {"ok": False, "message": f"Could not create the certificate: {plain_error(exc)}"}
         self._cert_pem = Path(certfile).read_text(encoding="utf-8")
         self._certfiles = (str(certfile), str(keyfile))
         passcode = generate_password()  # used only by a brand-new server; an existing one keeps its own
@@ -1115,7 +1174,7 @@ class Controller:
                           owner=self._identity)
         except OSError as exc:
             log.exception("Could not listen on port %s", port)
-            return {"ok": False, "message": f"Could not listen on port {port}: {exc}"}
+            return {"ok": False, "message": f"Could not listen on port {port}: {plain_error(exc)}"}
         party.start()
         party.friend_relays = self._friend_relays  # members who relay for others, for the invites' relays
         party.relay_listeners.append(lambda: party.net_directory().touch())  # members get new relay settings at once
@@ -1125,7 +1184,7 @@ class Controller:
         if party.invite_secrets():
             self._start_host_punch()
         if self._discovery is not None:
-            self._discovery.set_sharing(port, "party", party.fingerprint)
+            self._discovery.set_sharing(port, "party", party.fingerprint, party.spki)
         log.info("Party started on port %s", port)
         self.open_room()
         return {"ok": True, "message": "Party is open."}
@@ -1143,6 +1202,7 @@ class Controller:
         if self._discovery is not None:
             self._discovery.set_sharing(None, None)
         log.info("Party stopped")
+        self.updater.busy_changed()
         return {"ok": True, "message": "Party closed."}
 
     def set_server_password(self, password):
@@ -1255,19 +1315,22 @@ class Controller:
         self._rooms.append(window)
         return {"ok": True, "message": "Party room opened."}
 
-    def ask_join(self, peer_id):
+    def ask_join(self, peer_id, password=""):
         """Ask a nearby PC to let you in. A PC with a party open is asked over HTTPS with your signed identity, checked
         against the certificate its beacon names, so the host knows it is really you and a returning member keeps their
-        role. A PC with no party open is asked over the network beacon, and starts one if its person says yes."""
+        role. A PC with no party open is asked over the network beacon, and starts one if its person says yes.
+        `password` is the party's, for a party that wants one (seen over a VPN, a PC counts as outside the network)."""
         if self._discovery is None:
             return {"ok": False, "message": "Nearby PCs are unavailable on this PC."}
         peer = next((p for p in self._discovery.peer_list() if p["id"] == peer_id), None)
         if peer is None:
             return {"ok": False, "message": "That PC is no longer in the list."}
-        if peer.get("sharing") and peer.get("port") and peer.get("fp"):
-            invite = {"name": peer["name"], "password": "", "candidates": [["lan", peer["address"], peer["port"]]],
-                      "fingerprint": peer["fp"], "server_id": "", "host_sign": peer.get("sign") or ""}
-            result = self._begin_join(invite)
+        if peer.get("sharing") and peer.get("port") and (peer.get("fp") or peer.get("spki")):
+            invite = {"name": peer["name"], "password": str(password or "")[:200],
+                      "candidates": [["lan", peer["address"], peer["port"]]], "fingerprint": peer.get("fp") or "",
+                      "spki": peer.get("spki") or "", "server_id": "", "host_sign": peer.get("sign") or "",
+                      "source": "nearby"}
+            result = self._begin_join(invite, peer=peer_id)
             if result["ok"]:
                 result["message"] = "Asked. Waiting for the other person to say yes."
             return result
@@ -1313,7 +1376,15 @@ class Controller:
         return {"ok": True, "message": ""}
 
     def _join(self, data):
-        """Open the party in its own window. The party is the host's own PC, reached on the LAN, so no warning is shown."""
+        """Open the party in its own window, which accepts only the host's certificate: `data["pins"]` (what the join
+        checked) or, from a Nearby accept, the pins of `data["cert"]`."""
+        pins = tuple(data.get("pins") or ())
+        if not pins and data.get("cert"):
+            try:
+                pins = pins_of_pem(data["cert"])
+            except ValueError:
+                pins = ()
+        windowpins.pin(data["url"], pins)
         token = self._feed.issue()
         separator = "&" if "?" in data["url"] else "?"
         feed = quote(f"http://127.0.0.1:{self._feed.port}", safe="")
@@ -1323,7 +1394,15 @@ class Controller:
             url += f"&theme={theme}"
         parts = urlsplit(data["url"])
         api = WindowApi(f"{parts.scheme}://{parts.netloc}", store=lambda: self._store)
-        api._attach(webview.create_window(f"PrivatePartyNet party: {data['name']}", url=url, width=1280, height=820, js_api=api))
+        window = webview.create_window(f"PrivatePartyNet party: {data['name']}", url=url, width=1280, height=820, js_api=api)
+        api._attach(window)
+        self._party_windows.add(window)
+
+        def closed(*_):
+            self._party_windows.discard(window)
+            self.updater.busy_changed()
+
+        window.events.closed += closed
         log.info("Joined %s", data["name"])
 
     # --- the Info menu ----------------------------------------------------------------------------------------
@@ -1342,6 +1421,7 @@ class Controller:
             "data_folder": str(self._data_dir),
             "log_file": str(self._data_dir / LOG_FILE),
             "libraries": [{"name": label, "version": library_version(dist), "purpose": purpose} for label, dist, purpose in CREDITS],
+            "update": self.updater.view(),
         }
 
     def open_about(self):
@@ -1349,6 +1429,57 @@ class Controller:
 
     def open_how(self):
         return self._open_info("how", f"How {APP_NAME} works", 760, 820)
+
+    # --- updates ---------------------------------------------------------------------------------------------
+
+    def _update_busy(self):
+        """What an update must wait for, in words for the control panel, or "" when nothing is going on."""
+        if self._party is not None:
+            return "your party"
+        if self._party_windows:
+            return "the party (and any call in it)"
+        if self._game is not None:
+            return "the game network"
+        return ""
+
+    def _quit_for_update(self):
+        """The installer (or the portable swap) is running: close every window so it can replace the app."""
+        for window in list(webview.windows):
+            try:
+                window.destroy()
+            except Exception:
+                log.debug("A window would not close for the update", exc_info=True)
+
+    def hidden_message(self, where, kind):
+        """The control panel did not show a message because it looked like a certificate, key or token (safetext.js).
+        Only which box and what kind are logged, from fixed lists; never the message."""
+        where = where if where in _HIDING_BOXES else "another box"
+        kind = kind if kind in _HIDDEN_KINDS else "a secret"
+        log.warning("The control panel hid a message that looked like %s (in the %s)", kind, where)
+        return {"ok": True}
+
+    def update_state(self):
+        return self.updater.view()
+
+    def check_updates(self):
+        """The Check for updates button: asks GitHub now, whatever the automatic setting."""
+        return self.updater.check(manual=True)
+
+    def update_restart(self):
+        return self.updater.restart_now()
+
+    def update_later(self):
+        return self.updater.later()
+
+    def update_skip(self):
+        return self.updater.skip()
+
+    def set_update_option(self, name, on):
+        """Automatic updates, or Include test versions, on or off."""
+        if name not in ("auto_update", "update_prerelease"):
+            return {"ok": False, "message": "There is no such option."}
+        self._save(**{name: bool(on)})
+        return {"ok": True, "message": "", "update": self.updater.view()}
 
     def _open_info(self, page, title, width, height):
         """One About window and one How window at a time. A second click says so instead of opening a copy."""
@@ -1380,6 +1511,8 @@ class Controller:
         if self._store is not None:
             self._store.close()
             self._store = None
+        self.updater.stop()
+        self.updater.on_exit()  # a checked update waiting for the app to close installs now, without starting it again
 
     # --- helpers ------------------------------------------------------------------------------------------
 
@@ -1401,6 +1534,15 @@ def _split_address(text):
     else:
         host, port = text, ""
     return host, (port or None)
+
+
+def plain_error(exc):
+    """What went wrong, for the control panel: an OS error by its reason alone (no "[WinError 10048]" in front, no
+    exception name), anything else by the words it carries. The full exception goes to the log, not here."""
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror.rstrip(".") + "."
+    text = str(exc).strip()
+    return text if text else "something unexpected went wrong; the details are in the log"
 
 
 def window_test(seconds=45):
@@ -1445,11 +1587,30 @@ def window_test(seconds=45):
     return 0 if outcome["ok"] else 1
 
 
+def exit_now(code):
+    """End the process once the window stack has stopped and everything is shut down. pywebview answers a page's last
+    bridge calls from threads of its own, and one reaching into .NET while Python shuts down crashed the process (an
+    access violation, exit 127; more often since party windows check certificates, windowpins.py). Ending here, with the
+    log written out, leaves nothing to race."""
+    logging.shutdown()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError):  # pythonw has no console
+            pass
+    os._exit(code)
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     configure_logging()
-    # Private app: the party's own self-signed certificate is accepted in every window, so none shows a warning.
-    os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--ignore-certificate-errors")
+    # Each party window accepts only the certificate its join checked (windowpins.py), never any certificate at all.
+    arguments = browser_arguments(os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"))
+    if arguments:
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = arguments
+    else:
+        os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
+    windowpins.install()
     if "--check-capture" in argv:
         from privatepartynet.frames import check_capture
 
@@ -1459,7 +1620,7 @@ def main(argv=None):
 
         return smoke_run()
     if "--window-test" in argv:
-        return window_test()
+        exit_now(window_test())
     sys.excepthook = report_crash
     if not acquire_single_instance():
         log.info("A second copy was started and closed; the first copy is running")
@@ -1474,4 +1635,4 @@ def main(argv=None):
     window.events.closed += controller.shutdown
     webview.start(**webview_options())
     log.info("PrivatePartyNet closed")
-    return 0
+    exit_now(0)

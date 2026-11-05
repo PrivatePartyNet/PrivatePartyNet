@@ -1,12 +1,19 @@
 """Creates the self-signed certificate that serves PrivatePartyNet over HTTPS.
 
 Browsers allow screen and microphone capture only on a secure origin, and a LAN address is not one unless it
-is served over HTTPS. The certificate is self-signed, so the browser warns once per certificate. It is kept in
-the user's profile and reused until it runs out soon or stops covering the addresses in use.
+is served over HTTPS. The certificate is self-signed. It is kept in the user's profile and reused until it runs out
+soon or is damaged, and then made again with the same key.
+
+Nothing checks the names and addresses in it: every join pins the certificate instead. So it is not made again when
+this PC's addresses change, which would break every pin already out there (remembered parties, invites sent, game
+network links). A pin is either the SHA-256 of the whole certificate (what invites and 3.0/3.1 peers carry; it changes
+when the certificate is renewed) or the SHA-256 of its public key (SubjectPublicKeyInfo), which a renewal keeps.
 """
 
 import datetime
+import hashlib
 import ipaddress
+import ssl
 from pathlib import Path
 
 from cryptography import x509
@@ -21,31 +28,62 @@ RENEW_BEFORE = datetime.timedelta(days=30)
 
 
 def ensure_certificate(directory, hosts):
-    """Return (cert_path, key_path) for a certificate that covers every name and address in hosts."""
+    """Return (cert_path, key_path). A certificate is made (naming `hosts`) only when there is none, it is damaged,
+    or it runs out within RENEW_BEFORE; an existing key is always kept."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     cert_path, key_path = directory / CERT_FILE, directory / KEY_FILE
-    if cert_path.exists() and key_path.exists() and _still_good(cert_path, hosts):
+    key = _load_key(key_path)
+    if key is not None and cert_path.exists() and _still_good(cert_path, key):
         return cert_path, key_path
-    _create(cert_path, key_path, hosts)
+    _create(cert_path, key_path, hosts, key)
     return cert_path, key_path
 
 
-def _still_good(cert_path, hosts):
+def _load_key(key_path):
+    try:
+        key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    except (OSError, ValueError, TypeError):
+        return None
+    return key if isinstance(key, rsa.RSAPrivateKey) else None
+
+
+def _still_good(cert_path, key):
     try:
         cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
-        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-    except (ValueError, x509.ExtensionNotFound):
+    except (OSError, ValueError):
         return False
-    if cert.not_valid_after_utc - datetime.datetime.now(datetime.timezone.utc) < RENEW_BEFORE:
-        return False
-    covered = {str(address) for address in san.get_values_for_type(x509.IPAddress)}
-    covered |= set(san.get_values_for_type(x509.DNSName))
-    return all(host in covered for host in hosts)
+    if cert.public_key().public_numbers() != key.public_key().public_numbers():
+        return False  # a certificate for another key is as good as damaged
+    return cert.not_valid_after_utc - datetime.datetime.now(datetime.timezone.utc) >= RENEW_BEFORE
 
 
-def _create(cert_path, key_path, hosts):
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+def pins_of_der(der):
+    """(SHA-256 of the whole certificate, SHA-256 of its public key), in hex, for a DER certificate."""
+    public = x509.load_der_x509_certificate(der).public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return hashlib.sha256(der).hexdigest(), hashlib.sha256(public).hexdigest()
+
+
+def pins_of_pem(pem_text):
+    return pins_of_der(ssl.PEM_cert_to_DER_cert(pem_text))
+
+
+def matches(pins, der):
+    """True when the DER certificate `der` is the one `pins` names: a pin (or a list of pins, empty ones ignored) that
+    is its whole-certificate or its public-key SHA-256."""
+    wanted = {pins} if isinstance(pins, str) else set(pins or ())
+    wanted.discard("")
+    if not wanted or not der:
+        return False
+    try:
+        return bool(wanted & set(pins_of_der(der)))
+    except ValueError:
+        return hashlib.sha256(der).hexdigest() in wanted
+
+
+def _create(cert_path, key_path, hosts, key=None):
+    key = key or rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "PrivatePartyNet")])
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (

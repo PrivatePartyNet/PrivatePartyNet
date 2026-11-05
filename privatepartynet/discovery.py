@@ -62,7 +62,7 @@ class Discovery:
         self._incoming = {}  # id -> address
         self._sharing = (None, None)  # (port, mode) while this copy is sharing
         self._who = None  # (user id, sign key hex, dh key hex, direct message port) once the identity is open
-        self._fingerprint = None
+        self._fingerprint = self._spki = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._socket = None
@@ -95,12 +95,14 @@ class Discovery:
             self.name = clean_name(name)
         self._send_beacon("beacon")
 
-    def set_sharing(self, port=None, mode=None, fingerprint=None):
-        """Say whether a party is open here. `fingerprint` (the party certificate's SHA-256) lets a PC that asks to join
-        check it reached this PC and not another one claiming the same name."""
+    def set_sharing(self, port=None, mode=None, fingerprint=None, spki=None):
+        """Say whether a party is open here. `fingerprint` (the party certificate's SHA-256, "fp", which 3.0/3.1 check)
+        and `spki` (its public key's, which outlasts a renewal) let a PC that asks to join check it reached this PC and
+        not another one claiming the same name."""
         with self._lock:
             self._sharing = (port, mode) if port else (None, None)
             self._fingerprint = fingerprint if port else None
+            self._spki = spki if port else None
         self._send_beacon("beacon")
 
     def set_identity(self, user, sign, dh, dm_port):
@@ -145,6 +147,8 @@ class Discovery:
                 body.update(sharing=port is not None, port=port, mode=mode)
                 if self._fingerprint:
                     body["fp"] = self._fingerprint
+                if self._spki:
+                    body["spki"] = self._spki
                 if self._who is not None:
                     body.update(user=self._who[0], sign=self._who[1], dh=self._who[2], dm=self._who[3])
         body.update(extra)
@@ -197,6 +201,7 @@ class Discovery:
                     "dh": who[2] if who else None,
                     "dm": who[3] if who else None,
                     "fp": message.get("fp") if _hex64(message.get("fp")) else None,
+                    "spki": message.get("spki") if _hex64(message.get("spki")) else None,
                     "id": peer_id,
                     "name": name,
                     "address": address[0],

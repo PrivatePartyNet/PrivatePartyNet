@@ -9,6 +9,7 @@ section[hidden] { display: none; }
 .field { display: grid; gap: 4px; margin: 10px 0; font-size: 13px; color: var(--muted); }
 .field.small { width: 120px; }
 .row { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+.row[hidden] { display: none; }
 input, select { font: inherit; padding: 7px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
 button { font: inherit; padding: 8px 12px; border: 0; border-radius: 6px; cursor: pointer; }
 button:disabled { opacity: 0.45; cursor: default; }
@@ -17,6 +18,9 @@ button.secondary { background: var(--surface-2); color: var(--text); }
 button.danger { background: var(--danger); color: #ffffff; }
 .notice { padding: 8px 10px; border-radius: 6px; background: var(--notice-bg); color: var(--notice-text); }
 .notice[hidden] { display: none; }
+.update p { margin: 0 0 6px; }
+.update .notes { max-height: 140px; overflow: auto; margin: 6px 0; white-space: pre-wrap; font: inherit; font-size: 12px; }
+.update .notes[hidden] { display: none; }
 .addresses { list-style: none; margin: 4px 0 8px; padding: 0; font-family: Consolas, monospace; font-size: 15px; }
 .addresses li { padding: 2px 0; user-select: text; }
 .code { font-family: Consolas, monospace; font-size: 30px; font-weight: 700; letter-spacing: 4px; margin: 2px 0 8px; user-select: text; }
@@ -40,7 +44,7 @@ td { user-select: text; }
 .dropdown[hidden] { display: none; }
 .dropdown button { position: relative; display: block; width: 100%; padding: 6px 10px 6px 28px; text-align: left; background: transparent; color: var(--text); border-radius: 4px; }
 .dropdown button:hover, .dropdown button:focus { background: var(--selected); outline: none; }
-.dropdown button[aria-checked="true"]::before { content: "¹3"; position: absolute; left: 9px; }
+.dropdown button[aria-checked="true"]::before { content: "\2713"; position: absolute; left: 9px; } /* a check mark, written in ASCII so no encoding can mangle it */
 .dropdown .group { padding: 4px 10px; font-size: 12px; color: var(--muted); }
 .dropdown hr { margin: 4px 0; border: 0; border-top: 1px solid var(--border); }
 /* A label above a box, next to a button: line the button up with the box, not with the label and box together. */

@@ -18,7 +18,18 @@ class SettingsTests(unittest.TestCase):
         save_settings({"port": 9100, "name": "Kitchen PC"}, self.folder)
         self.assertEqual(load_settings(self.folder), {"port": 9100, "name": "Kitchen PC", "theme": "system", "server_id": None,
                                                       "game_server": None, "friend_relay": False, "friend_relay_mbps": 8,
-                                                      "game_open": []})
+                                                      "game_open": [], "auto_update": True, "update_prerelease": True,
+                                                      "update_skip": ""})
+
+    def test_updates_are_automatic_and_include_test_versions_unless_turned_off(self):
+        loaded = load_settings(self.folder)
+        self.assertEqual((loaded["auto_update"], loaded["update_prerelease"], loaded["update_skip"]), (True, True, ""))
+        save_settings({"auto_update": False, "update_prerelease": False, "update_skip": "3.2.1"}, self.folder)
+        loaded = load_settings(self.folder)
+        self.assertEqual((loaded["auto_update"], loaded["update_prerelease"], loaded["update_skip"]), (False, False, "3.2.1"))
+        save_settings({"auto_update": "no", "update_skip": "<script>"}, self.folder)
+        loaded = load_settings(self.folder)
+        self.assertEqual((loaded["auto_update"], loaded["update_skip"]), (True, ""))
 
     def test_relaying_for_others_is_off_until_turned_on_and_its_limit_is_checked(self):
         self.assertFalse(load_settings(self.folder)["friend_relay"])

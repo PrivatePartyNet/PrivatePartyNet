@@ -33,6 +33,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import zlib
 
+from privatepartynet.cert import pins_of_der
 from privatepartynet.netinfo import LOOPBACK, lan_addresses
 from privatepartynet.server import ask_message
 
@@ -419,11 +420,19 @@ def certificate_fingerprint(pem_text):
     return hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem_text)).hexdigest()
 
 
-def encode_invite(name, password, candidates, fingerprint, server_id="", host_sign="", secret="", relays=()):
+def encode_invite(name, password, candidates, fingerprint, server_id="", host_sign="", secret="", relays=(), spki=""):
     """`secret` (hex) lets the joiner find the host through the DHT when no address answers (punch.py). `relays`
-    (Party.invite_relays) are where the two can meet when no direct way works at all."""
-    data = {"v": 1, "n": str(name)[:40], "p": str(password), "c": [list(c) for c in candidates][:MAX_CANDIDATES],
-            "f": fingerprint, "s": server_id, "k": host_sign, "r": secret}
+    (Party.invite_relays) are where the two can meet when no direct way works at all. "a" says which PrivatePartyNet
+    made the invite (3.2 on), so a joiner can tell the person when the host's copy is too old for what it needs.
+    `fingerprint` is the whole certificate's SHA-256, which 3.0/3.1 check; `spki` ("g"), its public key's, which
+    outlasts a renewal (cert.py)."""
+    from privatepartynet import __version__
+
+    data = {"v": 1, "a": __version__, "n": str(name)[:40], "p": str(password),
+            "c": [list(c) for c in candidates][:MAX_CANDIDATES], "f": fingerprint, "s": server_id, "k": host_sign,
+            "r": secret}
+    if spki:
+        data["g"] = spki
     if relays:
         data["y"] = [list(r) for r in relays][:MAX_RELAYS]
     packed = zlib.compress(json.dumps(data, separators=(",", ":")).encode("utf-8"), 9)
@@ -461,9 +470,25 @@ def decode_invite(code):
         raise ConnectError("That invite does not carry the host's certificate, so it cannot be checked.")
     secret = data.get("r") if isinstance(data.get("r"), str) and re.fullmatch(r"[0-9a-f]{32}", data.get("r") or "") else ""
     host_sign = data.get("k") if isinstance(data.get("k"), str) and re.fullmatch(r"[0-9a-f]{64}", data.get("k") or "") else ""
+    spki = data.get("g") if isinstance(data.get("g"), str) and re.fullmatch(r"[0-9a-f]{64}", data.get("g") or "") else ""
+    app = data.get("a") if isinstance(data.get("a"), str) and re.fullmatch(r"[0-9A-Za-z.+-]{1,20}", data["a"]) else ""
     return {"name": str(data.get("n") or "Party")[:40], "password": str(data.get("p") or ""), "candidates": candidates,
-            "fingerprint": fingerprint, "server_id": str(data.get("s") or "")[:40], "host_sign": host_sign,
-            "secret": secret, "relays": _read_relays(data.get("y"))}
+            "fingerprint": fingerprint, "spki": spki, "server_id": str(data.get("s") or "")[:40], "host_sign": host_sign,
+            "secret": secret, "relays": _read_relays(data.get("y")), "app": app}
+
+
+def describe_invite(invite):
+    """What an invite holds, for the log: never its password, keys or secret."""
+    kinds = {}
+    for kind, _, _ in invite.get("candidates") or []:
+        kinds[kind] = kinds.get(kind, 0) + 1
+    relays = invite.get("relays") or []
+    return (f"made by PrivatePartyNet {invite.get('app') or '3.1 or older'}; addresses: "
+            + (", ".join(f"{count} {kind}" for kind, count in kinds.items()) or "none")
+            + f"; IPv6: {'yes' if kinds.get('ipv6') else 'no'}"
+            + f"; relays: {sum(r['kind'] == 'vps' for r in relays)} relay server, "
+              f"{sum(r['kind'] == 'friend' for r in relays)} members who relay"
+            + f"; findable through the DHT: {'yes' if invite.get('secret') and invite.get('host_sign') and invite.get('server_id') else 'no'}")
 
 
 def _read_relays(items):
@@ -492,34 +517,114 @@ def _read_relays(items):
 # --- asking to join ---------------------------------------------------------------------------------------------
 
 
+VPN_NETWORKS = {  # the networks of the VPNs friends use to play LAN games together: one network spans every PC on it
+    "Radmin VPN": ipaddress.ip_network("26.0.0.0/8"),
+    "Hamachi": ipaddress.ip_network("25.0.0.0/8"),
+    "Tailscale": ipaddress.ip_network("100.64.0.0/10"),
+}
+
+
+def vpn_name(address):
+    """Which VPN an IPv4 address belongs to ("Radmin VPN", ...), or "" for none known."""
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return ""
+    return next((name for name, network in VPN_NETWORKS.items() if ip.version == 4 and ip in network), "")
+
+
 def _order(candidates, my_lan=None):
-    """Try the host's addresses on my own network first, then IPv6, then the public one."""
+    """Try the host's addresses on my own network first (or on a VPN we are both on), then IPv6, then the public one."""
     my_lan = my_lan if my_lan is not None else [a for a in lan_addresses() if a != LOOPBACK]
     prefixes = {a.rsplit(".", 1)[0] for a in my_lan}
+    vpns = {vpn_name(a) for a in my_lan} - {""}
 
     def rank(item):
         kind, address, _ = item
         if kind == "lan":
-            return 0 if address.rsplit(".", 1)[0] in prefixes else 3
+            return 0 if address.rsplit(".", 1)[0] in prefixes or vpn_name(address) in vpns else 3
         return {"ipv6": 1, "public": 2}.get(kind, 4)
 
     return sorted(candidates, key=rank)
 
 
 def _connect(address, port, fingerprint, timeout):
-    """An HTTPS connection to the host whose certificate matches the pinned fingerprint, or ConnectError."""
+    """An HTTPS connection to the host whose certificate matches the pin, or ConnectError. `fingerprint` is a pin or a
+    list of pins, each the whole certificate's SHA-256 or its public key's (cert.py); with none, any certificate does
+    and what was seen is noted (seen_fingerprint, seen_spki)."""
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE  # replaced by the fingerprint check just below
     connection = http.client.HTTPSConnection(address, port, timeout=timeout, context=context)
     connection.connect()
     der = connection.sock.getpeercert(binary_form=True)
-    seen = hashlib.sha256(der).hexdigest() if der else ""
-    if fingerprint and seen != fingerprint:
+    try:
+        seen, seen_spki = pins_of_der(der) if der else ("", "")
+    except ValueError:
+        seen, seen_spki = hashlib.sha256(der).hexdigest(), ""
+    pins = {fingerprint} if isinstance(fingerprint, str) else set(fingerprint or ())
+    pins.discard("")
+    if pins and not pins & {seen, seen_spki}:
         connection.close()
         raise ConnectError("The party at that address is not the one this invite is for (its certificate differs).")
-    connection.seen_fingerprint = seen  # with no fingerprint to check against, the first one seen is what gets remembered
+    # With no pin to check against, the first certificate seen is what gets remembered.
+    connection.seen_fingerprint, connection.seen_spki = seen, seen_spki
     return connection
+
+
+def describe_error(exc):
+    """A socket error in a few words for the log: "timed out", "refused", or its own words."""
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "timed out"
+    if isinstance(exc, ConnectionRefusedError):
+        return "refused: nothing listens on that port"
+    return getattr(exc, "strerror", None) or type(exc).__name__
+
+
+def _sentence(text):
+    text = text.strip()
+    return (text[:1].upper() + text[1:]).rstrip(".") + "." if text else ""
+
+
+def failure_text(invite, tried, punch_error=None, no_punch=""):
+    """What the person sees when no way in worked: what was tried, what the invite lacked, and what would help.
+    `tried` is [(kind, address, what happened)], `punch_error` a punch.PunchError (with .facts) when the way through
+    the routers was tried, and `no_punch` why it was not."""
+    facts = getattr(punch_error, "facts", {}) or {}
+    parts = ["Could not reach the party."]
+    source = invite.get("source")  # "nearby", "address" or "remembered" when no invite code was pasted
+    if tried:
+        said = "; ".join(dict.fromkeys(what for _, _, what in tried))
+        parts.append(f"Tried: {said}." if source else f"Tried the invite's addresses: {said}.")
+        if source in ("nearby", "address"):
+            return " ".join(parts + ["Check that its party is still open and that PrivatePartyNet may use the network "
+                                     "through the firewall on both PCs."])
+        private = [a for k, a, _ in tried if k == "lan"]
+        if private and len(private) == len(tried):
+            parts.append("Those are addresses on the host's own network: they work only there, or over a VPN you "
+                         "both use (such as Radmin VPN, Hamachi, ZeroTier or Tailscale).")
+    elif not invite.get("candidates"):
+        parts.append("The invite has no address to try.")
+    has_v6 = any(kind == "ipv6" for kind, _, _ in invite.get("candidates") or [])
+    if not has_v6 and not facts.get("host_v6"):
+        parts.append("The invite has no IPv6 address (the host's PC has none, or the invite was made before it was "
+                     "found), so IPv6 could not be tried.")
+    elif facts.get("host_v6") and not facts.get("my_v6"):
+        parts.append("The host has IPv6 but this PC has none, so it could not be used.")
+    if no_punch:
+        parts.append(_sentence(f"The way across the internet could not be tried: {no_punch}"))
+    elif punch_error is not None:
+        parts.append(_sentence(f"Connecting through both routers did not work: {punch_error}"))
+    if not invite.get("relays") and "relay" not in str(punch_error or ""):
+        parts.append("No relay server is set up for this party, and no member relays for others.")
+    if facts.get("host_found") and not facts.get("host_version"):
+        parts.append("The host is running an older PrivatePartyNet (3.1 or earlier): ask them to update. Both PCs "
+                     "need 3.1 or later for IPv6 and relays, and 3.2 or later notices a joiner in time to connect "
+                     "through two routers.")
+    elif not source and not invite.get("app") and not has_v6 and not invite.get("relays"):
+        parts.append("The invite comes from an older PrivatePartyNet (3.1 or earlier): ask the host to update and send "
+                     "a new invite. Both PCs need 3.1 or later for IPv6 and relays.")
+    return " ".join(parts)
 
 
 def _base(address, port):
@@ -544,19 +649,27 @@ class Joiner:
         self._poll = poll
         self._timeout = timeout
         self._cancel = threading.Event()
-        self.seen_fingerprint = ""
+        self.seen_fingerprint = self.seen_spki = ""
         self.tunnel = None  # the punch-through tunnel, when that is how the party was reached (kept open by the app)
+        self.needs_password = False  # the party wants a password and none was given: the page offers a box for it
         self.status = {"state": "trying", "message": "Looking for the party...", "url": ""}
 
     def cancel(self):
         self._cancel.set()
 
+    def _pins(self):
+        """What the host's certificate is checked against: the invite's whole-certificate and key pins."""
+        return self.invite.get("fingerprint") or "", self.invite.get("spki") or ""
+
     def _set(self, state, message, url=""):
         self.status = {"state": state, "message": message, "url": url}
+        if state in ("failed", "denied", "gone"):
+            log.info("Join of %s ended (%s): %s", self.invite.get("name"), state, message)
 
     def run(self):
         invite = self.invite
-        tried = []
+        log.info("Joining %s: the invite was %s", invite.get("name"), describe_invite(invite))
+        tried = []  # (kind, address, what happened)
         for kind, address, port in _order(invite["candidates"], self._my_lan):
             if self._cancel.is_set():
                 self._set("failed", "Cancelled.")
@@ -565,48 +678,64 @@ class Joiner:
             try:
                 ticket = self._ask(address, port)
             except ConnectError as exc:
-                tried.append(str(exc))
+                tried.append((kind, address, str(exc)))
+                log.info("Trying %s address %s port %s: %s", kind, address, port, exc)
                 if "certificate differs" in str(exc) or "banned" in str(exc) or "wrong passwords" in str(exc):
                     self._set("failed", str(exc))
                     return
                 continue
-            except OSError:
-                tried.append(f"{address} did not answer")
+            except OSError as exc:
+                tried.append((kind, address, f"{address} did not answer"))
+                log.info("Trying %s address %s port %s: no answer (%s)", kind, address, port, describe_error(exc))
                 continue
             if ticket is None:
+                log.info("Trying %s address %s port %s: the party wants its password", kind, address, port)
+                self.needs_password = not self.invite["password"]
                 self._set("failed", "That password is not right." if self.invite["password"] else
-                          "This party needs its password. Ask the host for an invite.")
+                          "This party needs its password. Type it below and ask again, or ask the host for an invite.")
                 return
+            log.info("Trying %s address %s port %s: the party answered; waiting to be let in", kind, address, port)
             self._wait(address, port, ticket)
             return
         if self._punch(tried):
             return
-        why = "; ".join(sorted(set(tried))[:3]) or "no address to try"
-        self._set("failed", "Could not reach the party (" + why + ").")
+        self._set("failed", failure_text(invite, tried, None, self._no_punch_reason()))
+
+    def _no_punch_reason(self):
+        invite = self.invite
+        if not invite.get("secret") or not any(self._pins()):
+            return "the invite has no key for finding the host across the internet (ask the host for a new invite)"
+        if not (invite.get("host_sign") and invite.get("server_id")) and not invite.get("relays"):
+            return "the invite does not say which PC to look for across the internet"
+        return ""
 
     def _punch(self, tried):
         """Reach the host through both routers (punch.py) when no address answered. True when it was tried to the end
         (joined, denied or failed with its own message); False when the invite cannot do it."""
         invite = self.invite
         relays = invite.get("relays") or []
-        findable = invite.get("host_sign") and invite.get("server_id")
-        if not (invite.get("secret") and invite["fingerprint"] and (findable or relays)):
+        if self._no_punch_reason():
+            log.info("Not trying across the internet: %s", self._no_punch_reason())
             return False
         if self._cancel.is_set():
             return False
         from privatepartynet import punch
 
         self._set("trying", "No address answered; trying a direct connection through both routers, then a relay "
-                            "(this takes up to a minute)..." if relays else
-                            "No address answered; trying a direct connection through both routers (this takes up to a minute)...")
+                            "(this takes up to two minutes)..." if relays else
+                            "No address answered; trying a direct connection through both routers (this takes up to "
+                            "two minutes)...")
         try:
             tunnel = punch.join_through(invite.get("host_sign", ""), invite.get("server_id", ""),
-                                        bytes.fromhex(invite["secret"]), invite["fingerprint"], relays=relays,
+                                        bytes.fromhex(invite["secret"]), self._pins(), relays=relays,
                                         ipv6=global_ipv6_addresses)
+        except punch.PunchError as exc:
+            self._set("failed", failure_text(invite, tried, exc))
+            return True
         except Exception as exc:
-            why = "; ".join(sorted(set(tried))[:2])
-            self._set("failed", f"Could not reach the party ({why}). The connection through the routers did not work "
-                      f"either: {exc}")
+            log.error("Joining through the routers failed unexpectedly", exc_info=True)
+            self._set("failed", failure_text(invite, tried, punch.PunchError(
+                "something unexpected went wrong; the details are in the log", {"unexpected": type(exc).__name__})))
             return True
         self.tunnel = tunnel
         try:
@@ -628,31 +757,34 @@ class Joiner:
         return True
 
     def _ask(self, address, port):
-        fingerprint = self.invite["fingerprint"]
+        pins = self._pins()
         body = {"name": self.name, "password": self.invite["password"]}
         if self.identity is not None:
-            connection = _connect(address, port, fingerprint, self._timeout)
+            connection = _connect(address, port, pins, self._timeout)
             try:
                 connection.request("GET", "/ask?challenge=1")
                 response = connection.getresponse()
                 challenge = json.loads(response.read())
-                seen = connection.seen_fingerprint
+                seen, seen_spki = connection.seen_fingerprint, connection.seen_spki
             finally:
                 connection.close()
             if response.status != 200 or not isinstance(challenge.get("nonce"), str):
                 raise ConnectError("The party did not answer the sign-in step.")
-            if not fingerprint:
+            if not any(pins):
                 # Joining by address: the first certificate seen is the one trusted from now on, for every later
                 # connection of this attempt and for the remembered server.
-                fingerprint = self.invite["fingerprint"] = seen
+                self.invite["fingerprint"], self.invite["spki"] = seen, seen_spki
+                pins = self._pins()
             # Sign what this side checked itself: the certificate it saw, not anything the server said about itself.
             message = ask_message(seen, challenge["nonce"], self._clean_name())
             body.update(card=self.identity.card(self.name), nonce=challenge["nonce"],
                         sig=self.identity.sign(message).hex())
-        connection = _connect(address, port, fingerprint, self._timeout)
-        self.seen_fingerprint = connection.seen_fingerprint
-        if not self.invite["fingerprint"]:
+        connection = _connect(address, port, pins, self._timeout)
+        self.seen_fingerprint, self.seen_spki = connection.seen_fingerprint, connection.seen_spki
+        if not self.invite.get("fingerprint"):
             self.invite["fingerprint"] = self.seen_fingerprint
+        if not self.invite.get("spki"):  # this connection passed the check (or is the first seen): its key is the host's
+            self.invite["spki"] = self.seen_spki
         try:
             connection.request("POST", "/ask", body=json.dumps(body), headers={"Content-Type": "application/json"})
             response = connection.getresponse()
@@ -681,7 +813,7 @@ class Joiner:
         deadline = time.monotonic() + self._answer_wait
         while time.monotonic() < deadline and not self._cancel.is_set():
             try:
-                connection = _connect(address, port, self.invite["fingerprint"], self._timeout)
+                connection = _connect(address, port, self._pins(), self._timeout)
                 try:
                     connection.request("GET", "/ask?ticket=" + urllib.parse.quote(ticket))
                     answer = json.loads(connection.getresponse().read())

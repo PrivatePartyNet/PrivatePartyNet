@@ -57,6 +57,11 @@ Use:
     pc.addresses                          # [("ipv6", its global address)], for PathManager's addresses=
     pc.v4_router, pc.v6_router            # their dropped lists say what each refused
 
+Code that makes its own IPv6 socket (HostPunch, join_through) can be put behind an IPv6 firewall too, with
+adopting(). Its socket must then be dual-stack (IPV6_V6ONLY off; punch makes it V6ONLY, so a test swaps punch._v6_socket),
+and its global address is router.mapped_address, an IPv4-mapped IPv6 address (::ffff:127.77.x.y) that Windows carries
+over IPv4 loopback. As on real IPv6 the address keeps the socket's own port, and the firewall's rules apply both ways.
+
 Limits: a packet sent to a public address where no mapping exists reaches a closed port on loopback. Windows then
 reports a ConnectionResetError on the sender's socket, where a real router would drop the packet without a word. A
 router does not refuse packets between two PCs behind it (hairpinning always works). Mappings never time out unless
@@ -99,7 +104,7 @@ def _inside(sock_or_port):
     if isinstance(sock_or_port, int):
         return ("127.0.0.1", sock_or_port)
     address, port = sock_or_port.getsockname()[:2]
-    return ("127.0.0.1" if address in ("0.0.0.0", "") else address, port)
+    return ("127.0.0.1" if address in ("0.0.0.0", "", "::") else address, port)
 
 
 def _name(address):
@@ -163,6 +168,7 @@ class Router:
         self.family = 6 if kind in V6_KINDS else 4
         self.address = address  # the IPv4 address its sockets are on
         self.global_address = str(V6_NETWORK[int(ipaddress.ip_address(address)) & 0xFFFF]) if self.family == 6 else None
+        self.mapped_address = f"::ffff:{address}" if self.family == 6 else None  # for adopted IPv6 sockets
         self.mapping_seconds = mapping_seconds
         self.mtu = mtu
         self.dropped = collections.deque(maxlen=1000)
@@ -409,13 +415,15 @@ class Internet:
         with self._lock:
             self._inside.setdefault(inside, {})[router.family] = router
 
-    def _open(self, router, inside, forwarded=False, port=None):
+    def _open(self, router, inside, forwarded=False, port=None, same_port=False):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind((router.address, 0))
+        sock.bind((router.address, inside[1] if same_port else 0))
         sock.setblocking(False)
         mapping = _Mapping(router, inside, sock, forwarded)
         self._by_socket[sock] = mapping
-        if router.family == 6:
+        if same_port:
+            mapping.name = (router.mapped_address, inside[1])  # an adopted IPv6 socket: its own port, mapped address
+        elif router.family == 6:
             mapping.name = (router.global_address, port or inside[1])  # no NAT: the PC's own port
             self._by_public[mapping.public] = mapping
             self._by_name[mapping.name] = mapping
@@ -448,6 +456,10 @@ class Internet:
                 continue
             if inside[1]:
                 self._inside.setdefault(inside, {})[router.family] = router
+                if router.family == 6 and (inside, None) not in router._mappings:
+                    # IPv6 has no NAT: the socket is reachable at its own port from the start, as far as the firewall
+                    # lets anything in.
+                    router._mappings[(inside, None)] = self._open(router, inside, same_port=True)
             else:
                 keep.append(reference)
         router._pending = keep

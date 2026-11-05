@@ -67,6 +67,15 @@ class DiscoveryTests(unittest.TestCase):
         self.b.set_sharing(None, None)
         self.assertTrue(wait_until(lambda: not peer_named(self.a, "Laptop")["sharing"], seconds=1.5))
 
+    def test_an_open_party_names_both_of_its_certificate_pins(self):
+        whole, spki = "ab" * 32, "cd" * 32
+        self.assertTrue(wait_until(lambda: peer_named(self.a, "Laptop") is not None))
+        self.b.set_sharing(8765, "party", whole, spki)
+        self.assertTrue(wait_until(lambda: (peer_named(self.a, "Laptop") or {}).get("spki") == spki, seconds=1.5))
+        self.assertEqual(peer_named(self.a, "Laptop")["fp"], whole, "the field 3.0/3.1 read is unchanged")
+        self.b.set_sharing(8765, "party", whole, "not a pin")
+        self.assertTrue(wait_until(lambda: peer_named(self.a, "Laptop")["spki"] is None, seconds=1.5))
+
     def test_a_request_is_answered_with_the_address_to_open(self):
         self.assertTrue(wait_until(lambda: peer_named(self.a, "Laptop") is not None))
         self.assertTrue(self.a.request(peer_named(self.a, "Laptop")["id"]))

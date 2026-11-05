@@ -19,9 +19,19 @@
     nobody: document.getElementById("nobody"),
     ask: document.getElementById("ask"),
     askNote: document.getElementById("askNote"),
+    askPasswordRow: document.getElementById("askPasswordRow"),
+    askPassword: document.getElementById("askPassword"),
+    askWithPassword: document.getElementById("askWithPassword"),
     requests: document.getElementById("requests"),
     requestList: document.getElementById("requestList"),
     themeItems: document.querySelectorAll("#optionsMenu [data-choice]"),
+    autoUpdate: document.getElementById("autoUpdate"),
+    testVersions: document.getElementById("testVersions"),
+    checkUpdates: document.getElementById("checkUpdates"),
+    updateCard: document.getElementById("updateCard"),
+    updateText: document.getElementById("updateText"),
+    updateNotes: document.getElementById("updateNotes"),
+    updateButtons: document.getElementById("updateButtons"),
     openFolder: document.getElementById("openFolder"),
     reach: document.getElementById("reach"),
     serverPassword: document.getElementById("serverPassword"),
@@ -79,8 +89,21 @@
     return window.pywebview.api;
   }
 
+  var hidden = {};  // box -> the text last hidden there, so a message repeated by every poll is logged once
+
+  // Writes a status or error box, unless the text looks like a certificate, key, invite code or token (safetext.js):
+  // the box then says one was hidden, and the app logs where.
+  function put(node, text, where) {
+    var kind = window.PrivatePartyNetSafeText.secretLike(text);
+    if (kind && hidden[where] !== text) {
+      hidden[where] = text;
+      api().hidden_message(where, kind);
+    }
+    node.textContent = window.PrivatePartyNetSafeText.shown(text);
+  }
+
   function say(text) {
-    el.notice.textContent = text || "";
+    put(el.notice, text, "notice");
     el.notice.hidden = !text;
   }
 
@@ -89,6 +112,7 @@
     renderReach(state.reach);
     renderGame(state.game);
     renderRelay(state.relay, state.friend_relay);
+    renderUpdate(state.update);
     el.unlockBox.hidden = !state.locked;
     el.openMessages.disabled = state.locked;
     el.dmUnread.textContent = state.dm_unread ? state.dm_unread + " unread" : "";
@@ -111,8 +135,12 @@
 
     el.party.hidden = !state.running;
     el.serverPassword.textContent = state.passcode || "";
+    // A join asked from this list answers here; an invite's join answers under the invite box, not here as well.
+    var nearbyJoin = state.join && state.join.peer;
+    el.askPasswordRow.hidden = !(nearbyJoin && state.join.needs_password);
+    if (nearbyJoin) passwordPeer = state.join.peer;
     if (state.join && state.join.message) {
-      el.askNote.textContent = state.join.message;
+      if (nearbyJoin) put(el.askNote, state.join.message, "ask note");
       if (state.join.state !== lastJoinState) {
         lastJoinState = state.join.state;
         if (state.join.state !== "trying" && state.join.state !== "waiting") loadJoined();
@@ -197,7 +225,18 @@
 
   el.ask.addEventListener("click", function () {
     if (!selectedPeer) return;
-    api().ask_join(selectedPeer).then(function (result) { el.askNote.textContent = result.message; });
+    api().ask_join(selectedPeer, "").then(function (result) { put(el.askNote, result.message, "ask note"); });
+  });
+
+  // A party seen over a VPN (Radmin VPN, say) counts that PC as outside its network, so it wants its password.
+  var passwordPeer = null;
+  el.askWithPassword.addEventListener("click", function () {
+    var peer = passwordPeer || selectedPeer;
+    if (!peer) return;
+    api().ask_join(peer, el.askPassword.value).then(function (result) {
+      put(el.askNote, result.message, "ask note");
+      if (result.ok) el.askPasswordRow.hidden = true;
+    });
   });
 
   // --- the menu bar ------------------------------------------------------------------------------------------
@@ -256,6 +295,50 @@
     });
   });
   el.openFolder.addEventListener("click", function () { api().open_data_folder(); });
+
+  // --- updates ---------------------------------------------------------------------------------------------
+
+  var lastUpdate = "";
+
+  function renderUpdate(view) {
+    if (!view) return;
+    el.autoUpdate.setAttribute("aria-checked", view.automatic ? "true" : "false");
+    el.testVersions.setAttribute("aria-checked", view.include_test ? "true" : "false");
+    var shown = window.PrivatePartyNetUpdates.card(view);
+    var key = JSON.stringify(shown);
+    if (key === lastUpdate) return;
+    lastUpdate = key;
+    el.updateCard.hidden = !shown.show;
+    el.updateText.textContent = shown.text;
+    el.updateNotes.textContent = shown.notes;
+    el.updateNotes.hidden = !shown.notes;
+    el.updateButtons.textContent = "";
+    shown.buttons.forEach(function (spec) {
+      var button = document.createElement("button");
+      button.className = spec.primary ? "primary" : "secondary";
+      button.textContent = spec.label;
+      button.disabled = spec.disabled;
+      button.addEventListener("click", function () {
+        var call = { restart: "update_restart", later: "update_later", skip: "update_skip" }[spec.action];
+        api()[call]().then(function (result) { if (result && result.message && !result.ok) say(result.message); });
+      });
+      el.updateButtons.append(button);
+    });
+  }
+
+  [[el.autoUpdate, "auto_update"], [el.testVersions, "update_prerelease"]].forEach(function (pair) {
+    pair[0].addEventListener("click", function () {
+      var on = pair[0].getAttribute("aria-checked") !== "true";
+      api().set_update_option(pair[1], on).then(function (result) { if (result.update) renderUpdate(result.update); });
+    });
+  });
+  el.checkUpdates.addEventListener("click", function () {
+    say("Checking for updates...");
+    api().check_updates().then(function (view) {
+      renderUpdate(view);
+      say(window.PrivatePartyNetUpdates.card(view).show ? "" : view.message);
+    });
+  });
   el.openHow.addEventListener("click", function () {
     api().open_how().then(function (result) { say(result.message); });
   });
@@ -274,7 +357,7 @@
   window.addEventListener("pywebviewready", poll);
 
   function backupSay(result) {
-    el.backupNote.textContent = result.message || "";
+    put(el.backupNote, result.message, "backup note");
   }
 
   el.openMessages.addEventListener("click", function () {
@@ -318,14 +401,14 @@
     } else if (reach.state === "failed") {
       el.reach.textContent = "Could not check how you can be reached from outside.";
     } else {
-      el.reach.textContent = reach.advice;
+      put(el.reach, reach.advice, "reach");
     }
   }
 
   el.copyInvite.addEventListener("click", function () {
     api().invite().then(function (result) {
       if (!result.ok) {
-        el.inviteNote.textContent = result.message;
+        put(el.inviteNote, result.message, "invite note");
         return;
       }
       var done = function () { el.inviteNote.textContent = "Copied. Send it to the person; it contains your party's password."; };
@@ -346,7 +429,7 @@
   function showJoin(status) {
     var busy = status.state === "trying" || status.state === "waiting";
     el.joinStatus.hidden = !status.message || status.state === "idle";
-    el.joinStatus.textContent = status.message || "";
+    put(el.joinStatus, status.message, "join status");
     el.joinCancel.hidden = !busy;
     el.joinInvite.disabled = el.joinAddressBtn.disabled = busy;
     if (!busy && joinTimer) {
@@ -449,7 +532,7 @@
       }
       el.gameList.append(li);
     });
-    el.gameStatus.textContent = game.message || "";
+    put(el.gameStatus, game.message, "game network");
     el.gameOff.hidden = !game.active;
   }
 
@@ -478,7 +561,7 @@
     el.pathWays.textContent = ways.length ? "Game network: " + ways.join("; ") + "." : "";
     el.pathWays.hidden = !ways.length;
     var problems = friend.problems || [];
-    el.pathProblems.textContent = problems.length ? "Cannot reach " + problems.join(" ") : "";
+    put(el.pathProblems, problems.length ? "Cannot reach " + problems.join(" ") : "", "game network paths");
     el.pathProblems.hidden = !problems.length;
   }
 
