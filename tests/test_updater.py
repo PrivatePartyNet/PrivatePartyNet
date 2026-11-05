@@ -425,11 +425,13 @@ class FlowTests(unittest.TestCase):
         self.launched, self.quits, self.envs = [], [], []
 
     def updater(self, kind="installed", app_dir=None):
-        return Updater(lambda: self.settings, lambda **c: self.settings.update(c), self.folder / "data",
-                       lambda: self.busy, current="3.2.0", kind=kind, api_url=f"{self.github.base}/releases",
-                       keys=(PUBLIC,), api_hosts={"127.0.0.1"}, asset_hosts={"127.0.0.1"},
-                       fetcher=Fetcher(self.github.client_context(), timeout=5), launcher=self.launch,
-                       app_dir=app_dir or self.folder / "app" / "PrivatePartyNet", quit=lambda: self.quits.append(1))
+        up = Updater(lambda: self.settings, lambda **c: self.settings.update(c), self.folder / "data",
+                     lambda: self.busy, current="3.2.0", kind=kind, api_url=f"{self.github.base}/releases",
+                     keys=(PUBLIC,), api_hosts={"127.0.0.1"}, asset_hosts={"127.0.0.1"},
+                     fetcher=Fetcher(self.github.client_context(), timeout=5), launcher=self.launch,
+                     app_dir=app_dir or self.folder / "app" / "PrivatePartyNet", quit=lambda: self.quits.append(1))
+        self.addCleanup(up.join_download, 30)  # a button's check downloads in the background: let it end first
+        return up
 
     def launch(self, command, env=None):
         self.launched.append(command)
