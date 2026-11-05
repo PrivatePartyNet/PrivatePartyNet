@@ -323,9 +323,23 @@ class ServerTests(unittest.TestCase):
     def through(self, port_one, port_two, sockets):
         a, b = sockets
         b.sendto(b"hello?", ("127.0.0.1", port_two))  # b's program speaks first, so its bridge knows where to answer
-        a.sendto(b"ciphertext from a", ("127.0.0.1", port_one))
-        self.assertEqual(b.recvfrom(2048)[0], b"ciphertext from a")
-        self.assertEqual(a.recvfrom(2048)[0], b"hello?")
+        self.assertTrue(self.say(a, port_one, b, b"ciphertext from a"))
+        self.assertTrue(self.say(b, port_two, a, b"hello?"))
+
+    def say(self, sender, port, receiver, data, tries=10):
+        """Send `data` until `receiver` has it. A bridge learns where its own program is from that program's first
+        datagram, so one that reaches it before then is lost, as UDP may be: under load, b's first "hello?" can reach
+        a's bridge (the slower TLS side) before a's own first datagram has."""
+        receiver.settimeout(1.0)
+        for _ in range(tries):
+            sender.sendto(data, ("127.0.0.1", port))
+            try:
+                while receiver.recvfrom(2048)[0] != data:
+                    pass
+                return True
+            except socket.timeout:
+                continue
+        return False
 
     def tls(self):
         raw = socket.create_connection(("127.0.0.1", self.relay.tls_port), timeout=5)
