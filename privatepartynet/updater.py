@@ -403,7 +403,8 @@ class Updater:
             grew = False
             for link in links:
                 key, by, sig = (str(link.get(name) or "") for name in ("key", "by", "sig"))
-                if key not in trusted and by in trusted and re.fullmatch(r"[0-9a-f]{64}", key)                         and _hands_on(by, key, sig):
+                if key not in trusted and by in trusted and re.fullmatch(r"[0-9a-f]{64}", key) \
+                        and _hands_on(by, key, sig):
                     trusted.append(key)
                     grew = True
         return tuple(trusted)
