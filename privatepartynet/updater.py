@@ -593,7 +593,7 @@ class Updater:
     def _offer_ready(self):
         version = self.found["version"]
         waiting = self._busy()
-        if self.found["kind"] == "portable" and self.ready is not None and self.ready.parent == self.folder:
+        if self.found["kind"] == "portable" and self._in_updates() is not None:
             self._set("manual", f"{APP} {version} is checked and unpacked, but this copy's folder cannot be changed "
                       f"in place. Close {APP} and replace the folder with the one that opens.", version=str(version),
                       waiting="")
@@ -716,10 +716,20 @@ class Updater:
     def _spawn(self, command):
         subprocess.Popen(command, close_fds=True, creationflags=DETACHED | NO_WINDOW, cwd=str(self.folder))
 
+    def _in_updates(self):
+        """The name of the updates folder's entry that holds what is ready, when it is in there (an installer, or a
+        portable copy unpacked there because its own folder's parent cannot be written); else None."""
+        ready = self.ready
+        if ready is None:
+            return None
+        try:
+            return ready.relative_to(self.folder).parts[0]
+        except (ValueError, IndexError):
+            return None
+
     def clean(self):
         """Delete old downloads, and a portable copy's previous folder once the new one runs."""
-        keep = {self.ready.name if self.ready is not None and self.ready.parent == self.folder else None,
-                self.found["file"]["name"] if self.found else None, "state.json"}
+        keep = {self._in_updates(), self.found["file"]["name"] if self.found else None, "state.json"}
         try:
             for path in self.folder.iterdir():
                 if path.name in keep:

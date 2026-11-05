@@ -488,6 +488,22 @@ class FlowTests(unittest.TestCase):
         self.assertEqual((app / "_internal" / "web.txt").read_bytes(), b"new page")
         self.assertEqual((app.parent / "PrivatePartyNet.old" / "PrivatePartyNet.exe").read_bytes(), b"old app")
 
+    def test_a_portable_copy_whose_folder_cannot_change_unpacks_into_updates_and_says_so(self):
+        app = self.folder / "portable" / "PrivatePartyNet"
+        app.mkdir(parents=True)
+        (app.parent / "PrivatePartyNet.update-3.2.1").write_bytes(b"in the way")  # unpacking beside it fails
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("PrivatePartyNet/PrivatePartyNet.exe", b"new app")
+        self.github.publish("3.2.1", {"portable": buffer.getvalue()})
+        up = self.updater(kind="portable", app_dir=app)
+        view = up.check(manual=False)
+        self.assertEqual(view["state"], "manual", view)
+        self.assertEqual((up.ready / "PrivatePartyNet.exe").read_bytes(), b"new app", "kept, not cleaned away")
+        self.assertIn(self.folder / "data" / "updates", up.ready.parents)
+        up.on_exit()
+        self.assertEqual(self.launched, [], "no swap is tried for a folder that cannot change")
+
     def test_a_portable_zip_that_names_files_outside_its_folder_is_refused(self):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:
