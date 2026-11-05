@@ -1,7 +1,9 @@
 # November 2026
 
-Status (November 5th): the plans below are proposals under review by K. Nothing in them is built. Questions still open are at
-the end of the design and of the Discord plan.
+Read `../README.md` first: it says how this folder is used and what each status means.
+
+Status (November 5th): all three plans below are Proposals under review by K. Nothing in them is built. Questions still open
+are at the end of the design and of the Discord plan.
 
 ## Plans
 

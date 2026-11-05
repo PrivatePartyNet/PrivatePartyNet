@@ -118,6 +118,7 @@ Host only:
 - `privatepartynet\updater.py`: updates (checking GitHub, downloading and checking against GitHub's published SHA-256, installing).
 - `relay\`: the relay server a group can run on a rented Linux server, with its setup script, systemd units, Docker files, coturn configuration and firewall, and `verify_memory.py`.
 - `installer\PrivatePartyNet.iss`: the installer.
+- `research\`: plans for what comes next and the research behind them, one folder per month; `research\README.md` says how it is used.
 - `tests\`: Python tests; `tests\js\` holds the JavaScript tests for the layout and stats code, which a Python test runs when Node is installed. `tests\browser\e2e_call.mjs`: the three-person party test in headless Edge. `tests\browser\rtc_selftest.html`: the WebRTC self-test.
 
 ## Building the installer

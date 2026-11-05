@@ -3,6 +3,9 @@
 Pull requests and issues are welcome. A contribution is licensed under the Apache License 2.0 along with the rest of the project
 (section 5 of the license).
 
+Plans for what comes next, and the research behind them, are in `research/`, one folder per month. Read
+`research/README.md` first: it says how the folder is used and which plans are settled enough to build from.
+
 ## Set up
 
 You need Windows 10 or 11, Python 3.12, Node 24 or later for the JavaScript tests and the browser test, and Go 1.27 for
