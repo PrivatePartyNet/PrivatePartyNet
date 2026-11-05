@@ -132,6 +132,17 @@ def webview_options(storage_path=None):
     return {"debug": False, "private_mode": False, "storage_path": str(folder)}
 
 
+def browser_arguments(current):
+    """The WebView2 browser arguments: `current` (the variable may already be set on this PC, by a game launcher or as a
+    WebView2 workaround) with --ignore-certificate-errors added. Setting it only when unset left it out on such a PC,
+    and every party window then showed "Your connection isn't private", whose details are the host's certificate."""
+    flag = "--ignore-certificate-errors"
+    current = (current or "").strip()
+    if flag in current.split():
+        return current
+    return f"{current} {flag}".strip()
+
+
 HEX = re.compile(r"^[0-9a-f]+$")
 KEEP_BATCH = 500  # messages one keep_chat call may hand over
 KEEP_BLOBS = 20  # pictures one call may ask for
@@ -1525,7 +1536,8 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     configure_logging()
     # Private app: the party's own self-signed certificate is accepted in every window, so none shows a warning.
-    os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--ignore-certificate-errors")
+    os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = browser_arguments(
+        os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"))
     if "--check-capture" in argv:
         from privatepartynet.frames import check_capture
 

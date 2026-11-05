@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from privatepartynet import app
-from privatepartynet.app import Controller, WindowApi, webview_options
+from privatepartynet.app import Controller, WindowApi, browser_arguments, webview_options
 from privatepartynet.settings import load_settings
 
 
@@ -79,6 +79,18 @@ class WebviewOptionsTests(unittest.TestCase):
             self.assertIs(options["private_mode"], False)
             self.assertTrue(options["storage_path"].endswith("webview"))
             self.assertTrue(__import__("os").path.isdir(options["storage_path"]))
+
+    def test_the_certificate_flag_is_added_to_browser_arguments_already_set(self):
+        # Something else on the PC (a game launcher, a WebView2 workaround) may already have set the variable. Without
+        # the flag every party window showed "Your connection isn't private", whose details are the host's whole PEM.
+        flag = "--ignore-certificate-errors"
+        self.assertEqual(browser_arguments(None), flag)
+        self.assertEqual(browser_arguments(""), flag)
+        self.assertEqual(browser_arguments("--disable-gpu"), "--disable-gpu " + flag)
+        self.assertEqual(browser_arguments("--disable-gpu " + flag), "--disable-gpu " + flag)
+        source = (Path(app.__file__)).read_text(encoding="utf-8")
+        self.assertNotIn('setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"', source)
+        self.assertIn('os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = browser_arguments(', source)
 
     def test_every_start_of_the_window_stack_uses_those_options(self):
         import re
