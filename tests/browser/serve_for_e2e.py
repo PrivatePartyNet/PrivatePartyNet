@@ -17,14 +17,18 @@ sys.path.insert(0, str(ROOT))
 from privatepartynet.cert import ensure_certificate  # noqa: E402
 from privatepartynet.frames import ScreenGrabber  # noqa: E402
 from privatepartynet.server import Party  # noqa: E402
+from privatepartynet.store import Store  # noqa: E402
+from privatepartynet.vault import Vault  # noqa: E402
 
 
 def main():
     port, passcode, seconds = int(sys.argv[1]), sys.argv[2], float(sys.argv[3])
     folder = tempfile.mkdtemp(prefix="privatepartynet-e2e-")
     certfile, keyfile = ensure_certificate(folder, ["localhost", "127.0.0.1"])
+    # an encrypted store, as a real host has, so files and the storage meter work
+    store = Store(Vault(Path(folder) / "keys", scrypt_params={"n": 2 ** 10, "r": 8, "p": 1}), Path(folder) / "store")
     share = Party(passcode, port, certfile, keyfile, party_name="End-to-end party", host_name="Host",
-                  grabber=ScreenGrabber())
+                  grabber=ScreenGrabber(), store=store, server_id="e2e0server0id01")
     share.start()
     print(f"READY {share.local_port}", flush=True)
     print("JOIN Alex " + share.join_token("Alex"), flush=True)
@@ -33,6 +37,7 @@ def main():
     while time.monotonic() < deadline:
         time.sleep(0.5)
     share.stop()
+    store.close()
 
 
 if __name__ == "__main__":

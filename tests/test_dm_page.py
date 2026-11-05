@@ -61,7 +61,7 @@ class DirectMessagesPageTests(unittest.TestCase):
         page.write_text(html, encoding="utf-8")
         profile = Path(folder) / "profile"
         run = subprocess.run(
-            [str(EDGE), "--headless=new", "--disable-gpu", "--no-first-run", "--allow-file-access-from-files",
+            [str(EDGE), "--headless=new", "--mute-audio", "--disable-gpu", "--no-first-run", "--allow-file-access-from-files",
              f"--user-data-dir={profile}", "--virtual-time-budget=4000", "--dump-dom", page.as_uri()],
             capture_output=True, text=True, timeout=90, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         self.assertEqual(run.returncode, 0, run.stderr[-500:])

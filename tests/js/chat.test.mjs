@@ -71,3 +71,34 @@ test("a muted channel shows no unread count; others show theirs", () => {
   assert.equal(Chat.showsUnread(text, 0, 1, false), false, "nothing unread");
   assert.equal(Chat.showsUnread({ id: 4, kind: "voice" }, 3, 1, false), false, "voice channels have no count");
 });
+
+test("sizes read as people say them", () => {
+  assert.equal(Chat.humanSize(1), "1 byte");
+  assert.equal(Chat.humanSize(900), "900 bytes");
+  assert.equal(Chat.humanSize(1536), "1.5 KB");
+  assert.equal(Chat.humanSize(3.4 * 1024 ** 3), "3.4 GB");
+});
+
+test("a file's card says what it is", () => {
+  assert.equal(Chat.fileKind("maps.zip", "").label, "Archive");
+  assert.equal(Chat.fileKind("song.flac", "audio/flac").label, "Audio");
+  assert.equal(Chat.fileKind("setup.EXE", "application/x-msdownload").label, "Program");
+  assert.equal(Chat.fileKind("notes.txt", "text/plain").label, "File");
+});
+
+test("a file over the server's limits is stopped before it is sent, with the reason", () => {
+  const MB = 1024 * 1024;
+  assert.equal(Chat.fileProblem(5 * MB, null), "", "nothing known yet: the server decides");
+  assert.equal(Chat.fileProblem(5 * MB, { files: true, used: 0, limit: null, cap: null, free: 100 * 1024 * MB }), "");
+  assert.match(Chat.fileProblem(5 * MB, { files: true, used: 0, limit: MB, cap: null, free: null }), /up to 1 MB/);
+  assert.match(Chat.fileProblem(5 * MB, { files: true, used: 98 * MB, limit: null, cap: 100 * MB, free: null }), /storage is full/);
+  assert.match(Chat.fileProblem(5 * MB, { files: true, used: 0, limit: null, cap: null, free: 100 * MB }), /disk is nearly full/);
+  assert.match(Chat.fileProblem(1, { files: false }), /keeps no files/);
+});
+
+test("the meter says how much is kept, against the cap or the disk", () => {
+  const GB = 1024 ** 3;
+  assert.equal(Chat.storageText({ files: true, used: 3.4 * GB, cap: 20 * GB, free: 200 * GB }), "Storage 3.4 GB of 20 GB");
+  assert.equal(Chat.storageText({ files: true, used: 3.4 * GB, cap: null, free: 210 * GB }), "Storage 3.4 GB (no cap), 210 GB free on the host");
+  assert.equal(Chat.storageText({ files: false }), "");
+});

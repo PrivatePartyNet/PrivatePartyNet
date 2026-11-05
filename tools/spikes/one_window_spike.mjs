@@ -112,7 +112,7 @@ async function main() {
   await new Promise((done) => { shell.stdout.on("data", (c) => { if (String(c).includes("SHELL READY")) done(); }); setTimeout(done, 10_000); });
 
   const profile = mkdtempSync(join(tmpdir(), "ppn-spike-edge-"));
-  start(EDGE, ["--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", `--user-data-dir=${profile}`,
+  start(EDGE, ["--headless=new", "--mute-audio", "--no-sandbox", "--disable-gpu", "--no-first-run", `--user-data-dir=${profile}`,
     `--remote-debugging-port=${DEBUG_PORT}`, "--ignore-certificate-errors", "--allow-loopback-in-peer-connection",
     "--disable-features=WebRtcHideLocalIpsWithMdns", "--autoplay-policy=no-user-gesture-required",
     "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "about:blank"]);

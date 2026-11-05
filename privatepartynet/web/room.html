@@ -20,6 +20,32 @@
         <span id="count" class="muted"></span>
       </div>
     </header>
+    <div id="storageMeter" class="storage-meter" hidden>
+      <div class="storage-line">
+        <span id="storageText"></span>
+        <button id="storageEdit" class="link" type="button" hidden>File limits</button>
+      </div>
+      <div class="storage-bar" aria-hidden="true"><span id="storageBar"></span></div>
+    </div>
+    <div id="storagePanel" class="popover storage-panel" role="dialog" aria-label="File limits" hidden>
+      <h3>Files on this server</h3>
+      <p id="storageNow" class="muted"></p>
+      <div class="limit-row">
+        <label for="limitKind">Largest file</label>
+        <select id="limitKind"><option value="none">No limit</option><option value="size">Up to</option></select>
+        <input id="limitSize" type="number" min="1" step="1" value="100" aria-label="Largest file, size">
+        <select id="limitUnit" aria-label="Largest file, unit"><option value="MB">MB</option><option value="GB">GB</option></select>
+      </div>
+      <div class="limit-row">
+        <label for="capKind">All files together</label>
+        <select id="capKind"><option value="none">No cap</option><option value="size">Up to</option></select>
+        <input id="capSize" type="number" min="1" step="1" value="10" aria-label="Storage cap, size">
+        <select id="capUnit" aria-label="Storage cap, unit"><option value="GB">GB</option><option value="MB">MB</option></select>
+      </div>
+      <p class="muted small">When both are set, the cap is at least ten times the largest file. Pictures count too.</p>
+      <p id="storageProblem" class="problem" role="alert" hidden></p>
+      <div class="row"><button id="storageSave" class="primary small" type="button">Save</button><button id="storageClose" class="secondary small" type="button">Close</button></div>
+    </div>
 
     <div id="sidebarScroll">
       <section id="channelsBox">

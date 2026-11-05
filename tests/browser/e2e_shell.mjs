@@ -158,7 +158,7 @@ async function main() {
   check("the shell's pages are served", Boolean(shellPort));
 
   const profile = mkdtempSync(join(tmpdir(), "ppn-shell-edge-"));
-  start(EDGE, ["--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", `--user-data-dir=${profile}`,
+  start(EDGE, ["--headless=new", "--mute-audio", "--no-sandbox", "--disable-gpu", "--no-first-run", `--user-data-dir=${profile}`,
     `--remote-debugging-port=${DEBUG_PORT}`, "--ignore-certificate-errors", "--allow-loopback-in-peer-connection",
     "--disable-features=WebRtcHideLocalIpsWithMdns", "--autoplay-policy=no-user-gesture-required",
     "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "about:blank"]);

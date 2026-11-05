@@ -269,7 +269,12 @@ class WindowApi:
         if isinstance(picture, dict) and isinstance(picture.get("hash"), str) and len(picture["hash"]) == 64 and HEX.match(picture["hash"]):
             body["image"] = {"hash": picture["hash"], "w": picture.get("w") if isinstance(picture.get("w"), int) else 0,
                              "h": picture.get("h") if isinstance(picture.get("h"), int) else 0}
-        if not body["text"] and "image" not in body:
+        file = message.get("file")  # a file's description only: its bytes stay with the host (saved with Save)
+        if isinstance(file, dict) and isinstance(file.get("id"), str) and len(file["id"]) == 32 and HEX.match(file["id"])                 and isinstance(file.get("size"), int) and not isinstance(file.get("size"), bool) and file["size"] >= 0:
+            body["file"] = {"id": file["id"], "size": file["size"],
+                            "name": "".join(c for c in str(file.get("name") or "file") if c.isprintable())[:200],
+                            "type": "".join(c for c in str(file.get("type") or "") if c.isprintable())[:100]}
+        if not body["text"] and "image" not in body and "file" not in body:
             return None
         return channel, {"id": message_id, "ts": float(ts), "seq": seq, "user": user[:64], "body": body}
 

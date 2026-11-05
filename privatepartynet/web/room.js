@@ -232,6 +232,7 @@
       document.title = "PrivatePartyNet: " + msg.party;
       RTC.setStun(!!msg.stun, msg.turn);
       chat.hello(msg);
+      setStorage(msg.storage);
       if (window.PPNEmbedded) window.PPNEmbedded.send({ ppn: "ready" }); // the one window: this room is signed in
       var savedName = readPref(PREFS.name);
       if (savedName && savedName !== me.name) post("/name", { name: savedName }).catch(function () {});
@@ -248,6 +249,10 @@
       chat.history(msg);
     } else if (msg.type === "chat") {
       chat.message(msg);
+    } else if (msg.type === "deleted") {
+      chat.deleted(msg);
+    } else if (msg.type === "storage") {
+      setStorage(msg);
     } else if (msg.type === "ice") {
       RTC.setStun(!!msg.stun, msg.turn); // connections made from now on can cross routers; the ones already up are fine
     } else if (msg.type === "channels") {
@@ -255,6 +260,7 @@
     } else if (msg.type === "role") {
       if (me) me.role = msg.role;
       chat.setRole(msg.role);
+      setStorage(chat.storage()); // an owner's or admin's File limits link
       renderRoster();
       notice(msg.role === "guest" ? "You are now a guest: you can watch and read, not talk or post."
         : "Your role is now " + (msg.role === "host" ? "owner" : msg.role) + ".");
@@ -1765,6 +1771,7 @@
           lightbox: el.lightbox, dropZone: document.body },
     post: post,
     upload: uploadBlob,
+    uploadFile: uploadFile,
     keep: keepChat(),
     keepBlob: keepPicture,
     getJson: getJson,
@@ -2307,7 +2314,10 @@
       headers: Object.assign({ "Content-Type": "application/json" }, VIEW_HEADERS),
       body: JSON.stringify(body),
     });
-    if (!response.ok) throw new Error(path + " returned " + response.status);
+    if (!response.ok) {
+      var reason = await response.text().catch(function () { return ""; });
+      throw new Error(reason || path + " returned " + response.status); // the party's own words when it gives them
+    }
   }
 
   // A member's window hands the chat it receives to the app, which keeps an encrypted copy on this PC. The host's own
@@ -2346,6 +2356,120 @@
     });
     if (!response.ok) throw new Error(response.status === 403 ? "Pictures can't be sent right now." : (await response.text()) || "That picture did not upload.");
     return response.json();
+  }
+
+  // A file of any kind, sent as it is with its progress showing; the party posts it once it has all arrived.
+  // Returns { promise, abort }.
+  function uploadFile(file, channel, progress) {
+    var request = new XMLHttpRequest();
+    var promise = new Promise(function (resolve, reject) {
+      var query = "channel=" + encodeURIComponent(channel) + "&name=" + encodeURIComponent(file.name) +
+        "&type=" + encodeURIComponent(file.type || "");
+      request.open("POST", "/file?" + query);
+      request.setRequestHeader("Content-Type", "application/octet-stream");
+      Object.keys(VIEW_HEADERS).forEach(function (name) { request.setRequestHeader(name, VIEW_HEADERS[name]); });
+      request.upload.onprogress = function (event) { if (progress) progress(event.loaded, event.total || file.size); };
+      request.onload = function () {
+        if (request.status === 200) resolve();
+        else reject(new Error(request.responseText || "The host refused it (" + request.status + ")."));
+      };
+      request.onerror = function () { reject(new Error("The connection to the host broke off.")); };
+      request.onabort = function () { var e = new Error("stopped"); e.name = "AbortError"; reject(e); };
+      request.send(file);
+    });
+    return { promise: promise, abort: function () { request.abort(); } };
+  }
+
+  // --- the storage meter, and the file limits the owner and admins set ---------------------------------------
+
+  var storageEl = {
+    meter: document.getElementById("storageMeter"), text: document.getElementById("storageText"),
+    bar: document.getElementById("storageBar"), edit: document.getElementById("storageEdit"),
+    panel: document.getElementById("storagePanel"), now: document.getElementById("storageNow"),
+    limitKind: document.getElementById("limitKind"), limitSize: document.getElementById("limitSize"),
+    limitUnit: document.getElementById("limitUnit"), capKind: document.getElementById("capKind"),
+    capSize: document.getElementById("capSize"), capUnit: document.getElementById("capUnit"),
+    problem: document.getElementById("storageProblem"), save: document.getElementById("storageSave"),
+    close: document.getElementById("storageClose"),
+  };
+  var UNIT = { MB: 1024 * 1024, GB: 1024 * 1024 * 1024 };
+
+  function setStorage(info) {
+    if (!info || !storageEl.meter) return;
+    chat.setStorage(info);
+    var text = PartyChat.storageText(info);
+    storageEl.meter.hidden = !text;
+    storageEl.text.textContent = text;
+    storageEl.text.title = text;
+    var share = info.cap ? Math.min(1, info.used / info.cap) : 0;
+    storageEl.bar.style.width = Math.round(share * 100) + "%";
+    storageEl.meter.classList.toggle("open-ended", !info.cap);
+    storageEl.meter.classList.toggle("full", share >= 0.9);
+    storageEl.edit.hidden = !(me && (me.role === "host" || me.role === "admin"));
+  }
+
+  function showLimit(bytes, kind, size, unit) {
+    kind.value = bytes ? "size" : "none";
+    if (bytes) {
+      var gb = bytes % UNIT.GB === 0;
+      unit.value = gb ? "GB" : "MB";
+      size.value = String(bytes / UNIT[unit.value]);
+    }
+    size.disabled = unit.disabled = kind.value === "none";
+  }
+
+  function readLimit(kind, size, unit) {
+    if (kind.value === "none") return null;
+    var n = Number(size.value);
+    return isFinite(n) && n > 0 ? Math.round(n * UNIT[unit.value]) : NaN;
+  }
+
+  function openStoragePanel() {
+    var info = chat.storage();
+    if (!info) return;
+    showLimit(info.limit, storageEl.limitKind, storageEl.limitSize, storageEl.limitUnit);
+    showLimit(info.cap, storageEl.capKind, storageEl.capSize, storageEl.capUnit);
+    storageEl.now.textContent = PartyChat.storageText(info) + ".";
+    storageEl.problem.hidden = true;
+    var r = storageEl.meter.getBoundingClientRect();
+    storageEl.panel.style.left = Math.max(8, r.left + 8) + "px";
+    storageEl.panel.style.top = (r.bottom + 6) + "px";
+    storageEl.panel.hidden = false;
+  }
+
+  if (storageEl.meter) {
+    storageEl.edit.addEventListener("click", function (event) {
+      event.stopPropagation();
+      if (storageEl.panel.hidden) openStoragePanel(); else storageEl.panel.hidden = true;
+    });
+    [[storageEl.limitKind, storageEl.limitSize, storageEl.limitUnit], [storageEl.capKind, storageEl.capSize, storageEl.capUnit]]
+      .forEach(function (row) {
+        row[0].addEventListener("change", function () { row[1].disabled = row[2].disabled = row[0].value === "none"; });
+      });
+    storageEl.close.addEventListener("click", function () { storageEl.panel.hidden = true; });
+    storageEl.save.addEventListener("click", function () {
+      var limit = readLimit(storageEl.limitKind, storageEl.limitSize, storageEl.limitUnit);
+      var cap = readLimit(storageEl.capKind, storageEl.capSize, storageEl.capUnit);
+      var problem = "";
+      if (Number.isNaN(limit) || Number.isNaN(cap)) problem = "Each size is a number above 0.";
+      else if ((limit !== null && limit < UNIT.MB) || (cap !== null && cap < UNIT.MB)) problem = "Each size is at least 1 MB.";
+      else if (limit !== null && cap !== null && cap < 10 * limit) {
+        problem = "The cap has to be at least ten times the largest file (" + PartyChat.humanSize(10 * limit) + " or more).";
+      }
+      storageEl.problem.textContent = problem;
+      storageEl.problem.hidden = !problem;
+      if (problem) return;
+      post("/storage", { limit: limit, cap: cap }).then(function () {
+        storageEl.panel.hidden = true;
+        notice("File limits saved.");
+      }).catch(function (err) {
+        storageEl.problem.textContent = (err && err.message) || "Those limits were not saved.";
+        storageEl.problem.hidden = false;
+      });
+    });
+    document.addEventListener("click", function (event) {
+      if (!storageEl.panel.hidden && !storageEl.panel.contains(event.target) && event.target !== storageEl.edit) storageEl.panel.hidden = true;
+    });
   }
 
   async function getJson(path) {

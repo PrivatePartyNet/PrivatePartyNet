@@ -81,6 +81,14 @@ class WindowApiTests(unittest.TestCase):
             self.assertTrue(api.open_viewer("/join?token=abc")["ok"])
         self.assertEqual(made[0].appearance(), look)
 
+    def test_a_members_copy_keeps_what_a_file_was_but_not_its_bytes(self):
+        message = {"id": "ab12", "channel": "c1", "ts": 1000.0, "seq": 3, "user": "u1", "name": "Sam", "text": "",
+                   "file": {"id": "0" * 32, "name": "maps.zip", "size": 5000, "type": "application/zip"}}
+        channel, record = WindowApi._clean(message)
+        self.assertEqual(record["body"]["file"], {"id": "0" * 32, "name": "maps.zip", "size": 5000, "type": "application/zip"})
+        for bad in ({"id": "x", "size": 1}, {"id": "0" * 32, "size": -1}, {"id": "0" * 32, "size": True}, "file"):
+            self.assertIsNone(WindowApi._clean(dict(message, file=bad)), bad)
+
     def test_closing_the_window_destroys_it(self):
         api, window = self.make()
         self.assertTrue(api.close_window()["ok"])

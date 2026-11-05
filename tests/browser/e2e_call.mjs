@@ -272,7 +272,7 @@ async function main() {
   // 2. Headless Edge with a fresh profile, reachable over the DevTools protocol.
   const profile = mkdtempSync(join(tmpdir(), "privatepartynet-e2e-edge-"));
   startChild(EDGE, [
-    "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+    "--headless=new", "--mute-audio", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
     `--user-data-dir=${profile}`, `--remote-debugging-port=${DEBUG_PORT}`,
     "--ignore-certificate-errors", "--allow-loopback-in-peer-connection",
     "--disable-features=WebRtcHideLocalIpsWithMdns", "--autoplay-policy=no-user-gesture-required",
@@ -645,9 +645,9 @@ async function main() {
     `!!${mapsItem}.querySelector('.unread') && !${mapsItem}.classList.contains('muted') && ${mapsItem}.querySelector('.unread').textContent === '2'`)));
   await sam.evaluate("[...document.querySelectorAll('#channelList .channel.text .channel-row')].find(function (r) { return r.textContent.includes('general'); }).click()");
 
-  // 7c. Pictures: a big picture is dragged onto the window (onto the screens, not the chat: the whole window takes a drop)
-  // with a text file beside it. The picture is saved again in the page at its own size, uploaded, and shows for everyone at
-  // that size; the text file is refused with a message; the window stays on the party.
+  // 7c. Pictures and files: a big picture is dragged onto the window (onto the screens, not the chat: the whole window
+  // takes a drop) with a text file beside it. The picture is saved again in the page at its own size, uploaded, and
+  // shows for everyone at that size; the text file is sent as a file the host keeps; the window stays on the party.
   const samUrl = await sam.evaluate("location.href");
   const dropState = await sam.evaluate(`(async function () {
     var canvas = document.createElement('canvas');
@@ -671,8 +671,18 @@ async function main() {
   })()`);
   check("dragging files over the window says where a drop goes", dropState.hint === true);
   check("the whole window takes the drop, and the hint goes away", dropState.taken === true && dropState.cleared === true);
-  check("a file that is not a picture is refused with a message", await waitFor(() => sam.evaluate(
-    "document.getElementById('status').textContent.includes('One file was not sent')")));
+  check("a file that is not a picture is sent as a file, and everyone sees its card", await waitFor(() => host.evaluate(
+    "[...document.querySelectorAll('#messages .file-card .file-name')].some(function (n) { return n.textContent === 'notes.txt'; })")));
+  check("Save gives it back as a download of plain bytes", await host.evaluate(`(async function () {
+    var a = [...document.querySelectorAll('#messages .file-card a')].find(function (x) { return x.getAttribute('download') === 'notes.txt'; });
+    var r = await fetch(a.href);
+    return r.ok && (await r.text()) === 'notes' && r.headers.get('content-disposition').indexOf('attachment') === 0 &&
+      r.headers.get('content-type') === 'application/octet-stream';
+  })()`));
+  check("the storage meter under the server's name counts what the host keeps", await waitFor(() => sam.evaluate(
+    "!document.getElementById('storageMeter').hidden && document.getElementById('storageText').textContent.indexOf('Storage') === 0")));
+  check("only the owner and admins are offered the file limits", await sam.evaluate("document.getElementById('storageEdit').hidden") &&
+    await host.evaluate("!document.getElementById('storageEdit').hidden"));
   check("and the window stays on the party", (await sam.evaluate("location.href")) === samUrl);
   check("a picture sent by a member reaches the host at its full 3200 by 1800", await waitFor(() => host.evaluate(
     "(function () { var i = document.querySelector('#messages img.chat-image'); return !!i && i.complete && i.naturalWidth === 3200 && i.naturalHeight === 1800; })()")));
@@ -681,6 +691,46 @@ async function main() {
   check("clicking a picture opens it large", await host.evaluate("!document.getElementById('lightbox').hidden"));
   await host.evaluate("document.getElementById('lightbox').click()");
   check("and clicking again closes it", await host.evaluate("document.getElementById('lightbox').hidden"));
+
+  // 7c2. Deleting and file limits: Sam deletes the file he sent and it goes for everyone; the host sets a 1 MB limit in
+  // the File limits panel, and a bigger file is stopped on Sam's side before anything is sent.
+  await sam.evaluate(`(function () {
+    window.confirm = function () { return true; };
+    var card = [...document.querySelectorAll('#messages .file-card')].find(function (c) { return c.textContent.indexOf('notes.txt') >= 0; });
+    card.closest('.message').querySelector('.msg-delete').click();
+  })()`);
+  check("the sender deletes a message and it goes for everyone", await waitFor(() => host.evaluate(
+    "![...document.querySelectorAll('#messages .file-name')].some(function (n) { return n.textContent === 'notes.txt'; })")));
+  check("a member cannot delete someone else's message", await sam.evaluate(
+    "[...document.querySelectorAll('#messages .message')].filter(function (m) { return m.querySelector('.head b').textContent === 'Host'; }).every(function (m) { return !m.querySelector('.msg-delete'); })"));
+  await host.evaluate(`(function () {
+    document.getElementById('storageEdit').click();
+    document.getElementById('limitKind').value = 'size';
+    document.getElementById('limitKind').dispatchEvent(new Event('change'));
+    document.getElementById('limitSize').value = '1';
+    document.getElementById('limitUnit').value = 'MB';
+    document.getElementById('capKind').value = 'size';
+    document.getElementById('capKind').dispatchEvent(new Event('change'));
+    document.getElementById('capSize').value = '5';
+    document.getElementById('capUnit').value = 'MB';
+    document.getElementById('storageSave').click();
+  })()`);
+  check("a cap under ten times the largest file is refused in the panel", await waitFor(() => host.evaluate(
+    "!document.getElementById('storageProblem').hidden && document.getElementById('storageProblem').textContent.indexOf('ten times') >= 0")));
+  await host.evaluate("document.getElementById('capKind').value = 'none'; document.getElementById('storageSave').click(); true");
+  check("the owner saves a 1 MB file limit", await waitFor(() => host.evaluate("document.getElementById('storagePanel').hidden")));
+  await waitFor(() => sam.evaluate("true"));
+  await sleep(500);
+  await sam.evaluate(`(function () {
+    var data = new DataTransfer();
+    data.items.add(new File([new Uint8Array(2 * 1024 * 1024)], 'big.bin', { type: 'application/octet-stream' }));
+    var opts = { bubbles: true, cancelable: true, dataTransfer: data };
+    document.body.dispatchEvent(new DragEvent('dragenter', opts));
+    document.body.dispatchEvent(new DragEvent('dragover', opts));
+    document.body.dispatchEvent(new DragEvent('drop', opts));
+  })()`);
+  check("a file over the limit is stopped before it is sent, and says why", await waitFor(() => sam.evaluate(
+    "document.getElementById('status').textContent.indexOf('Files can be up to 1 MB') >= 0")));
 
   // 7d. Voice: two people join the voice channel and hear each other; the third, outside it, hears nothing.
   for (const tab of [host, sam]) await tab.evaluate("window.__errs = []; window.addEventListener('error', function (e) { window.__errs.push(e.message); }); window.addEventListener('unhandledrejection', function (e) { window.__errs.push('rejected: ' + (e.reason && e.reason.message || e.reason)); });");

@@ -48,7 +48,51 @@
     throw new Error("That picture does not fit in 12 MB at its full size. Its size is never reduced, so crop it or send a smaller file.");
   }
 
-  var MAX_DROPPED = 10; // pictures sent from one drop
+  var MAX_DROPPED = 10; // files sent from one drop
+  var MIN_FREE = 512 * 1024 * 1024; // the host's disk keeps this much free (server.py MIN_FREE_BYTES)
+
+  // 3.4 GB, 512 KB, 12 bytes
+  function humanSize(n) {
+    var units = [["TB", Math.pow(1024, 4)], ["GB", Math.pow(1024, 3)], ["MB", 1024 * 1024], ["KB", 1024]];
+    for (var i = 0; i < units.length; i++) {
+      if (n >= units[i][1]) return (Math.round(n / units[i][1] * 10) / 10) + " " + units[i][0];
+    }
+    return n + (n === 1 ? " byte" : " bytes");
+  }
+
+  // What a file's card calls it and which icon it gets, from its name and type.
+  function fileKind(name, type) {
+    var ext = String(name || "").toLowerCase().split(".").pop();
+    var t = String(type || "").toLowerCase();
+    if (/^(zip|7z|rar|tar|gz|bz2|xz|zst|cab)$/.test(ext)) return { label: "Archive", icon: "folder" };
+    if (t.indexOf("audio/") === 0 || /^(mp3|wav|ogg|flac|m4a|opus|aac)$/.test(ext)) return { label: "Audio", icon: "speaker" };
+    if (t.indexOf("video/") === 0 || /^(mp4|mkv|webm|mov|avi)$/.test(ext)) return { label: "Video", icon: "screen" };
+    if (t.indexOf("image/") === 0) return { label: "Picture", icon: "picture" };
+    if (/^(exe|msi|bat|cmd|ps1|vbs|js|jar|scr|com)$/.test(ext)) return { label: "Program", icon: "warn" };
+    return { label: "File", icon: "download" };
+  }
+
+  // Before sending a file of `size` bytes: "" when the server's limits allow it, else why not (the server checks too).
+  function fileProblem(size, storage) {
+    if (!storage) return "";
+    if (storage.files === false) return "This party keeps no files.";
+    if (storage.limit && size > storage.limit) return "Files can be up to " + humanSize(storage.limit) + " on this server.";
+    if (storage.cap && storage.used + size > storage.cap) {
+      return "This server's storage is full (" + humanSize(storage.used) + " of " + humanSize(storage.cap) +
+        "). The owner or an admin can delete files or raise the cap.";
+    }
+    if (typeof storage.free === "number" && size + MIN_FREE > storage.free) return "The host's disk is nearly full.";
+    return "";
+  }
+
+  // What the meter under the server's name says.
+  function storageText(storage) {
+    if (!storage || storage.files === false) return "";
+    if (storage.cap) return "Storage " + humanSize(storage.used) + " of " + humanSize(storage.cap);
+    var text = "Storage " + humanSize(storage.used) + " (no cap)";
+    if (typeof storage.free === "number") text += ", " + humanSize(storage.free) + " free on the host";
+    return text;
+  }
 
   function hasFiles(event) {
     return Boolean(event.dataTransfer && Array.prototype.indexOf.call(event.dataTransfer.types, "Files") >= 0);
@@ -103,6 +147,8 @@
     var editing = null; // { id, kind, mode } while a channel name is being typed
     var server = null; // { id, name } from the hello
     var muted = new Set(); // text channel ids this person muted on this server (only on this PC)
+    var storage = null; // the server's storage numbers and limits (server.py storage_info)
+    var myUser = null; // this person's user id, to know which messages are theirs to delete
     var toKeep = []; // messages not yet handed to this PC's own store
     var keepTimer = null;
 
@@ -154,6 +200,8 @@
       server = msg.server ? { id: msg.server, name: msg.party } : null;
       muted = server ? readMuted(store(), server.id) : new Set();
       state.meId = msg.you.id;
+      myUser = msg.you.user || null;
+      if (msg.storage) storage = msg.storage;
       state.role = msg.you.role;
       setChannels(msg.channels || []);
       renderComposer();
@@ -240,14 +288,94 @@
       when.className = "time";
       when.textContent = message.at;
       head.append(who, when);
+      if (canDelete(message)) {
+        var del = document.createElement("button");
+        del.type = "button";
+        del.className = "icon msg-delete";
+        del.title = "Delete this message";
+        del.setAttribute("aria-label", "Delete this message");
+        if (typeof PPNIcons !== "undefined") del.append(PPNIcons.node("trash")); else del.textContent = "Delete";
+        del.addEventListener("click", function () { deleteMessage(message); });
+        head.append(del);
+      }
       var text = document.createElement("div");
       text.className = "text";
       text.textContent = message.text;
       body.append(head);
       if (message.text) body.append(text);
       if (message.image) body.append(pictureNode(message));
+      if (message.file) body.append(fileNode(message));
+      line.dataset.id = message.id;
       line.append(options.avatar(message.name, senderKey(message)), body);
       return line;
+    }
+
+    // The sender, the owner and admins may delete a message (the server checks it again).
+    function canDelete(message) {
+      if (!message.id || state.role === "guest") return false;
+      return isStaff() || message.from === state.meId || (myUser !== null && message.user === myUser);
+    }
+
+    function deleteMessage(message) {
+      var what = message.file ? "this message and its file" : message.image ? "this message and its picture" : "this message";
+      if (!window.confirm("Delete " + what + " for everyone? Copies people already saved on their own PCs stay theirs.")) return;
+      options.post("/delete", { channel: message.channel, id: message.id }).catch(function () {
+        options.notice("That message could not be deleted.");
+      });
+    }
+
+    // A file in the chat: what it is, its size, and Save, which always saves it (it never opens in the window).
+    function fileNode(message) {
+      var file = message.file;
+      var kind = fileKind(file.name, file.type);
+      var card = document.createElement("div");
+      card.className = "file-card";
+      var mark = document.createElement("span");
+      mark.className = "file-icon";
+      if (typeof PPNIcons !== "undefined") mark.append(PPNIcons.node(kind.icon));
+      var info = document.createElement("div");
+      info.className = "file-info";
+      var name = document.createElement("span");
+      name.className = "file-name";
+      name.textContent = file.name;
+      name.title = file.name;
+      var size = document.createElement("span");
+      size.className = "file-size muted";
+      size.textContent = kind.label + ", " + humanSize(file.size);
+      info.append(name, size);
+      var save = document.createElement("a");
+      save.className = "button secondary small";
+      save.href = "/file?channel=" + encodeURIComponent(message.channel) + "&message=" + encodeURIComponent(message.id);
+      save.setAttribute("download", file.name);
+      save.textContent = "Save";
+      save.title = "Save " + file.name + " to this PC";
+      card.append(mark, info, save);
+      return card;
+    }
+
+    // A file on its way up: a card at the foot of the chat with its progress and a way to stop it.
+    function pendingNode(file) {
+      var card = document.createElement("div");
+      card.className = "file-card pending";
+      var info = document.createElement("div");
+      info.className = "file-info";
+      var name = document.createElement("span");
+      name.className = "file-name";
+      name.textContent = file.name;
+      var bar = document.createElement("div");
+      bar.className = "file-progress";
+      var fill = document.createElement("span");
+      bar.append(fill);
+      var size = document.createElement("span");
+      size.className = "file-size muted";
+      size.textContent = "Sending, " + humanSize(file.size);
+      info.append(name, bar, size);
+      var stop = document.createElement("button");
+      stop.type = "button";
+      stop.className = "secondary small";
+      stop.textContent = "Stop";
+      card.append(info, stop);
+      return { card: card, fill: fill, size: size, stop: stop };
     }
 
     function pictureNode(message) {
@@ -274,12 +402,18 @@
       });
     }
 
-    // Sending a picture: save it here at its own size, upload it, then post a message that names it.
+    // Sending a picture: save it here at its own size, upload it, then post a message that names it. One that does not
+    // fit in 12 MB at its own size goes as a file instead, so it is never made smaller.
     function sendPicture(file) {
       if (state.role === "guest" || !state.current) return Promise.resolve();
       var caption = el.chatText.value.trim();
       return preparePicture(file)
+        .catch(function (err) {
+          if (options.uploadFile && file.size && !(storage && storage.files === false)) return { asFile: true };
+          throw err;
+        })
         .then(function (prepared) {
+          if (prepared.asFile) return sendFile(file);
           return options.upload(prepared.blob).then(function (info) {
             el.chatText.value = "";
             return options.post("/chat", {
@@ -304,20 +438,52 @@
       sendPicture(file);
     });
 
-    // Pictures dragged onto the window go to the channel that is open, one message each, in the order dropped.
+    // Any other file: checked against the server's limits here first, then sent as it is, with its progress showing.
+    // The host keeps it; the message appears for everyone once it has all arrived.
+    function sendFile(file) {
+      if (state.role === "guest" || !state.current) return Promise.resolve();
+      if (!options.uploadFile) {
+        options.notice("Only pictures can be sent here.");
+        return Promise.resolve();
+      }
+      if (!file.size) {
+        options.notice(file.name + " is empty, so it was not sent.");
+        return Promise.resolve();
+      }
+      var problem = fileProblem(file.size, storage);
+      if (problem) {
+        options.notice(file.name + " was not sent. " + problem);
+        return Promise.resolve();
+      }
+      var pending = pendingNode(file);
+      el.messages.append(pending.card);
+      el.messages.scrollTop = el.messages.scrollHeight;
+      var upload = options.uploadFile(file, state.current, function (sent, total) {
+        var share = total ? sent / total : 0;
+        pending.fill.style.width = Math.round(share * 100) + "%";
+        pending.size.textContent = "Sending, " + humanSize(sent) + " of " + humanSize(total);
+      });
+      pending.stop.addEventListener("click", function () { upload.abort(); });
+      return upload.promise
+        .catch(function (err) {
+          if (err && err.name !== "AbortError") options.notice(file.name + " did not send. " + ((err && err.message) || ""));
+        })
+        .finally(function () { pending.card.remove(); });
+    }
+
+    // Files dragged onto the window go to the channel that is open, one message each, in the order dropped: pictures
+    // as pictures, anything else as a file.
     function dropped(files) {
       if (state.role === "guest") {
         options.notice("Guests can read the chat but not post.");
         return;
       }
-      var pictures = files.filter(function (f) { return PICTURE_TYPES.test(f.type); }).slice(0, MAX_DROPPED);
-      var skipped = files.length - pictures.length;
-      if (skipped) {
-        options.notice((skipped === 1 ? "One file was" : skipped + " files were") +
-          " not sent. Only pictures can be sent: PNG, JPEG, GIF or WebP, up to 12 MB.");
+      var chosen = files.slice(0, MAX_DROPPED);
+      if (files.length > chosen.length) {
+        options.notice("Only " + MAX_DROPPED + " files are sent from one drop; the other " + (files.length - chosen.length) + " were not.");
       }
-      pictures.reduce(function (before, file) {
-        return before.then(function () { return sendPicture(file); });
+      chosen.reduce(function (before, file) {
+        return before.then(function () { return PICTURE_TYPES.test(file.type) ? sendPicture(file) : sendFile(file); });
       }, Promise.resolve());
     }
     if (el.dropZone) dropTarget(el.dropZone, dropped);
@@ -595,6 +761,16 @@
         }
       },
       channelName: function (id) { var c = channelById(id); return c ? c.name : ""; },
+      setStorage: function (info) { storage = info || null; },
+      storage: function () { return storage; },
+      // someone deleted a message: it goes from the list (copies saved on PCs stay there)
+      deleted: function (msg) {
+        var buf = state.buffers.get(msg.channel);
+        if (!buf) return;
+        var before = buf.list.length;
+        buf.list = buf.list.filter(function (m) { return m.id !== msg.id; });
+        if (buf.list.length !== before && msg.channel === state.current) renderMessages();
+      },
     };
   }
 
@@ -630,7 +806,8 @@
   }
 
   var api = { create: create, encodingPlan: encodingPlan, preparePicture: preparePicture, dropTarget: dropTarget, hasFiles: hasFiles,
-              readMuted: readMuted, writeMuted: writeMuted, showsUnread: showsUnread, MAX_BYTES: MAX_BYTES,
+              readMuted: readMuted, writeMuted: writeMuted, showsUnread: showsUnread, humanSize: humanSize,
+              fileKind: fileKind, fileProblem: fileProblem, storageText: storageText, MAX_BYTES: MAX_BYTES,
               MAX_DROPPED: MAX_DROPPED };
   if (typeof window !== "undefined") window.PartyChat = api;
   if (typeof module === "object" && module.exports) module.exports = api;
