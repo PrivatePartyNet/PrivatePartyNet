@@ -362,11 +362,37 @@ class Fetcher:
 # --- where this copy runs ------------------------------------------------------------------------------------------
 
 
-def install_kind():
-    """"installed" (by the installer), "portable" (unzipped anywhere) or "source" (a checkout, which git updates)."""
-    if not getattr(sys, "frozen", False):
+# The installer's record of itself (installer\PrivatePartyNet.iss: AppId, and Inno Setup's own "_is1" key), for this user.
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{02FC5BBE-A733-4ACF-AE03-9CDDF2637230}_is1"
+
+
+def install_kind(executable=None, frozen=None, location=None):
+    """"installed" (by the installer), "portable" (unzipped anywhere) or "source" (a checkout, which git updates).
+    Installed means the installer's record for this user names this copy's own folder as where it installed; an
+    uninstaller file in the folder proves nothing. The arguments are for tests."""
+    if not (getattr(sys, "frozen", False) if frozen is None else frozen):
         return "source"
-    return "installed" if (Path(sys.executable).parent / "unins000.exe").exists() else "portable"
+    installed = (location or _installed_location)()
+    if not installed:
+        return "portable"
+    here = Path(executable or sys.executable).parent
+
+    def same(a, b):
+        return os.path.normcase(os.path.abspath(str(a).rstrip("\\/"))) == os.path.normcase(os.path.abspath(str(b)))
+
+    return "installed" if same(installed, here) else "portable"
+
+
+def _installed_location():
+    """Where the installer put PrivatePartyNet for this user (its InstallLocation), or "" when it has not."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY) as key:
+            value, kind = winreg.QueryValueEx(key, "InstallLocation")
+        return value if kind in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) and isinstance(value, str) else ""
+    except (ImportError, OSError):
+        return ""
 
 
 def sha256_file(path):

@@ -279,6 +279,38 @@ class RevocationTests(StateFileCase):
         self.assertEqual(self.updater().keys(), (PUBLIC,), "after a restart too")
 
 
+class InstallKindTests(unittest.TestCase):
+    """Installed or portable comes from the installer's own record in the registry (HKCU, its AppId) and where it
+    installed, not from an uninstaller file that any folder could hold."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.app = Path(temp.name) / "Programs" / "PrivatePartyNet"
+        self.app.mkdir(parents=True)
+        self.exe = str(self.app / "PrivatePartyNet.exe")
+
+    def kind(self, location, frozen=True):
+        return updater.install_kind(executable=self.exe, frozen=frozen, location=lambda: location)
+
+    def test_the_registry_record_of_this_folder_makes_it_installed(self):
+        self.assertEqual(self.kind(str(self.app) + "\\"), "installed")
+        self.assertEqual(self.kind(str(self.app).upper()), "installed", "Windows paths are not case-sensitive")
+
+    def test_an_uninstaller_file_alone_does_not(self):
+        (self.app / "unins000.exe").write_bytes(b"")
+        self.assertEqual(self.kind(""), "portable")
+        self.assertEqual(self.kind(str(self.app.parent / "Elsewhere")), "portable", "another folder is installed")
+
+    def test_a_checkout_is_source(self):
+        self.assertEqual(self.kind(str(self.app), frozen=False), "source")
+
+    def test_the_registry_key_is_the_installers_own(self):
+        iss = (Path(updater.__file__).parents[1] / "installer" / "PrivatePartyNet.iss").read_text(encoding="utf-8")
+        app_id = iss.split("AppId={{")[1].split("}")[0]
+        self.assertEqual(updater.UNINSTALL_KEY, rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{{{app_id}}}_is1")
+
+
 class NoBackDoorTests(unittest.TestCase):
     def test_no_environment_variable_or_setting_changes_the_key_or_the_address(self):
         source = Path(updater.__file__).read_text(encoding="utf-8")
