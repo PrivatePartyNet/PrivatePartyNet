@@ -513,6 +513,26 @@ class FlowTests(unittest.TestCase):
         self.assertEqual((app / "PrivatePartyNet.exe").read_bytes(), b"new app")
         self.assertEqual((app.parent / "PrivatePartyNet.old" / "PrivatePartyNet.exe").read_bytes(), b"old app")
 
+    def test_the_portable_swap_waits_for_the_app_whatever_find_is_first_on_the_path(self):
+        app = self.folder / "portable" / "PrivatePartyNet"
+        up = self.portable(app)
+        up.check(manual=False)
+        self.assertTrue(up.restart_now()["ok"])
+        tools = self.folder / "tools"  # a Unix find (Git's, say) ahead of Windows' own
+        tools.mkdir()
+        (tools / "find.bat").write_text("@exit /b 1\n", encoding="ascii")
+        running = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(4)"], creationflags=updater.NO_WINDOW)
+        self.addCleanup(running.kill)
+        env = {**os.environ, **self.envs[-1], "PPN_PID": str(running.pid), "PPN_RESTART": "0",
+               "PATH": f"{tools};{os.environ.get('PATH', '')}"}
+        swap = subprocess.Popen(self.launched[-1], env=env, creationflags=updater.NO_WINDOW,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1.5)
+        self.assertEqual((app / "PrivatePartyNet.exe").read_bytes(), b"old app", "not swapped while the app runs")
+        running.wait()
+        self.assertEqual(swap.wait(timeout=60), 0)
+        self.assertEqual((app / "PrivatePartyNet.exe").read_bytes(), b"new app")
+
     def test_a_portable_copy_whose_folder_cannot_change_unpacks_into_updates_and_says_so(self):
         app = self.folder / "portable" / "PrivatePartyNet"
         app.mkdir(parents=True)

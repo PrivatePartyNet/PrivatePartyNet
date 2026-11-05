@@ -310,17 +310,18 @@ def sha256_file(path):
 
 
 # The folders come in environment variables (PPN_*), not written into the script: cmd reads a script in the console's
-# code page and expands % signs in it, so a folder named with accents or a % would break the swap.
+# code page and expands % signs in it, so a folder named with accents or a % would break the swap. Windows' own
+# tasklist, find and ping are named in full: another find earlier on the PATH (Git's, say) would make it swap at once.
 SWAP_SCRIPT = r"""@echo off
 rem PrivatePartyNet's portable update: once the app has closed, swap its folder for the checked new one.
 setlocal
 set /a tries=0
 :wait
-tasklist /FI "PID eq %PPN_PID%" 2>NUL | find "%PPN_PID%" >NUL
+"%SystemRoot%\System32\tasklist.exe" /FI "PID eq %PPN_PID%" 2>NUL | "%SystemRoot%\System32\find.exe" "%PPN_PID%" >NUL
 if not errorlevel 1 (
   set /a tries+=1
   if %tries% GEQ 120 goto failed
-  ping -n 2 127.0.0.1 >NUL
+  "%SystemRoot%\System32\ping.exe" -n 2 127.0.0.1 >NUL
   goto wait
 )
 if exist "%PPN_OLD%" rmdir /s /q "%PPN_OLD%"
