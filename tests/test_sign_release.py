@@ -50,6 +50,14 @@ class SignReleaseTests(unittest.TestCase):
                                        self.release(manifest), "3.2.0")
         self.assertEqual(found["next_key"], next_public)
 
+    def test_keys_to_retire_are_each_signed_by_the_current_one(self):
+        gone = [Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex() for _ in range(2)]
+        manifest, signature = sign_release.sign("3.2.1", self.dist, key=self.key, revoke=gone)
+        found = updater.check_manifest(manifest.read_bytes(), signature.read_bytes(), (self.public,),
+                                       self.release(manifest), "3.2.0")
+        self.assertEqual([r["key"] for r in found["revoke_links"]], gone)
+        self.assertIn("--revoke", {o for action in sign_release.parser()._actions for o in action.option_strings})
+
     def test_a_missing_file_stops_it(self):
         (self.dist / "PrivatePartyNetSetup-3.2.1.exe").unlink()
         with self.assertRaises(SystemExit):

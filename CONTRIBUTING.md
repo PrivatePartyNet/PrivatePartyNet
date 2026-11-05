@@ -35,7 +35,9 @@ Installed copies update themselves only to releases signed with PrivatePartyNet'
 1. Once: `py tools\sign_release.py --new-key` makes the key in `%APPDATA%\PrivatePartyNet-release\update-signing.key`,
    sealed for your Windows account, and prints its public key, which goes into `TRUSTED_KEYS`. To move to a new key, sign
    one release with `py tools\sign_release.py --next-key <new public key>` using the old key; copies that install it
-   trust the new one too.
+   trust the new one too. To retire a key that leaked, sign a release with `--revoke <its public key>`: copies stop
+   trusting it and every key it handed on, but never end up with no key at all. To retire the built-in key itself, put
+   the new key in `TRUSTED_KEYS` in place of the old one.
 2. Back the key up, once: `py tools\sign_release.py --export E:\ppn-signing-key.json` asks for a passphrase (12
    characters or more) and writes the key sealed with it. Keep the file off this PC (a USB stick in a drawer) and the
    passphrase somewhere else (a password manager). Copying the key folder is not a backup: Windows seals the key for

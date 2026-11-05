@@ -4,6 +4,7 @@
     py tools\\sign_release.py --public       print the public key, which privatepartynet/updater.py carries
     py tools\\sign_release.py                sign this version's release in dist\\ (build.py runs it)
     py tools\\sign_release.py --next-key HEX also hand installed copies the next key (key rotation)
+    py tools\\sign_release.py --revoke HEX   also retire a key (a leaked one); copies keep at least one key
     py tools\\sign_release.py --export PATH  write a backup of the key, sealed with a passphrase you type
     py tools\\sign_release.py --import PATH  seal a backup into this PC's key folder (refuses to replace a key)
 
@@ -128,7 +129,7 @@ def public_hex(key):
     return key.public_key().public_bytes_raw().hex()
 
 
-def manifest_for(version, dist, notes="", next_key=None, key=None):
+def manifest_for(version, dist, notes="", next_key=None, key=None, revoke=()):
     """The manifest (bytes) for `version`'s installer and portable zip in `dist`."""
     files = []
     for name, kind in ((f"PrivatePartyNetSetup-{version}.exe", "installer"),
@@ -146,16 +147,19 @@ def manifest_for(version, dist, notes="", next_key=None, key=None):
         record["notes"] = notes
     if next_key:
         record["next_key"] = {"key": next_key, "sig": key.sign(updater.NEXT_KEY_LABEL + bytes.fromhex(next_key)).hex()}
+    if revoke:
+        record["revokes"] = [{"key": gone, "sig": key.sign(updater.REVOKE_LABEL + bytes.fromhex(gone)).hex()}
+                             for gone in revoke]
     return (json.dumps(record, indent=2) + "\n").encode("utf-8")
 
 
-def sign(version=__version__, dist=ROOT / "dist", key=None, next_key=None):
+def sign(version=__version__, dist=ROOT / "dist", key=None, next_key=None, revoke=()):
     """Write the manifest and its signature into `dist`. Returns their paths."""
     key = key or load_key()
     if public_hex(key) not in updater.TRUSTED_KEYS:
         print("  WARNING: this signing key is not one the app trusts (privatepartynet/updater.py TRUSTED_KEYS); "
               "installed copies will refuse this release.")
-    data = manifest_for(version, dist, next_key=next_key, key=key)
+    data = manifest_for(version, dist, next_key=next_key, key=key, revoke=revoke)
     manifest = Path(dist) / updater.manifest_name(version)
     manifest.write_bytes(data)
     signature = manifest.with_name(manifest.name + ".sig")
@@ -168,6 +172,8 @@ def parser():
     parser.add_argument("--new-key", action="store_true", help="make the signing key (once)")
     parser.add_argument("--public", action="store_true", help="print the public key")
     parser.add_argument("--next-key", help="a new public key (hex) to hand to installed copies, signed by this one")
+    parser.add_argument("--revoke", action="append", default=[], metavar="HEX",
+                        help="a public key installed copies stop trusting (and those it handed on); may repeat")
     parser.add_argument("--export", metavar="PATH", help="write a passphrase-sealed backup of the key to PATH")
     parser.add_argument("--import", dest="import_from", metavar="PATH", help="seal the backup at PATH into this PC")
     parser.add_argument("--version", default=__version__)
@@ -200,7 +206,7 @@ def main(argv=None):
     if arguments.public:
         print(public_hex(load_key()))
         return 0
-    manifest, signature = sign(arguments.version, next_key=arguments.next_key)
+    manifest, signature = sign(arguments.version, next_key=arguments.next_key, revoke=arguments.revoke)
     print(f"  {manifest.name}  sha256 {hashlib.sha256(manifest.read_bytes()).hexdigest()}")
     print(f"  {signature.name}  sha256 {hashlib.sha256(signature.read_bytes()).hexdigest()}")
     return 0

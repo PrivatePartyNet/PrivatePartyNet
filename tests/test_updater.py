@@ -21,8 +21,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from privatepartynet import updater
 from privatepartynet.cert import ensure_certificate
-from privatepartynet.updater import (MANIFEST_LABEL, NEXT_KEY_LABEL, Fetcher, UpdateError, Updater, Version, candidates,
-                                     check_manifest, manifest_name)
+from privatepartynet.updater import (MANIFEST_LABEL, NEXT_KEY_LABEL, REVOKE_LABEL, Fetcher, UpdateError, Updater,
+                                     Version, candidates, check_manifest, manifest_name)
 
 KEY = Ed25519PrivateKey.generate()
 PUBLIC = KEY.public_key().public_bytes_raw().hex()
@@ -150,8 +150,8 @@ class KeyRotationTests(unittest.TestCase):
                            release("3.2.1"), "3.2.0")
 
 
-class LearnedKeyTests(unittest.TestCase):
-    """Keys learned by rotation are kept in the data folder, so they must prove themselves again each time."""
+class StateFileCase(unittest.TestCase):
+    """An updater whose state file a test writes, with no network."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -165,6 +165,10 @@ class LearnedKeyTests(unittest.TestCase):
 
     def state(self, **record):
         (self.data / "updates" / "state.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+class LearnedKeyTests(StateFileCase):
+    """Keys learned by rotation are kept in the data folder, so they must prove themselves again each time."""
 
     def test_a_key_written_into_the_state_file_is_not_trusted(self):
         rogue = Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex()
@@ -204,6 +208,75 @@ class LearnedKeyTests(unittest.TestCase):
                                        ("PrivatePartyNetSetup-3.2.1.exe", 1, "https://github.com/x")])
         up._check_release(rel)
         self.assertEqual(self.updater().keys(), (PUBLIC, new), "trusted after a restart, from the state file")
+
+
+def new_key():
+    key = Ed25519PrivateKey.generate()
+    return key, key.public_key().public_bytes_raw().hex()
+
+
+def link(by_key, key, label=NEXT_KEY_LABEL):
+    by = by_key.public_key().public_bytes_raw().hex()
+    return {"key": key, "by": by, "sig": by_key.sign(label + bytes.fromhex(key)).hex()}
+
+
+class RevocationTests(StateFileCase):
+    """A manifest may retire keys ("revokes"). A retired key, and whatever was learned only through it, is no longer
+    trusted; but the keys can never be retired down to none."""
+
+    def test_a_signed_revocation_in_a_manifest_is_accepted_and_an_unsigned_one_refused(self):
+        _, gone = new_key()
+        files = [entry("3.2.1", "installer", b"x")]
+        revocation = {"key": gone, "sig": KEY.sign(REVOKE_LABEL + bytes.fromhex(gone)).hex()}
+        record = json.loads(manifest("3.2.1", files)[0])
+        data = json.dumps(dict(record, revokes=[revocation])).encode()
+        found = check_manifest(data, KEY.sign(MANIFEST_LABEL + data).hex(), (PUBLIC,), release("3.2.1"), "3.2.0")
+        self.assertEqual(found["revoke_links"], [{"key": gone, "by": PUBLIC, "sig": revocation["sig"]}])
+        rogue, _ = new_key()
+        for bad in ([{"key": gone, "sig": rogue.sign(REVOKE_LABEL + bytes.fromhex(gone)).hex()}],
+                    [{"key": gone, "sig": KEY.sign(NEXT_KEY_LABEL + bytes.fromhex(gone)).hex()}],  # another label
+                    [{"key": "nothex"}], "everyone"):
+            data = json.dumps(dict(record, revokes=bad)).encode()
+            with self.assertRaisesRegex(UpdateError, "revok"):
+                check_manifest(data, KEY.sign(MANIFEST_LABEL + data).hex(), (PUBLIC,), release("3.2.1"), "3.2.0")
+
+    def test_a_revoked_key_and_what_was_learned_through_it_are_dropped(self):
+        leaked, leaked_public = new_key()
+        _, planted = new_key()
+        _, other = new_key()
+        self.state(key_links=[link(KEY, leaked_public), link(leaked, planted), link(KEY, other)],
+                   revocations=[link(KEY, leaked_public, REVOKE_LABEL)])
+        self.assertEqual(self.updater().keys(), (PUBLIC, other))
+
+    def test_a_revocation_written_by_hand_is_ignored(self):
+        learned, learned_public = new_key()
+        rogue, _ = new_key()
+        self.state(key_links=[link(KEY, learned_public)],
+                   revocations=[dict(link(KEY, learned_public, REVOKE_LABEL), sig="00" * 64),
+                                link(rogue, learned_public, REVOKE_LABEL), {"key": PUBLIC}])
+        self.assertEqual(self.updater().keys(), (PUBLIC, learned_public))
+
+    def test_the_keys_are_never_revoked_down_to_none(self):
+        self.state(revocations=[link(KEY, PUBLIC, REVOKE_LABEL)])
+        self.assertEqual(self.updater().keys(), (PUBLIC,))
+        _, learned = new_key()
+        self.state(key_links=[link(KEY, learned)], revocations=[link(KEY, PUBLIC, REVOKE_LABEL)])
+        self.assertEqual(self.updater().keys(), (PUBLIC, learned), "dropping the only root would leave nothing")
+
+    def test_a_revocation_from_a_release_is_kept_with_its_proof(self):
+        learned, learned_public = new_key()
+        self.state(key_links=[link(KEY, learned_public)])
+        files = [entry("3.2.1", "installer", b"x")]
+        record = json.loads(manifest("3.2.1", files)[0])
+        revocation = {"key": learned_public, "sig": KEY.sign(REVOKE_LABEL + bytes.fromhex(learned_public)).hex()}
+        data = json.dumps(dict(record, revokes=[revocation])).encode()
+        sig = KEY.sign(MANIFEST_LABEL + data).hex().encode()
+        up = self.updater()
+        up._small = lambda item: {"m": data, "s": sig}[item["browser_download_url"]]
+        up._check_release(release("3.2.1", assets=[(manifest_name("3.2.1"), len(data), "m"),
+                                                   (manifest_name("3.2.1") + ".sig", len(sig), "s"),
+                                                   ("PrivatePartyNetSetup-3.2.1.exe", 1, "https://github.com/x")]))
+        self.assertEqual(self.updater().keys(), (PUBLIC,), "after a restart too")
 
 
 class NoBackDoorTests(unittest.TestCase):
