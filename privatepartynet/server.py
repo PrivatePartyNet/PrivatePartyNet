@@ -13,7 +13,9 @@ import http.cookies
 import logging
 import json
 import queue
+import re
 import secrets
+import shutil
 import socket
 import ssl
 import struct
@@ -23,7 +25,7 @@ import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from privatepartynet.cpu import sample_detail as cpu_detail
 from privatepartynet.discovery import clean_name
@@ -32,6 +34,7 @@ from privatepartynet import gamenet
 from privatepartynet import relayproto
 from privatepartynet.identity import user_id_of, verify
 from privatepartynet.paths import web_dir
+from privatepartynet.vault import VaultError
 
 WEB_DIR = web_dir()
 STATIC_TYPES = {
@@ -88,6 +91,16 @@ MAX_REQUESTS = 20  # people waiting to be let in at once; more are refused until
 MAX_REQUESTS_PER_ADDRESS = 3
 MAX_FORM_BYTES = 1024
 MAX_BODY_BYTES = 256 * 1024  # an SDP with every candidate is a few kilobytes
+# Files of any kind (store.py keeps them in sealed pieces, never whole in memory). Each server has its own per-file limit
+# and storage cap, each None (none, the default) or bytes; when both are set the cap is at least CAP_TIMES_LIMIT times the
+# limit (K, 2026-11-04). Pictures count toward both. The host's disk keeps MIN_FREE_BYTES free whatever they say.
+FILE_SETTING_MIN = 1024 * 1024
+FILE_SETTING_MAX = 64 * 1024 ** 4
+CAP_TIMES_LIMIT = 10
+MIN_FREE_BYTES = 512 * 1024 * 1024
+MAX_FILE_NAME = 200
+FILES_PER_MINUTE = 20  # per member
+UPLOAD_PIECE = 256 * 1024  # an upload is read from the connection this much at a time
 MAX_DRAIN = 1024 * 1024  # what is read of a refused upload so the answer reaches the client; past it the connection closes
 SIGNAL_KINDS = {"offer", "answer", "quality"}
 TURN_PORT = 3478  # coturn beside the relay server (relay/turnserver.conf)
@@ -287,7 +300,65 @@ class BadImage(Exception):
 
 
 class Full(Exception):
-    """A voice channel already has MAX_VOICE people in it."""
+    """A voice channel already has MAX_VOICE people in it, or a file would not fit this server's limits or the disk."""
+
+
+class BadRequest(Exception):
+    """A setting that cannot be used, with the reason."""
+
+
+def human_size(n):
+    for unit, size in (("TB", 1024 ** 4), ("GB", 1024 ** 3), ("MB", 1024 ** 2), ("KB", 1024)):
+        if n >= size:
+            return f"{n / size:.1f}".rstrip("0").rstrip(".") + " " + unit
+    return f"{n} bytes"
+
+
+def check_file_settings(limit, cap):
+    """"" when a per-file limit and a storage cap (each None for none, or bytes) can be used together, else why not."""
+    for value, what in ((limit, "The file size limit"), (cap, "The storage cap")):
+        if value is None:
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or not FILE_SETTING_MIN <= value <= FILE_SETTING_MAX:
+            return f"{what} is a size of at least 1 MB, or none."
+    if limit is not None and cap is not None and cap < CAP_TIMES_LIMIT * limit:
+        return "The storage cap has to be at least ten times the file size limit."
+    return ""
+
+
+def clean_file_name(name):
+    """A file's name as shown and offered for saving: no folder part, no control or reserved characters, not too long."""
+    if not isinstance(name, str):
+        return "file"
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(c for c in name if c >= " " and c != "\x7f" and c not in '<>:"|?*').strip().rstrip(". ")
+    return name[:MAX_FILE_NAME].rstrip(". ") or "file"
+
+
+def clean_mime(value):
+    value = (value or "").strip().lower()[:100] if isinstance(value, str) else ""
+    return value if re.fullmatch(r"[a-z0-9.+-]+/[a-z0-9.+-]+", value) else "application/octet-stream"
+
+
+def parse_range(header, size):
+    """(start, end) for a single "bytes=" Range a file of `size` bytes can answer, end not included; None otherwise."""
+    match = re.fullmatch(r"\s*bytes=(\d*)-(\d*)\s*", header or "")
+    if not match or not (match.group(1) or match.group(2)):
+        return None
+    if not match.group(1):
+        tail = int(match.group(2))
+        return (max(0, size - tail), size) if tail and size else None
+    start = int(match.group(1))
+    end = int(match.group(2)) + 1 if match.group(2) else size
+    if start >= size or end <= start:
+        return None
+    return start, min(end, size)
+
+
+def attachment_header(name):
+    """Content-Disposition that always saves, never shows, with the name in plain ASCII and in full UTF-8."""
+    plain = "".join(c if 32 <= ord(c) < 127 and c not in '"\\;' else "_" for c in name) or "file"
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(name, safe='')}"
 
 
 class Party:
@@ -337,6 +408,10 @@ class Party:
         # The relay server the owner set (relay/README.md), kept with the server in the encrypted store. Its secret stays
         # on this PC: members get tokens and TURN credentials made from it, never the secret.
         self._relay = record.get("relay") if isinstance(record.get("relay"), dict) else None
+        files = record.get("files") if isinstance(record.get("files"), dict) else {}
+        limit, cap = files.get("limit"), files.get("cap")
+        self._file_limit, self._storage_cap = (None, None) if check_file_settings(limit, cap) else (limit, cap)
+        self._file_times = {}  # member id -> times of their recent file uploads
         # The owner's identity (identity.Identity): it signs the relay settings members receive and the passes friend
         # relays check (pathway.py). None in tests and diagnostic runs, which then hand out no friend passes.
         self.owner = owner
@@ -530,7 +605,7 @@ class Party:
             member["online"] = True
             listener.put({"type": "hello", "you": self._public(member), "party": self.party_name, "host": self._host_id,
                           "theme": self.theme, "server": self.server_id, "channels": self._channels_public(),
-                          "stun": self.remote, "turn": self._turn_locked(member)})
+                          "stun": self.remote, "turn": self._turn_locked(member), "storage": self.storage_info()})
             for channel in self._channels:
                 if channel["kind"] == "text":
                     listener.put({"type": "history", "channel": channel["id"],
@@ -1205,7 +1280,8 @@ class Party:
         return {"type": "chat", "id": record["id"], "channel": body.get("channel"), "seq": record["seq"],
                 "from": body.get("from"), "user": record["sender"], "name": body.get("name", ""),
                 "text": body.get("text", ""), "ts": record["ts"], "at": time.strftime("%H:%M", time.localtime(record["ts"])),
-                **({"image": body["image"]} if body.get("image") else {})}
+                **({"image": body["image"]} if body.get("image") else {}),
+                **({"file": body["file"]} if body.get("file") else {})}
 
     def _load_logs(self):
         """Fill each text channel's recent messages from the store, so a restarted server remembers its chat."""
@@ -1229,9 +1305,10 @@ class Party:
             "name": self.party_name, "channels": self._channels, "roles": self._roles, "banned": sorted(self._banned),
             "known": self._known, "created": self._created, "password": self.passcode,
             "net": self._net_subnet, "vips": self._net.assignments() if self._net else self._net_vips,
-            "invites": self._invite_secrets, "relay": self._relay})
+            "invites": self._invite_secrets, "relay": self._relay,
+            "files": {"limit": self._file_limit, "cap": self._storage_cap}})
 
-    def chat(self, member_id, text, channel=None, image=None):
+    def chat(self, member_id, text, channel=None, image=None, file=None):
         """Post a chat message in a text channel (the first one when none is named) and save it. Returns the message,
         or None when the member is gone. Raises Forbidden for a guest and NotFound for a channel that is not a text channel."""
         with self._lock:
@@ -1255,12 +1332,19 @@ class Party:
                        "ts": now, "at": time.strftime("%H:%M", time.localtime(now))}
             if image is not None:
                 message["image"] = image
+            if file is not None:
+                message["file"] = file
             self._log.setdefault(channel_id, deque(maxlen=HISTORY)).append(message)
             if self.store is not None:
                 self.store.add_message(message["id"], self._scope(channel_id), message["user"],
                                        {"text": text, "name": member["name"], "from": member_id, "channel": channel_id,
-                                        **({"image": image} if image is not None else {})},
+                                        **({"image": image} if image is not None else {}),
+                                        **({"file": file} if file is not None else {})},
                                        ts=now, seq=seq)
+                if image is not None:
+                    self.store.hold(self.server_id, "image", image["hash"], self.store.blob_size(image["hash"]) or 0, uses=1)
+                if file is not None:
+                    self.store.hold(self.server_id, "file", file["id"], file["size"], uses=1)
             self._broadcast_locked(message)
             return message
 
@@ -1278,6 +1362,8 @@ class Party:
             if len(recent) >= IMAGES_PER_MINUTE:
                 raise Forbidden("that is a lot of pictures; wait a moment")
             self._image_times[member_id] = recent + [now]
+            if data:
+                self._room_for_locked(len(data))
         if not data or len(data) > MAX_IMAGE:
             raise BadImage(f"pictures can be up to {MAX_IMAGE_TEXT}")
         mime = sniff_image(data)
@@ -1286,6 +1372,8 @@ class Party:
         digest = hashlib.sha256(data).hexdigest()
         if self.store is not None:
             self.store.put_blob(data)
+            self.store.hold(self.server_id, "image", digest, len(data))
+            self._broadcast_storage()
         else:
             self._blobs[digest] = data
             while len(self._blobs) > 50 or sum(len(b) for b in self._blobs.values()) > MAX_MEMORY_BLOBS:
@@ -1306,6 +1394,167 @@ class Party:
 
     def _has_image(self, digest):
         return digest in self._blobs if self.store is None else self.store.has_blob(digest)
+
+    # --- files, storage and deleting -------------------------------------------------------------------------
+
+    def storage_info(self):
+        """What members see under the server name: bytes this server keeps, its cap and per-file limit (None for none),
+        and the space left on the host's disk. `files` is False for a party with no store, which keeps no files."""
+        used, free = 0, None
+        if self.store is not None:
+            used = self.store.held_bytes(self.server_id)
+            try:
+                free = shutil.disk_usage(self.store.folder).free
+            except OSError:
+                free = None
+        return {"used": used, "cap": self._storage_cap, "limit": self._file_limit, "free": free,
+                "files": self.store is not None}
+
+    def _broadcast_storage(self):
+        info = {"type": "storage", **self.storage_info()}
+        with self._lock:
+            self._broadcast_locked(info)
+
+    def set_file_settings(self, member_id, limit, cap):
+        """The owner and admins set this server's per-file limit and storage cap. Returns the storage info."""
+        with self._lock:
+            member = self._members.get(member_id)
+            if member is None or member["role"] not in STAFF:
+                raise Forbidden("only the owner and admins set the file limits")
+            problem = check_file_settings(limit, cap)
+            if problem:
+                raise BadRequest(problem)
+            self._file_limit, self._storage_cap = limit, cap
+            self._save_locked()
+        self._broadcast_storage()
+        return self.storage_info()
+
+    def largest(self, member_id, limit=10):
+        """The biggest pictures and files this server keeps, for the owner and admins: [{"kind", "size", "name"?}]."""
+        with self._lock:
+            member = self._members.get(member_id)
+            if member is None or member["role"] not in STAFF:
+                raise Forbidden("only the owner and admins see what takes the space")
+        if self.store is None:
+            return []
+        return [{"kind": kind, "ref": ref, "size": size} for kind, ref, size in self.store.largest_held(self.server_id, limit)]
+
+    def _room_for_locked(self, size, disk=True):
+        """Raise Full when a picture or file of `size` bytes would pass this server's file limit, its storage cap or (with
+        `disk`) the space the host's disk has to keep free."""
+        if self._file_limit is not None and size > self._file_limit:
+            raise Full(f"files can be up to {human_size(self._file_limit)} on this server")
+        if self.store is None:
+            return
+        used = self.store.held_bytes(self.server_id)
+        if self._storage_cap is not None and used + size > self._storage_cap:
+            raise Full(f"this server's storage is full ({human_size(used)} of {human_size(self._storage_cap)}); "
+                       "the owner or an admin can delete files or raise the cap")
+        if disk:
+            try:
+                free = shutil.disk_usage(self.store.folder).free
+            except OSError:
+                return
+            if size + MIN_FREE_BYTES > free:
+                raise Full("the host's disk is nearly full")
+
+    def begin_file(self, member_id, size, channel_id=None):
+        """Check that a member may send a file of `size` bytes to a text channel now, and return the store's writer for
+        it. Raises Forbidden, NotFound or Full with the reason."""
+        with self._lock:
+            member = self._members.get(member_id)
+            if member is None:
+                raise NotFound("you are not in the party")
+            if member["role"] in ("guest", "viewer"):
+                raise Forbidden("guests can read the chat but not post")
+            if self.store is None:
+                raise Full("this party keeps no files")
+            target = self._channel_locked(channel_id or self._first_text_locked())
+            if target is None or target["kind"] != "text":
+                raise NotFound("no such text channel")
+            now = time.monotonic()
+            recent = [t for t in self._file_times.get(member_id, []) if now - t < 60]
+            if len(recent) >= FILES_PER_MINUTE:
+                raise Forbidden("that is a lot of files; wait a moment")
+            self._file_times[member_id] = recent + [now]
+            self._room_for_locked(size)
+        return self.store.begin_file()
+
+    def finish_file(self, member_id, writer, channel_id, name, mime):
+        """Keep a file that has arrived in full and post it to the channel. Returns the message. The limits are checked
+        again, together with counting the file, so two uploads at once cannot both slip under the cap."""
+        file_id, size, _digest = writer.finish()
+        with self._lock:
+            try:
+                self._room_for_locked(size, disk=False)
+            except Full:
+                self.store.delete_file(file_id)
+                raise
+            self.store.hold(self.server_id, "file", file_id, size)
+        info = {"id": file_id, "name": clean_file_name(name), "size": size, "type": clean_mime(mime)}
+        try:
+            message = self.chat(member_id, "", channel_id, file=info)
+        except (Forbidden, NotFound):
+            message = None
+        if message is None:  # the sender left while it was arriving
+            self.store.release(self.server_id, "file", file_id)
+            self.store.delete_file(file_id)
+            raise NotFound("you are not in the party")
+        self._broadcast_storage()
+        return message
+
+    def _find_message_locked(self, channel_id, message_id):
+        if not isinstance(message_id, str) or not message_id:
+            return None
+        found = next((m for m in self._log.get(channel_id, ()) if m["id"] == message_id), None)
+        if found is None and self.store is not None:
+            record = self.store.message(message_id, self._scope(channel_id))
+            found = self._wire(record) if record else None
+        return found
+
+    def file_of(self, member_id, channel_id, message_id):
+        """The file of a message, for a member to save: {"id", "name", "size", "type"}. Raises NotFound."""
+        with self._lock:
+            if member_id not in self._members:
+                raise NotFound("you are not in the party")
+            channel = self._channel_locked(channel_id)
+            if channel is None or channel["kind"] != "text":
+                raise NotFound("no such text channel")
+            found = self._find_message_locked(channel_id, message_id)
+        info = found.get("file") if found else None
+        size = self.store.file_size(info.get("id")) if info and self.store is not None else None
+        if size is None:
+            raise NotFound("that file is no longer kept")
+        return dict(info, size=size)
+
+    def delete_message(self, member_id, channel_id, message_id):
+        """Delete a message; its sender, the owner and admins may. Its picture or file is deleted from this PC too once no
+        other message uses it, which frees the space. Copies members saved on their own PCs stay theirs."""
+        with self._lock:
+            member = self._members.get(member_id)
+            if member is None:
+                raise NotFound("you are not in the party")
+            channel = self._channel_locked(channel_id)
+            if channel is None or channel["kind"] != "text":
+                raise NotFound("no such text channel")
+            found = self._find_message_locked(channel_id, message_id)
+            if found is None:
+                raise NotFound("no such message")
+            mine = found.get("user") == (member.get("user") or member_id) or found.get("from") == member_id
+            if not mine and member["role"] not in STAFF:
+                raise Forbidden("only its sender, the owner and admins can delete a message")
+            log = self._log.get(channel_id)
+            if log is not None:
+                self._log[channel_id] = deque((m for m in log if m["id"] != message_id), maxlen=HISTORY)
+            if self.store is not None:
+                self.store.delete_message(message_id, self._scope(channel_id))
+                if found.get("file") and self.store.release(self.server_id, "file", found["file"].get("id")):
+                    self.store.delete_file(found["file"].get("id"))
+                if found.get("image") and self.store.release(self.server_id, "image", found["image"].get("hash")):
+                    self.store.delete_blob(found["image"].get("hash"))
+            self._broadcast_locked({"type": "deleted", "channel": channel_id, "id": message_id})
+        self._broadcast_storage()
+        return True
 
     def channel_history(self, member_id, channel_id, before=None, limit=PAGE):
         """One page of older messages for a member scrolling back: up to `limit` messages before the time `before`,
@@ -1452,6 +1701,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._ask_status()
         elif path == "/blob":
             self._blob_get()
+        elif path == "/file":
+            self._file_get()
+        elif path == "/storage":
+            self._storage_get()
         elif path.startswith("/static/") and path[len("/static/"):] in STATIC_TYPES:
             name = path[len("/static/"):]
             self._send(200, STATIC_TYPES[name], (WEB_DIR / name).read_bytes())
@@ -1463,7 +1716,8 @@ class _Handler(BaseHTTPRequestHandler):
         routes = {"/leave": self._leave, "/chat": self._chat, "/share": self._share,
                   "/signal": self._signal, "/name": self._name, "/kick": self._kick, "/popout": self._popout,
                   "/channel": self._channel, "/role": self._role, "/ban": self._ban, "/voice": self._voice,
-                  "/decide": self._decide, "/ask": self._ask, "/blob": self._blob_put, "/net": self._net_link}
+                  "/decide": self._decide, "/ask": self._ask, "/blob": self._blob_put, "/net": self._net_link,
+                  "/file": self._file_put, "/delete": self._delete, "/storage": self._storage_set}
         refused = self._post_refused(path)
         if refused:
             self._send(403, TEXT, refused.encode("utf-8"))
@@ -1546,6 +1800,9 @@ class _Handler(BaseHTTPRequestHandler):
             return False
         except Full as error:
             self._send(409, TEXT, str(error).encode("utf-8"))
+            return False
+        except BadRequest as error:
+            self._send(400, TEXT, str(error).encode("utf-8"))
             return False
         if result is False:
             self._send(failure_status, TEXT, failure_text)
@@ -1641,6 +1898,9 @@ class _Handler(BaseHTTPRequestHandler):
         except BadImage as error:
             self._send(415 if "only" in str(error) else 413, TEXT, str(error).encode("utf-8"))
             return
+        except Full as error:
+            self._send(413, TEXT, str(error).encode("utf-8"))
+            return
         except Forbidden as error:
             self._send(403, TEXT, str(error).encode("utf-8"))
             return
@@ -1672,6 +1932,123 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "private, max-age=31536000, immutable")  # the name is the hash of the bytes
         self.end_headers()
         self.wfile.write(data)
+
+    def _file_put(self):
+        """A file of any kind: POST /file?channel=ID&name=NAME&type=TYPE with its raw bytes. Members only. It is read and
+        sealed a piece at a time as it arrives, kept, and posted to the channel; the answer is that message."""
+        member = self._identity()
+        length = self._length()
+        query = parse_qs(urlsplit(self.path).query)
+        if member is None:
+            self._refuse_body(length, 401, b"Sign in first.")
+            return
+        if length <= 0:
+            self._refuse_body(length, 411, b"A file needs its length.")
+            return
+        channel = query.get("channel", [""])[0] or None
+        party = self.server.party
+        try:
+            writer = party.begin_file(member, length, channel)
+        except (Forbidden, NotFound, Full) as error:
+            status = 403 if isinstance(error, Forbidden) else 404 if isinstance(error, NotFound) else 413
+            self._refuse_body(length, status, str(error).encode("utf-8"))
+            return
+        remaining = length
+        try:
+            while remaining:
+                piece = self.rfile.read(min(UPLOAD_PIECE, remaining))
+                if not piece:
+                    raise ConnectionError("the upload stopped")
+                writer.write(piece)
+                remaining -= len(piece)
+        except BaseException:
+            writer.abort()  # a broken upload leaves nothing behind
+            self.close_connection = True
+            raise
+        try:
+            message = party.finish_file(member, writer, channel, query.get("name", [""])[0], query.get("type", [""])[0])
+        except (Forbidden, NotFound, Full) as error:
+            status = 403 if isinstance(error, Forbidden) else 404 if isinstance(error, NotFound) else 413
+            self._send(status, TEXT, str(error).encode("utf-8"))
+            return
+        self._send(200, JSON_TYPE, json.dumps(message).encode("utf-8"))
+
+    def _file_get(self):
+        """GET /file?channel=ID&message=ID: the file of a message, to save. It always comes as a download of plain bytes,
+        never as a page, so nothing a member sends can run here. A Range asks for part of it (a download carried on)."""
+        member = self._identity()
+        if member is None:
+            self._send(401, TEXT, b"Sign in first.")
+            return
+        query = parse_qs(urlsplit(self.path).query)
+        party = self.server.party
+        try:
+            info = party.file_of(member, query.get("channel", [""])[0], query.get("message", [""])[0])
+        except NotFound as error:
+            self._send(404, TEXT, str(error).encode("utf-8"))
+            return
+        size = info["size"]
+        start, end, status = 0, size, 200
+        if self.headers.get("Range"):
+            wanted = parse_range(self.headers.get("Range"), size)
+            if wanted is None:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            (start, end), status = wanted, 206
+        self.send_response(status)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", attachment_header(info["name"]))
+        self.send_header("Content-Length", str(end - start))
+        self.send_header("Accept-Ranges", "bytes")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end - 1}/{size}")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+        self.send_header("Cache-Control", "private, no-cache")
+        self.end_headers()
+        try:
+            for piece in party.store.read_file(info["id"], start, end):
+                self.wfile.write(piece)
+        except VaultError:
+            logging.getLogger("privatepartynet").warning("A kept file failed its check and was not sent")
+            self.close_connection = True
+        except (KeyError, OSError):
+            self.close_connection = True
+
+    def _delete(self):
+        """{"channel", "id"}: delete a message. Its sender, the owner and admins may."""
+        member, body = self._identity(), self._json()
+        if member is None or not isinstance(body, dict):
+            self._send(400, TEXT, b"Deleting needs a member, a channel and a message.")
+            return
+        if self._attempt(lambda: self.server.party.delete_message(member, body.get("channel"), body.get("id"))):
+            self._send(202, TEXT, b"")
+
+    def _storage_get(self):
+        """GET /storage: what this server keeps and its limits; for the owner and admins also the biggest things kept."""
+        member = self._identity()
+        if member is None:
+            self._send(401, TEXT, b"Sign in first.")
+            return
+        party = self.server.party
+        info = party.storage_info()
+        try:
+            info["largest"] = party.largest(member)
+        except Forbidden:
+            pass
+        self._send(200, JSON_TYPE, json.dumps(info).encode("utf-8"))
+
+    def _storage_set(self):
+        """{"limit": bytes or null, "cap": bytes or null}: the owner and admins set this server's file limits."""
+        member, body = self._identity(), self._json()
+        if member is None or not isinstance(body, dict) or "limit" not in body or "cap" not in body:
+            self._send(400, TEXT, b"File limits need a limit and a cap (each a size or none).")
+            return
+        if self._attempt(lambda: self.server.party.set_file_settings(member, body["limit"], body["cap"])):
+            self._send(200, JSON_TYPE, json.dumps(self._result).encode("utf-8"))
 
     def _ask(self):
         """The front door: {"name", "password"?, "card"?, "nonce"?, "sig"?}. No login is needed, that is the point. A
@@ -1986,7 +2363,7 @@ class _Handler(BaseHTTPRequestHandler):
             if not host or origin != own:
                 return "That request came from another page."
         declared = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        wanted = "application/octet-stream" if path == "/blob" else "application/json"
+        wanted = "application/octet-stream" if path in ("/blob", "/file") else "application/json"
         if declared != wanted:
             return "That request was not understood."
         return ""
