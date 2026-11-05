@@ -417,6 +417,24 @@ class FlowTests(unittest.TestCase):
                 self.github.releases = answer
                 self.assertEqual(self.updater().check(manual=True)["state"], "error")
 
+    def test_two_checks_at_once_ask_and_download_once(self):
+        self.github.publish("3.2.1", {"installer": b"x" * 100})
+        up = self.updater()
+        other = []
+
+        def clock():  # a second check (the scheduler, say) arrives while the first is under way
+            if not other:
+                other.append(threading.Thread(target=up.check, kwargs={"manual": False}))
+                other[0].start()
+                other[0].join()
+            return time.time()
+
+        up._clock = clock
+        self.assertEqual(up.check(manual=True)["state"], "ready")
+        fetched = [path for path, _ in self.github.calls]
+        self.assertEqual(fetched.count("/releases"), 1, fetched)
+        self.assertEqual(fetched.count("/assets/PrivatePartyNetSetup-3.2.1.exe"), 1, fetched)
+
     def test_the_schedule_keeps_going_when_a_check_fails_unexpectedly(self):
         up = self.updater()
         calls = []

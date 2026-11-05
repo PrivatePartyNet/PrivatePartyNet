@@ -429,12 +429,16 @@ class Updater:
     def check(self, manual=True):
         """Ask GitHub for releases, and take the newest genuine one further: download it at once when automatic
         updates are on, else offer it. Returns the view. A manual check is the "Check for updates" button."""
-        if self.view_state["state"] in ("checking", "downloading"):
-            return self.view()
+        with self._lock:  # one check at a time: the schedule, the control panel and the About page can all ask
+            if self.view_state["state"] in ("checking", "downloading"):
+                return self.view()
+            before = dict(self.view_state)
+            self._set("checking", "Checking for updates...")
         now = self._clock()
         if not manual and now < self._memory.get("backoff_until", 0):
+            with self._lock:
+                self.view_state = before
             return self.view()
-        self._set("checking", "Checking for updates...")
         try:
             found = self._find()
         except UpdateError as error:
@@ -558,7 +562,10 @@ class Updater:
                       version=str(found["version"]), notes=found["notes"])
             return self.view()
         version, entry = found["version"], found["file"]
-        self._set("downloading", f"Downloading {APP} {version}...", version=str(version), notes=found["notes"])
+        with self._lock:  # Update pressed while a download is already under way: that one carries on
+            if self.view_state["state"] == "downloading":
+                return self.view()
+            self._set("downloading", f"Downloading {APP} {version}...", version=str(version), notes=found["notes"])
         target = self.folder / entry["name"]
         partial = target.with_name(target.name + ".part")
         try:
