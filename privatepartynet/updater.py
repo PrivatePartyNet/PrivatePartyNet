@@ -77,7 +77,7 @@ class UpdateError(Exception):
 # --- versions -----------------------------------------------------------------------------------------------------
 
 
-_VERSION = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
+_VERSION = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$", re.ASCII)  # 0-9 only
 
 
 class Version:

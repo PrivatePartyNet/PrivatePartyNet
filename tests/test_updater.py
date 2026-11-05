@@ -55,7 +55,7 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(Version("v3.2.0"), Version("3.2.0"))
         self.assertEqual(Version("3.2.0+build.7"), Version("3.2.0"))
         self.assertTrue(Version("3.2.0-alpha.1").prerelease)
-        for bad in ("3.2", "version 3", "3.2.0.1", ""):
+        for bad in ("3.2", "version 3", "3.2.0.1", "", "v٣.2.0", "3.２.0", "vv3.2.0"):  # digits, not ASCII
             self.assertIsNone(updater.parse_version(bad))
 
 
