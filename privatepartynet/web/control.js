@@ -132,6 +132,8 @@
     renderGame(state.game);
     renderRelay(state.relay, state.friend_relay);
     renderUpdate(state.update);
+    renderSounds(state.sounds);
+    soundRequests(state.requests);
     el.unlockBox.hidden = !state.locked;
     el.openMessages.disabled = state.locked;
     el.dmUnread.textContent = state.dm_unread ? state.dm_unread + " unread" : "";
@@ -317,6 +319,50 @@
     });
   });
   el.openFolder.addEventListener("click", function () { api().open_data_folder(); });
+
+  // --- sounds (the one window plays them; Settings sets how loud and which) -------------------------------------
+
+  var soundVolume = document.getElementById("soundVolume");
+  var soundVolumeV = document.getElementById("soundVolumeV");
+  var soundSwitches = Array.from(document.querySelectorAll("[data-sound]"));
+  var soundSaveTimer = null;
+  var soundTouched = 0;
+
+  function soundChoice() {
+    return { volume: Number(soundVolume.value), off: soundSwitches.filter(function (s) { return !s.checked; }).map(function (s) { return s.dataset.sound; }) };
+  }
+
+  function renderSounds(sounds) {
+    if (!sounds || !soundVolume || Date.now() - soundTouched < 2000) return; // not while it is being changed
+    soundVolume.value = sounds.volume;
+    soundVolumeV.textContent = sounds.volume + "%";
+    soundSwitches.forEach(function (s) { s.checked = sounds.off.indexOf(s.dataset.sound) < 0; });
+  }
+
+  function soundChanged() {
+    soundTouched = Date.now();
+    var choice = soundChoice();
+    soundVolumeV.textContent = choice.volume + "%";
+    if (shell()) shell().setSounds(choice);
+    clearTimeout(soundSaveTimer);
+    soundSaveTimer = setTimeout(function () { api().set_sounds(choice.volume, choice.off); }, 300);
+  }
+
+  if (soundVolume) {
+    soundVolume.addEventListener("input", soundChanged);
+    soundSwitches.forEach(function (s) { s.addEventListener("change", soundChanged); });
+    document.querySelectorAll("[data-play]").forEach(function (button) {
+      button.addEventListener("click", function () { if (shell()) shell().sound(button.dataset.play, true); });
+    });
+  }
+
+  // Someone new asking through Nearby PCs is heard, as a request in a room is.
+  var knownRequests = null;
+  function soundRequests(list) {
+    var ids = new Set((list || []).map(function (r) { return r.id; }));
+    if (knownRequests !== null && Array.from(ids).some(function (id) { return !knownRequests.has(id); }) && shell()) shell().sound("request");
+    knownRequests = ids;
+  }
 
   // --- updates (updater.py finds them; updates.js decides what the banner says) ---------------------------------
 

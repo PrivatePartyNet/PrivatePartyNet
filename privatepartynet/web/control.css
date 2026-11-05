@@ -106,3 +106,7 @@ html.rail-compact .navbadge { min-width: 16px; padding: 0 4px; font-size: 10px; 
   border-radius: var(--r-lg); background: var(--surface); }
 .messages-frame[hidden] { display: none; }
 .in-shell #page-messages .page-head { margin-bottom: var(--sp-3); }
+
+/* Settings, Sounds: each group's switch with a Play button beside it */
+.sound-row { display: flex; align-items: center; gap: var(--sp-3); justify-content: space-between; }
+.sound-row .switch { flex: 1; }

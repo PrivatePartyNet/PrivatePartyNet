@@ -20,7 +20,18 @@ class SettingsTests(unittest.TestCase):
                                                       "game_server": None, "friend_relay": False, "friend_relay_mbps": 8,
                                                       "game_open": [], "accent": None, "text_scale": 100,
                                                       "density": "default", "auto_update": True,
-                                                      "update_prerelease": True, "update_skip": ""})
+                                                      "update_prerelease": True, "update_skip": "", "sound_volume": 60,
+                                                      "sounds_off": []})
+
+    def test_sounds_come_back_and_bad_values_fall_back(self):
+        save_settings({"sound_volume": 35, "sounds_off": ["messages", "voice", "messages"]}, self.folder)
+        loaded = load_settings(self.folder)
+        self.assertEqual((loaded["sound_volume"], loaded["sounds_off"]), (35, ["messages", "voice"]))
+        for volume, off in ((101, ["nope"]), (True, "voice"), (-1, None), ("50", [3])):
+            save_settings({"sound_volume": volume, "sounds_off": off}, self.folder)
+            loaded = load_settings(self.folder)
+            self.assertEqual(loaded["sound_volume"], 60)
+            self.assertEqual(loaded["sounds_off"], [] if not isinstance(off, list) else [])
 
     def test_a_persons_appearance_comes_back_and_bad_values_fall_back(self):
         save_settings({"accent": "#16A34A", "text_scale": 115, "density": "compact"}, self.folder)

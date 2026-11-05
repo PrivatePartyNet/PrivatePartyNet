@@ -244,6 +244,7 @@
       renderRoster();
       chat.setMembers(members);
       voice.sync();
+      checkCompanions();
       sendQualityToEveryone();
     } else if (msg.type === "history") {
       chat.history(msg);
@@ -265,6 +266,7 @@
       notice(msg.role === "guest" ? "You are now a guest: you can watch and read, not talk or post."
         : "Your role is now " + (msg.role === "host" ? "owner" : msg.role) + ".");
     } else if (msg.type === "join_request") {
+      if (!requests.has(msg.id)) shellSound("request");
       requests.set(msg.id, msg);
       renderRequests();
     } else if (msg.type === "join_resolved") {
@@ -1778,6 +1780,11 @@
     notice: notice,
     avatar: avatar,
     isHidden: function () { return document.hidden || !shellShown; },
+    // a message from someone else, in a channel that is not muted, while this person is not looking at it
+    onArrive: function (msg, isMutedChannel) {
+      if (isMutedChannel || !me || msg.from === me.id) return;
+      if (!shellShown || document.hidden || !document.hasFocus() || msg.channel !== chat.current()) shellSound("message");
+    },
     onVoice: function (channelId, channelName) {
       if (channelId) voice.join(channelId, channelName);
       else voice.leave();
@@ -1791,6 +1798,7 @@
     meId: function () { return me && me.id; },
     post: post,
     notice: notice,
+    onSound: shellSound,
     onSpeaking: function (who) {
       // The speaking ring shows in the members list and under the voice channel in the channel list.
       document.querySelectorAll("#roster li[data-id], #channelList .voice-people li[data-id]").forEach(function (row) {
@@ -2201,6 +2209,25 @@
 
   var shellShown = true;
   var lastReport = "";
+  var companions = null; // who else is in this person's voice channel, so arrivals and departures can be heard
+
+  // The one window plays the sounds (appshell.js), as Settings sets them; a room in a window of its own has none.
+  function shellSound(name) {
+    if (window.PPNEmbedded) window.PPNEmbedded.send({ ppn: "sound", name: name });
+  }
+
+  function checkCompanions() {
+    var mine = voice.state.channel;
+    var now = new Set();
+    if (mine) members.forEach(function (m, id) { if (m.voice === mine && !(me && id === me.id)) now.add(id); });
+    if (companions && mine && companions.channel === mine) {
+      var arrived = Array.from(now).some(function (id) { return !companions.ids.has(id); });
+      var went = Array.from(companions.ids).some(function (id) { return !now.has(id); });
+      if (arrived) shellSound("peer-join");
+      else if (went) shellSound("peer-leave");
+    }
+    companions = { channel: mine, ids: now };
+  }
 
   function shellReport() {
     if (!window.PPNEmbedded) return;

@@ -26,6 +26,9 @@ TYPES = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".ico": "image/x-icon",
+    ".ogg": "audio/ogg",
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
 }
 
 

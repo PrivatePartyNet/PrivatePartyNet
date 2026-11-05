@@ -22,6 +22,17 @@
   var POLL_MS = 1000;
   var READY_MS = 25000;
   var FRAME_ALLOW = "microphone; fullscreen; clipboard-write; autoplay; display-capture";
+  // The sound each event plays (public-domain sounds; About names where they come from), and the group in Settings that
+  // turns it off.
+  var SOUND_FILES = {
+    join: "sound-join.ogg", leave: "sound-leave.ogg", "peer-join": "sound-peer-join.ogg", "peer-leave": "sound-peer-leave.ogg",
+    mute: "sound-mute.ogg", unmute: "sound-unmute.ogg", deafen: "sound-deafen.ogg", undeafen: "sound-undeafen.ogg",
+    message: "sound-message.ogg", request: "sound-request.ogg",
+  };
+  var SOUND_GROUP = {
+    join: "voice", leave: "voice", "peer-join": "voice", "peer-leave": "voice", mute: "mute", unmute: "mute", deafen: "mute",
+    undeafen: "mute", message: "messages", request: "requests",
+  };
 
   // "Heroes night" -> "HN"; "kay" -> "KA"; nothing usable -> "?"
   function initials(name) {
@@ -98,6 +109,36 @@
     var theme = doc.documentElement.dataset.theme || "dark";
     var look = null;
     var polling = null;
+    var sounds = { volume: 60, off: [] };
+    var lastPlayed = {};
+    var played = [];
+
+    // One of SOUND_FILES' events, unless its group is off or it just played (`force`: a Play button in Settings).
+    function sound(name, force) {
+      var file = SOUND_FILES[name];
+      if (!file) return false;
+      if (!force && sounds.off.indexOf(SOUND_GROUP[name]) >= 0) return false;
+      var now = Date.now();
+      if (!force && lastPlayed[name] && now - lastPlayed[name] < 350) return false;
+      lastPlayed[name] = now;
+      played.push(name);
+      if (played.length > 50) played.shift();
+      if (!sounds.volume) return false;
+      try {
+        var audio = new Audio(file);
+        audio.volume = Math.max(0, Math.min(1, sounds.volume / 100));
+        var playing = audio.play();
+        if (playing && playing.catch) playing.catch(function () { /* before the first click the browser may say no */ });
+      } catch (err) {
+        return false;
+      }
+      return true;
+    }
+
+    function setSounds(next) {
+      if (!next) return;
+      sounds = { volume: typeof next.volume === "number" ? next.volume : 60, off: Array.isArray(next.off) ? next.off.slice() : [] };
+    }
 
     function api() {
       return win.pywebview && win.pywebview.api;
@@ -327,6 +368,8 @@
       if (!msg || typeof msg !== "object" || typeof msg.ppn !== "string") return;
       if (msg.ppn === "call") {
         roomCall(server, msg);
+      } else if (msg.ppn === "sound" && typeof msg.name === "string") {
+        sound(msg.name);
       } else if (msg.ppn === "state") {
         server.state = cleanState(msg);
         render(server);
@@ -406,6 +449,7 @@
         el.home.setAttribute("aria-label", unread ? "Home, " + unread + " unread direct messages" : "Home");
         if (s.theme && s.theme !== theme) setTheme(s.theme);
         if (s.appearance && JSON.stringify(s.appearance) !== JSON.stringify(look)) setLook(s.appearance);
+        setSounds(s.sounds);
       }).catch(function () { /* the next poll tries again */ });
     }
 
@@ -525,6 +569,9 @@
       show: show,
       home: goHome,
       info: showInfo,
+      sound: sound,
+      setSounds: setSounds,
+      played: function () { return played.slice(); },
       // what the app's own window test reads (app.py window_test): each room, whether it signed in, and its calls
       servers: function () {
         return Array.from(servers.values()).map(function (s) {
@@ -545,6 +592,6 @@
     else win.addEventListener("pywebviewready", begin);
   }
 
-  return { ROOM_CALLS: ROOM_CALLS, FRAME_ALLOW: FRAME_ALLOW, initials: initials, hueOf: hueOf, originOf: originOf,
+  return { ROOM_CALLS: ROOM_CALLS, FRAME_ALLOW: FRAME_ALLOW, SOUND_FILES: SOUND_FILES, SOUND_GROUP: SOUND_GROUP, initials: initials, hueOf: hueOf, originOf: originOf,
            frameUrl: frameUrl, reloadUrl: reloadUrl, badgeText: badgeText, cleanState: cleanState, start: start };
 });

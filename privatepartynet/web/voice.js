@@ -139,12 +139,16 @@
       }
       sync();
       renderBar();
+      if (options.onSound) options.onSound("join");
     }
 
     function leave() {
       var was = state.channel;
       stopLocal();
-      if (was) options.post("/voice", { channel: null }).catch(function () {});
+      if (was) {
+        options.post("/voice", { channel: null }).catch(function () {});
+        if (options.onSound) options.onSound("leave");
+      }
     }
 
     // Stop using the microphone and drop every voice connection, without telling the server (it already knows, or the
@@ -275,11 +279,13 @@
     // --- mute, deafen, push to talk ---------------------------------------------------------------------------
 
     function setMuted(on) {
+      if (options.onSound && on !== state.muted) options.onSound(on ? "mute" : "unmute");
       state.muted = on;
       applyEnabled();
     }
 
     function setDeafened(on) {
+      if (options.onSound && on !== state.deafened) options.onSound(on ? "deafen" : "undeafen");
       state.deafened = on;
       remotes.forEach(function (remote) { remote.audio.muted = on; });
       applyEnabled();

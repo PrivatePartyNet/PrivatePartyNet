@@ -247,6 +247,21 @@
     if (stick) el.messages.scrollTop = el.messages.scrollHeight;
   }
 
+  // A new message from someone, unless it is the conversation open in front of this person: the one window plays it.
+  var unreadBefore = null;
+  function messageSound(contacts) {
+    var unread = contacts.reduce(function (sum, c) {
+      var looking = c.id === current && document.hasFocus() && !document.hidden;
+      return sum + (looking ? 0 : (c.unread || 0));
+    }, 0);
+    if (unreadBefore !== null && unread > unreadBefore) {
+      try {
+        if (window.top !== window && window.top.PPNShell) window.top.PPNShell.sound("message");
+      } catch (err) { /* not inside the one window */ }
+    }
+    unreadBefore = unread;
+  }
+
   function refresh() {
     api().dm_state().then(function (state) {
       if (!state.ok) {
@@ -254,6 +269,7 @@
         return;
       }
       renderState(state);
+      messageSound(state.contacts || []);
       api().saved_servers().then(renderServers);
       if (reading) {
         api().saved_history(reading.server, reading.channel).then(function (result) {

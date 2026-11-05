@@ -13,6 +13,9 @@ DEFAULTS.update({"friend_relay": False, "friend_relay_mbps": 8})
 # How every window looks to this person: their own accent color (None is the default blue), text size in percent, and
 # spacing. Each PC keeps its own; nothing here is sent to anyone.
 DEFAULTS.update({"accent": None, "text_scale": 100, "density": "default"})
+# Sounds (K, 2026-11-05): how loud (0 to 100), and which groups are off. Each PC keeps its own.
+SOUND_GROUPS = ("voice", "mute", "messages", "requests")
+DEFAULTS.update({"sound_volume": 60, "sounds_off": []})
 DENSITIES = ("compact", "default", "spacious")
 TEXT_SCALES = (90, 130)  # smallest and largest text size, in percent
 MAX_FRIEND_MBPS = 1000
@@ -78,6 +81,11 @@ def load_settings(folder=None):
             settings["text_scale"] = saved["text_scale"]
         if saved.get("density") in DENSITIES:
             settings["density"] = saved["density"]
+        volume = saved.get("sound_volume")
+        if isinstance(volume, int) and not isinstance(volume, bool) and 0 <= volume <= 100:
+            settings["sound_volume"] = volume
+        if isinstance(saved.get("sounds_off"), list):
+            settings["sounds_off"] = sorted({g for g in saved["sounds_off"] if g in SOUND_GROUPS})
         for flag in ("auto_update", "update_prerelease"):
             if isinstance(saved.get(flag), bool):
                 settings[flag] = saved[flag]

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
 const Shell = require("../../privatepartynet/web/appshell.js");
@@ -48,4 +49,13 @@ test("a room talks only to a shell on this PC's loopback address", () => {
                         "?embedded=1&shell=http%3A%2F%2F127.0.0.1%3A5000%2Fx", "?embedded=1", ""]) {
     assert.equal(Bridge.shellOrigin(search), "", search);
   }
+});
+
+test("every sound has a group Settings can turn off, and its file is there", () => {
+  const groups = new Set(["voice", "mute", "messages", "requests"]);
+  for (const [name, file] of Object.entries(Shell.SOUND_FILES)) {
+    assert.ok(groups.has(Shell.SOUND_GROUP[name]), name);
+    assert.ok(existsSync(new URL("../../privatepartynet/web/" + file, import.meta.url)), file);
+  }
+  assert.deepEqual(Object.keys(Shell.SOUND_GROUP).sort(), Object.keys(Shell.SOUND_FILES).sort());
 });

@@ -335,6 +335,15 @@
         <p class="muted">These are this PC's own choices; nobody else sees them. Every window on this PC follows them, the parties you join included.</p>
       </div>
 
+      <div class="card" id="soundsCard">
+        <div class="card-head"><svg class="ic lg"><use href="#i-speaker"></use></svg><div class="grow"><h2>Sounds</h2><p class="muted">Short sounds for calls, messages and people asking to join, on this PC only.</p></div></div>
+        <div class="appearance-row"><label for="soundVolume">Volume</label><input id="soundVolume" type="range" min="0" max="100" step="5"><span id="soundVolumeV" class="muted"></span></div>
+        <div class="sound-row"><label class="switch"><input type="checkbox" data-sound="voice"><span>Joining and leaving voice, yours and other people's</span></label><button class="secondary small" type="button" data-play="join">Play</button></div>
+        <div class="sound-row"><label class="switch"><input type="checkbox" data-sound="mute"><span>Mute, unmute, deafen</span></label><button class="secondary small" type="button" data-play="mute">Play</button></div>
+        <div class="sound-row"><label class="switch"><input type="checkbox" data-sound="messages"><span>Messages while you are not looking at them</span></label><button class="secondary small" type="button" data-play="message">Play</button></div>
+        <div class="sound-row"><label class="switch"><input type="checkbox" data-sound="requests"><span>Someone asks to join your party</span></label><button class="secondary small" type="button" data-play="request">Play</button></div>
+      </div>
+
       <div class="card" id="updatesCard">
         <div class="card-head"><svg class="ic lg"><use href="#i-download"></use></svg><div class="grow"><h2>Updates</h2><p class="muted">New versions come from <span class="appname">PrivatePartyNet</span>'s releases on GitHub. Each download is checked against the size and SHA-256 GitHub publishes for it before it installs.</p></div></div>
         <label class="switch"><input id="autoUpdate" type="checkbox"><span>Update automatically (checks every six hours; asks before restarting)</span></label>

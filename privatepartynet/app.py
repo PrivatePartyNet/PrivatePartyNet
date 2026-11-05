@@ -40,8 +40,8 @@ from privatepartynet.netinfo import LOOPBACK, address_for, lan_addresses
 from privatepartynet.paths import data_dir, web_dir
 from privatepartynet.server import Forbidden, NotFound, Party, generate_password
 from privatepartynet.shellserver import ShellServer
-from privatepartynet.settings import (DENSITIES, THEMES, load_settings, save_settings, valid_accent, valid_mbps, valid_port,
-                                      valid_text_scale)
+from privatepartynet.settings import (DENSITIES, SOUND_GROUPS, THEMES, load_settings, save_settings, valid_accent,
+                                      valid_mbps, valid_port, valid_text_scale)
 from privatepartynet.store import Store
 from privatepartynet.updater import Updater
 from privatepartynet.vault import Locked, Vault, VaultError, WrongPassword
@@ -1116,7 +1116,8 @@ class Controller:
         with self._shell_lock:
             events, self._shell_events = self._shell_events, []
         return {"dm_unread": self._dm_unread(), "theme": self._settings.get("theme", "dark"),
-                "appearance": self.appearance(), "running": self._party is not None, "events": events}
+                "appearance": self.appearance(), "sounds": self.sounds(), "running": self._party is not None,
+                "events": events}
 
     def room_call(self, key, method, args):
         """A party room inside the one window asks the app for something (roombridge.js, through appshell.js, which
@@ -1181,6 +1182,7 @@ class Controller:
             "app_name": APP_NAME,
             "theme": self._settings.get("theme", "dark"),
             "appearance": self.appearance(),
+            "sounds": self.sounds(),
             "name": self._name,
             "port": self._settings["port"],
             "running": party is not None,
@@ -1487,6 +1489,17 @@ class Controller:
         """This person's accent color (None for the default blue), text size in percent and spacing."""
         return {"accent": self._settings.get("accent"), "text_scale": self._settings.get("text_scale", 100),
                 "density": self._settings.get("density", "default")}
+
+    def sounds(self):
+        """This person's sounds: {"volume": 0 to 100, "off": the groups turned off}."""
+        return {"volume": self._settings.get("sound_volume", 60), "off": list(self._settings.get("sounds_off") or [])}
+
+    def set_sounds(self, volume, off):
+        if (not isinstance(volume, int) or isinstance(volume, bool) or not 0 <= volume <= 100 or not isinstance(off, list)
+                or any(group not in SOUND_GROUPS for group in off)):
+            return {"ok": False, "message": "Those sound settings could not be saved."}
+        self._save(sound_volume=volume, sounds_off=sorted(set(off)))
+        return {"ok": True, "message": ""}
 
     def set_appearance(self, accent, text_scale, density):
         """Save how every window looks on this PC. The page has already applied it; this keeps it for next time."""

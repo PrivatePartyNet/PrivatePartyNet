@@ -241,6 +241,7 @@
         buf.unread += 1;
         renderChannels();
       }
+      if (options.onArrive) options.onArrive(msg, isMuted(msg.channel));
     }
 
     function setRole(role) {

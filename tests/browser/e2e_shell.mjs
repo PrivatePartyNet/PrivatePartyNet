@@ -209,6 +209,7 @@ async function main() {
   await host.frame(hostRoom, "document.getElementById('chatText').value = 'hello from the host'; document.getElementById('chatForm').requestSubmit(); true");
   check("a message while another view is shown marks the server unread", await waitFor(() => sam.top(
     "document.querySelector('#serverList .srv-item').classList.contains('unread')")));
+  check("and plays the message sound", await waitFor(() => sam.top("PPNShell.played().indexOf('message') >= 0")));
   await sam.shot("shell-unread");
   await sam.top("document.querySelector('#serverList .srv').click(); true");
   check("showing it again reads it", await waitFor(() => sam.top("!document.querySelector('#serverList .srv-item').classList.contains('unread')")));
@@ -216,12 +217,14 @@ async function main() {
   // voice continues while Home is shown, and the rail has its controls
   await sam.frame(samRoom, "[...document.querySelectorAll('#channelList .channel.voice .channel-row button')].find(function (b) { return b.textContent === 'Join'; }).click(); true");
   check("Sam joins voice in the room", await waitFor(() => sam.frame(samRoom, "!document.getElementById('voiceBar').hidden")));
+  check("joining voice is heard: the room tells the window, which plays it", await waitFor(() => sam.top("PPNShell.played().indexOf('join') >= 0")));
   await sam.top("PPNShell.show('home'); true");
   check("with Home shown, the call's controls are at the foot of the rail", await waitFor(() => sam.top(
     "!document.getElementById('voiceDock').hidden && !document.querySelector('#serverList .srv-mark.voice').hidden")));
   await sam.shot("shell-voice-dock");
   await sam.top("document.getElementById('dockMute').click(); true");
   check("the rail's mute mutes the call in the room", await waitFor(() => sam.frame(samRoom, "document.getElementById('muteBtn').textContent === 'Unmute'")));
+  check("muting is heard too", await waitFor(() => sam.top("PPNShell.played().indexOf('mute') >= 0")));
   check("and the rail shows it muted", await waitFor(() => sam.top("document.getElementById('dockMute').getAttribute('aria-pressed') === 'true'")));
   await sam.top("document.getElementById('dockLeave').click(); true");
   check("the rail's leave ends the call", await waitFor(() => sam.frame(samRoom, "document.getElementById('voiceBar').hidden")));

@@ -58,6 +58,11 @@ class ShellServerTests(unittest.TestCase):
     def test_nothing_can_be_sent_to_it(self):
         self.assertEqual(self.get("/shell.html", method="POST")[0].status, 405)
 
+    def test_sounds_are_served_as_audio(self):
+        (self.web / "sound-join.ogg").write_bytes(b"OggS")
+        response, body = self.get("/sound-join.ogg")
+        self.assertEqual((response.status, response.getheader("Content-Type"), body), (200, "audio/ogg", b"OggS"))
+
     def test_the_real_web_folder_has_the_shell(self):
         real = ShellServer().start()
         self.addCleanup(real.stop)

@@ -139,6 +139,14 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(state["dm_unread"], 0)
         self.assertFalse(state["running"])
 
+    def test_sounds_are_kept_and_reach_the_rail(self):
+        self.assertEqual(self.controller.shell_state()["sounds"], {"volume": 60, "off": []})
+        self.assertTrue(self.controller.set_sounds(25, ["messages"])["ok"])
+        self.assertEqual(self.controller.shell_state()["sounds"], {"volume": 25, "off": ["messages"]})
+        self.assertEqual(self.controller.state()["sounds"], {"volume": 25, "off": ["messages"]})
+        for volume, off in ((101, []), (True, []), (50, ["loud"]), (50, "voice")):
+            self.assertFalse(self.controller.set_sounds(volume, off)["ok"])
+
     def test_closing_the_app_stops_the_page_server(self):
         self.controller.shutdown()
         self.assertTrue(self.shell.stopped)
