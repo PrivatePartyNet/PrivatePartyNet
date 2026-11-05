@@ -1,4 +1,5 @@
-"""The encrypted chat store: one SQLite file, one folder of image files, all sealed with the vault's "store" subkey.
+"""The encrypted chat store: one SQLite file, a folder of image files and a folder of other files, all sealed with
+subkeys of the vault.
 
 Plain columns: ids, scope (which channel or conversation), sequence number, time, sender id. These let history page
 quickly. Encrypted per row: the body (text, display name, attachment list). Each row's encryption is bound to its
@@ -6,11 +7,19 @@ scope and id, so a row copied into another conversation fails to open.
 
 A scope is a text label: `srv:<server_id>:<channel_id>` for a channel and `dm:<user_id>` for a conversation with one
 person. Messages are idempotent by id, so merging a backup or a re-sent message adds nothing twice.
+
+A file of any kind is written as it arrives, never whole in memory: FILE_CHUNK bytes at a time, each piece sealed on its
+own with its file id, its place and whether it is the last bound in, so pieces cannot be swapped, reordered or cut off.
+Every sealed piece is SEAL_OVERHEAD bytes longer than its plain bytes, which lets a download start at any byte.
+
+`held` is what a server this PC hosts keeps for its members (pictures and files), with their sizes, so the server can show
+how much it keeps and keep to the owner's storage cap. A picture can be in several messages; `uses` counts them.
 """
 
 import hashlib
 import json
 import os
+import secrets
 import sqlite3
 import threading
 import time
@@ -20,6 +29,9 @@ from privatepartynet.vault import VaultError
 
 DB_FILE = "chats.db"
 BLOB_DIR = "blobs"
+FILE_DIR = "files"
+FILE_CHUNK = 1024 * 1024
+SEAL_OVERHEAD = 28  # vault.seal puts a 12-byte nonce before and a 16-byte tag after each piece
 SCHEMA = """
 create table if not exists meta(key text primary key, value text);
 create table if not exists messages(
@@ -33,11 +45,76 @@ create table if not exists outbox(id text primary key, scope text not null, peer
   queued real not null, tries integer not null default 0, next_try real not null default 0);
 create table if not exists reads(scope text primary key, last_ts real not null);
 create table if not exists blobs(hash text primary key, size integer not null, added real not null);
+create table if not exists files(id text primary key, size integer not null, sha256 text not null, added real not null);
+create table if not exists held(server_id text not null, kind text not null, ref text not null, size integer not null,
+  uses integer not null default 0, added real not null, primary key(server_id, kind, ref));
 """
 
 
 def blob_hash(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def _chunk_aad(file_id, index, last):
+    return f"file|{file_id}|{index}|{'last' if last else 'more'}".encode("utf-8")
+
+
+def valid_file_id(file_id):
+    return isinstance(file_id, str) and len(file_id) == 32 and all(c in "0123456789abcdef" for c in file_id)
+
+
+class FileWriter:
+    """One file going into the store as it arrives. write() as often as needed, then finish() for (id, size, sha256), or
+    abort() to leave nothing behind. Nothing is visible to readers until finish()."""
+
+    def __init__(self, store):
+        self._store = store
+        self.id = secrets.token_hex(16)
+        self._path = store._file_path(self.id)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._temp = self._path.with_suffix(".part")
+        self._out = open(self._temp, "wb")
+        self._buffer = bytearray()
+        self._index = 0
+        self.size = 0
+        self._hash = hashlib.sha256()
+
+    def write(self, data):
+        self._hash.update(data)
+        self.size += len(data)
+        self._buffer += data
+        # keep the last piece back until finish(), which is when it is known to be the last
+        while len(self._buffer) > FILE_CHUNK:
+            self._seal(bytes(self._buffer[:FILE_CHUNK]), last=False)
+            del self._buffer[:FILE_CHUNK]
+
+    def _seal(self, piece, last):
+        self._out.write(self._store._vault.seal("files", piece, _chunk_aad(self.id, self._index, last)))
+        self._index += 1
+
+    def finish(self):
+        if self.size == 0:
+            self.abort()
+            raise ValueError("an empty file")
+        self._seal(bytes(self._buffer), last=True)
+        self._buffer = bytearray()
+        self._out.close()
+        os.replace(self._temp, self._path)
+        digest = self._hash.hexdigest()
+        with self._store._lock:
+            self._store._db.execute("insert into files(id, size, sha256, added) values(?,?,?,?)",
+                                    (self.id, self.size, digest, time.time()))
+            self._store._db.commit()
+        return self.id, self.size, digest
+
+    def abort(self):
+        try:
+            self._out.close()
+        finally:
+            try:
+                self._temp.unlink()
+            except FileNotFoundError:
+                pass
 
 
 class Store:
@@ -294,6 +371,130 @@ class Store:
 
     def has_blob(self, digest):
         return self._blob_path(digest).exists()
+
+    def blob_size(self, digest):
+        with self._lock:
+            row = self._db.execute("select size from blobs where hash=?", (digest,)).fetchone()
+        return row[0] if row else None
+
+    def delete_blob(self, digest):
+        with self._lock:
+            self._db.execute("delete from blobs where hash=?", (digest,))
+            self._db.commit()
+        try:
+            self._blob_path(digest).unlink()
+        except FileNotFoundError:
+            pass
+
+    # --- files of any kind, kept in pieces ------------------------------------------------------------------
+
+    def _file_path(self, file_id):
+        return self.folder / FILE_DIR / file_id[:2] / file_id
+
+    def begin_file(self):
+        return FileWriter(self)
+
+    def file_size(self, file_id):
+        if not valid_file_id(file_id):
+            return None
+        with self._lock:
+            row = self._db.execute("select size from files where id=?", (file_id,)).fetchone()
+        return row[0] if row else None
+
+    def read_file(self, file_id, start=0, end=None):
+        """The plain bytes of a stored file from `start` up to, not including, `end` (the whole file by default), as
+        pieces. Raises VaultError when a piece has been changed, moved or cut off, and KeyError for an unknown file."""
+        size = self.file_size(file_id)
+        if size is None:
+            raise KeyError(file_id)
+        end = size if end is None else min(end, size)
+        return self._pieces(file_id, size, max(0, start), end)
+
+    def _pieces(self, file_id, size, start, end):
+        if start >= end:
+            return
+        count = (size + FILE_CHUNK - 1) // FILE_CHUNK
+        with open(self._file_path(file_id), "rb") as source:
+            index = start // FILE_CHUNK
+            while index * FILE_CHUNK < end:
+                last = index == count - 1
+                length = (size - index * FILE_CHUNK if last else FILE_CHUNK) + SEAL_OVERHEAD
+                source.seek(index * (FILE_CHUNK + SEAL_OVERHEAD))
+                sealed = source.read(length)
+                if len(sealed) != length:
+                    raise VaultError("a stored file has been cut short")
+                piece = self._vault.unseal("files", sealed, _chunk_aad(file_id, index, last))
+                low = max(start - index * FILE_CHUNK, 0)
+                high = min(end - index * FILE_CHUNK, len(piece))
+                yield piece[low:high]
+                index += 1
+
+    def delete_file(self, file_id):
+        if not valid_file_id(file_id):
+            return
+        with self._lock:
+            self._db.execute("delete from files where id=?", (file_id,))
+            self._db.commit()
+        try:
+            self._file_path(file_id).unlink()
+        except FileNotFoundError:
+            pass
+
+    # --- what a hosted server keeps ------------------------------------------------------------------------
+
+    def hold(self, server_id, kind, ref, size, uses=0):
+        """Count a picture ("image", by hash) or a file ("file", by id) as kept by a server. Adding one already counted
+        changes nothing but `uses`, which goes up by `uses`."""
+        with self._lock:
+            self._db.execute("insert or ignore into held(server_id, kind, ref, size, uses, added) values(?,?,?,?,0,?)",
+                             (server_id, kind, ref, int(size), time.time()))
+            if uses:
+                self._db.execute("update held set uses=uses+? where server_id=? and kind=? and ref=?",
+                                 (uses, server_id, kind, ref))
+            self._db.commit()
+
+    def release(self, server_id, kind, ref):
+        """One message using a kept picture or file is gone. Returns True when nothing uses it any more; it is then no
+        longer counted (the caller deletes the bytes)."""
+        with self._lock:
+            row = self._db.execute("select uses from held where server_id=? and kind=? and ref=?",
+                                   (server_id, kind, ref)).fetchone()
+            if row is None:
+                return False
+            if row[0] > 1:
+                self._db.execute("update held set uses=uses-1 where server_id=? and kind=? and ref=?",
+                                 (server_id, kind, ref))
+                self._db.commit()
+                return False
+            self._db.execute("delete from held where server_id=? and kind=? and ref=?", (server_id, kind, ref))
+            self._db.commit()
+            return True
+
+    def held_bytes(self, server_id):
+        with self._lock:
+            return self._db.execute("select coalesce(sum(size), 0) from held where server_id=?",
+                                    (server_id,)).fetchone()[0]
+
+    def largest_held(self, server_id, limit=10):
+        """The biggest things a server keeps, as (kind, ref, size), biggest first."""
+        with self._lock:
+            return self._db.execute("select kind, ref, size from held where server_id=? order by size desc limit ?",
+                                    (server_id, limit)).fetchall()
+
+    # --- deleting a message --------------------------------------------------------------------------------
+
+    def message(self, message_id, scope):
+        """One stored message as the history gives it, or None."""
+        with self._lock:
+            row = self._db.execute("select id, seq, ts, sender, body, sig from messages where id=? and scope=?",
+                                   (message_id, scope)).fetchone()
+        return self._row(scope, row) if row else None
+
+    def delete_message(self, message_id, scope):
+        with self._lock:
+            cursor = self._db.execute("delete from messages where id=? and scope=?", (message_id, scope))
+            self._db.commit()
+            return cursor.rowcount == 1
 
     def blob_hashes(self):
         with self._lock:
