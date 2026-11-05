@@ -80,17 +80,34 @@ class WebviewOptionsTests(unittest.TestCase):
             self.assertTrue(options["storage_path"].endswith("webview"))
             self.assertTrue(__import__("os").path.isdir(options["storage_path"]))
 
-    def test_the_certificate_flag_is_added_to_browser_arguments_already_set(self):
-        # Something else on the PC (a game launcher, a WebView2 workaround) may already have set the variable. Without
-        # the flag every party window showed "Your connection isn't private", whose details are the host's whole PEM.
+    def test_certificate_checks_are_never_turned_off_for_every_window(self):
+        # Party windows accept the one certificate their join checked (windowpins.py). The flag that accepted any
+        # certificate at all is taken out, even when something else on the PC put it in the variable, and the
+        # variable's other arguments are kept.
         flag = "--ignore-certificate-errors"
-        self.assertEqual(browser_arguments(None), flag)
-        self.assertEqual(browser_arguments(""), flag)
-        self.assertEqual(browser_arguments("--disable-gpu"), "--disable-gpu " + flag)
-        self.assertEqual(browser_arguments("--disable-gpu " + flag), "--disable-gpu " + flag)
+        self.assertEqual(browser_arguments(None), "")
+        self.assertEqual(browser_arguments(flag), "")
+        self.assertEqual(browser_arguments("--disable-gpu"), "--disable-gpu")
+        self.assertEqual(browser_arguments(f"--disable-gpu {flag} --lang=en"), "--disable-gpu --lang=en")
         source = (Path(app.__file__)).read_text(encoding="utf-8")
         self.assertNotIn('setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"', source)
-        self.assertIn('os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = browser_arguments(', source)
+        main = source[source.index("def main("):]
+        self.assertIn("browser_arguments(", main)
+        self.assertLess(main.index("windowpins.install()"), main.index("webview.start("), "before any window opens")
+
+    def test_the_app_ends_at_once_after_its_windows_close(self):
+        # pywebview answers a page's last bridge calls from threads of its own; once the window stack has stopped,
+        # such an answer reaching into .NET while Python shuts down crashed the process (an access violation, exit 127).
+        from unittest import mock
+
+        with mock.patch.object(app.os, "_exit") as end, mock.patch.object(app.logging, "shutdown") as flush:
+            app.exit_now(3)
+        flush.assert_called_once_with()
+        end.assert_called_once_with(3)
+        source = (Path(app.__file__)).read_text(encoding="utf-8")
+        main = source[source.index("def main("):]
+        self.assertIn("exit_now(window_test())", main)
+        self.assertLess(main.index("webview.start("), main.index("exit_now(0)"))
 
     def test_every_start_of_the_window_stack_uses_those_options(self):
         import re
@@ -453,6 +470,29 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         record = self.guest._store.server("joined-" + invite["server_id"])
         self.assertEqual((record["fingerprint"], record["spki"]), (whole, spki))
 
+    def test_opening_a_party_window_pins_its_origin_first(self):
+        from unittest import mock
+
+        from privatepartynet import windowpins
+        from privatepartynet.cert import pins_of_pem
+
+        self.addCleanup(windowpins.forget_all)
+        whole, spki = pins_of_pem(self.host._cert_pem)
+        url = f"https://127.0.0.1:{self.host._party.port}/join?token=x"
+        guest = Controller(data_folder=self.folder + "/window", discovery_port=0, grabber=FakeGrabber())
+        self.addCleanup(guest.shutdown)
+        seen = []
+
+        def create_window(*args, **kwargs):
+            seen.append(windowpins.allowed(kwargs["url"], self.host._cert_pem))
+            return mock.MagicMock()
+
+        with mock.patch.object(app.webview, "create_window", create_window):
+            guest._join({"url": url, "name": "Host", "pins": (whole, spki)})
+            guest._join({"url": url.replace("token=x", "token=y"), "name": "Host",
+                         "cert": self.host._cert_pem})  # a Nearby accept carries the certificate itself
+        self.assertEqual(seen, [True, True])
+
     def test_there_is_no_invite_when_no_party_is_open(self):
         self.assertFalse(self.guest.invite()["ok"])
 
@@ -465,6 +505,9 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         self.assertEqual(self.wait_state(self.guest, "joined")["state"], "joined")
         (opened,) = self.opened
         self.assertIn("/join?token=", opened["url"])
+        from privatepartynet.cert import pins_of_pem
+        self.assertEqual(set(opened["pins"]), set(pins_of_pem(self.host._cert_pem)),
+                         "the window is pinned to the certificate the join checked")
         self.assertEqual(opened["name"], "Host")
         self.assertEqual(self.guest.join_status()["state"], "joined")
         self.assertEqual(len(self.opened), 1, "the window opens once")

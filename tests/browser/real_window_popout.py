@@ -1,6 +1,7 @@
 """Pop-out windows and Leave in the real window stack (pywebview, WinForms, WebView2), which headless Edge cannot reach.
 
     py tests\\browser\\real_window_popout.py
+    py tests\\browser\\real_window_popout.py --pinned   (the windows check the certificate as the app's do)
 
 Starts a party in this process and opens three real windows: the host's, a member's (who shares a drawn screen), and, from the
 member's Pop out button, the pop-out window the app itself creates. Checks what the headless test can only fake: the pop-out
@@ -17,8 +18,12 @@ import threading
 import time
 from pathlib import Path
 
+# --pinned: the member's window and its pop-out accept the party's certificate the way the app's do (windowpins.py),
+# instead of through --ignore-certificate-errors.
+PINNED = "--pinned" in sys.argv[1:]
 os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
-    "--ignore-certificate-errors --allow-loopback-in-peer-connection --disable-features=WebRtcHideLocalIpsWithMdns"
+    ("" if PINNED else "--ignore-certificate-errors ")
+    + "--allow-loopback-in-peer-connection --disable-features=WebRtcHideLocalIpsWithMdns"
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,8 +31,9 @@ sys.path.insert(0, str(ROOT))
 
 import webview  # noqa: E402
 
+from privatepartynet import windowpins  # noqa: E402
 from privatepartynet.app import WindowApi, webview_options  # noqa: E402
-from privatepartynet.cert import ensure_certificate  # noqa: E402
+from privatepartynet.cert import ensure_certificate, pins_of_pem  # noqa: E402
 from privatepartynet.server import Party  # noqa: E402
 
 failed = []
@@ -154,6 +160,9 @@ def main():
     host_api._attach(host_window)
     # a different host name, so the member does not share the host window's cookies (cookies ignore the port)
     member_origin = f"https://localhost:{party.port}"
+    if PINNED:
+        windowpins.install()
+        windowpins.pin(member_origin, pins_of_pem(Path(certfile).read_text(encoding="utf-8")))
     member_api = WindowApi(member_origin)
     token = party.join_token("Alex")
     member_window = webview.create_window("Member check", url=f"{member_origin}/join?token={token}", js_api=member_api, hidden=True, width=1100, height=700)

@@ -67,9 +67,11 @@ How updates are checked:
 
 Known limits:
 
-- On a local network, the party's HTTPS certificate is made on the host PC and signed by nobody, and the app's own windows
-  accept it without checking it (Chromium's `--ignore-certificate-errors` is set for them). Anyone who can sit between two
-  PCs on a network could read and change what is sent over a local join, so use local joins only on networks you trust.
+- The party's HTTPS certificate is made on the host PC and signed by nobody. Every join checks it against a pin (the
+  certificate's or its public key's SHA-256), and each party window accepts only the certificate its join checked; any
+  other is refused. The pin comes from the invite code, or the host's network beacon for a Nearby PC; a join by address
+  alone trusts the first certificate it sees and remembers it. So a join by address, or a Nearby join on a network
+  someone else controls, is only as safe as that first contact: use invite codes on networks you do not trust.
 - The game network adds a virtual network adapter, which Windows only allows with administrator permission. A small helper is
   started with that permission when you turn the game network on, and it ends with the app. It only creates the adapter,
   moves other adapters' priority while the game network is on, and runs WireGuard on it. WireGuard opens no connection of

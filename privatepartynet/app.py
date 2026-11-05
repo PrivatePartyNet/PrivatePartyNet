@@ -25,7 +25,7 @@ from urllib.parse import quote, urlsplit
 import webview
 
 from privatepartynet import APP_NAME, __version__
-from privatepartynet import backup, connect, gamenet
+from privatepartynet import backup, connect, gamenet, windowpins
 from privatepartynet.gameclient import GameMesh, GameSession
 from privatepartynet.netlink import NetLink
 from privatepartynet.cert import ensure_certificate, pins_of_pem
@@ -134,13 +134,10 @@ def webview_options(storage_path=None):
 
 def browser_arguments(current):
     """The WebView2 browser arguments: `current` (the variable may already be set on this PC, by a game launcher or as a
-    WebView2 workaround) with --ignore-certificate-errors added. Setting it only when unset left it out on such a PC,
-    and every party window then showed "Your connection isn't private", whose details are the host's certificate."""
-    flag = "--ignore-certificate-errors"
-    current = (current or "").strip()
-    if flag in current.split():
-        return current
-    return f"{current} {flag}".strip()
+    WebView2 workaround) without --ignore-certificate-errors. That flag made every window accept any certificate at
+    all; party windows accept the one their join checked instead (windowpins.py), and the flag would keep WebView2
+    from ever asking."""
+    return " ".join(arg for arg in (current or "").split() if arg != "--ignore-certificate-errors")
 
 
 HEX = re.compile(r"^[0-9a-f]+$")
@@ -692,7 +689,9 @@ class Controller:
                 self._joiner_opened = True
                 invite = joiner.invite
                 self._remember_server(invite, joiner)
-                self._join({"url": status["url"], "name": invite["name"]})
+                # The window accepts the certificate this join checked, and no other.
+                self._join({"url": status["url"], "name": invite["name"],
+                            "pins": (joiner.seen_fingerprint, joiner.seen_spki)})
             status["state"], status["message"] = "joined", "Opening the party window."
         status.pop("url", None)
         return status
@@ -1342,7 +1341,15 @@ class Controller:
         return {"ok": True, "message": ""}
 
     def _join(self, data):
-        """Open the party in its own window. The party is the host's own PC, reached on the LAN, so no warning is shown."""
+        """Open the party in its own window, which accepts only the host's certificate: `data["pins"]` (what the join
+        checked) or, from a Nearby accept, the pins of `data["cert"]`."""
+        pins = tuple(data.get("pins") or ())
+        if not pins and data.get("cert"):
+            try:
+                pins = pins_of_pem(data["cert"])
+            except ValueError:
+                pins = ()
+        windowpins.pin(data["url"], pins)
         token = self._feed.issue()
         separator = "&" if "?" in data["url"] else "?"
         feed = quote(f"http://127.0.0.1:{self._feed.port}", safe="")
@@ -1536,12 +1543,30 @@ def window_test(seconds=45):
     return 0 if outcome["ok"] else 1
 
 
+def exit_now(code):
+    """End the process once the window stack has stopped and everything is shut down. pywebview answers a page's last
+    bridge calls from threads of its own, and one reaching into .NET while Python shuts down crashed the process (an
+    access violation, exit 127; more often since party windows check certificates, windowpins.py). Ending here, with the
+    log written out, leaves nothing to race."""
+    logging.shutdown()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError):  # pythonw has no console
+            pass
+    os._exit(code)
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     configure_logging()
-    # Private app: the party's own self-signed certificate is accepted in every window, so none shows a warning.
-    os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = browser_arguments(
-        os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"))
+    # Each party window accepts only the certificate its join checked (windowpins.py), never any certificate at all.
+    arguments = browser_arguments(os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"))
+    if arguments:
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = arguments
+    else:
+        os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
+    windowpins.install()
     if "--check-capture" in argv:
         from privatepartynet.frames import check_capture
 
@@ -1551,7 +1576,7 @@ def main(argv=None):
 
         return smoke_run()
     if "--window-test" in argv:
-        return window_test()
+        exit_now(window_test())
     sys.excepthook = report_crash
     if not acquire_single_instance():
         log.info("A second copy was started and closed; the first copy is running")
@@ -1566,4 +1591,4 @@ def main(argv=None):
     window.events.closed += controller.shutdown
     webview.start(**webview_options())
     log.info("PrivatePartyNet closed")
-    return 0
+    exit_now(0)
