@@ -203,7 +203,7 @@ class RendezvousTests(DhtBase):
         dht.put_mutable(self.host_identity._sign, record("203.0.113.5", 40000, "hard"), int(time.time()),
                         punch.host_salt("feedfacecafebeef"))
         dht.close()
-        with self.assertRaisesRegex(PunchError, "new port for every destination"):
+        with self.assertRaisesRegex(PunchError, "new port for every connection"):
             join_through(self.host_identity.sign_public.hex(), "feedfacecafebeef", self.secret, self.fingerprint,
                          dht_factory=self.dht, stun_servers=stun, connect_seconds=5)
 

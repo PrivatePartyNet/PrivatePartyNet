@@ -1530,18 +1530,23 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
     def _attempt(self, action, failure_status=409, failure_text=b"That did not work."):
         """Run a party action and answer for it. Forbidden is 403 and NotFound is 404, Full is 409. A False result is
         `failure_status`. Returns True when the action went through (the caller then sends its own success)."""
+        self._refusal = ""
         try:
             result = action()
         except Forbidden as error:
+            self._refusal = str(error)
             self._send(403, TEXT, str(error).encode("utf-8"))
             return False
         except NotFound as error:
+            self._refusal = str(error)
             self._send(404, TEXT, str(error).encode("utf-8"))
             return False
         except Full as error:
+            self._refusal = str(error)
             self._send(409, TEXT, str(error).encode("utf-8"))
             return False
         if result is False:
+            self._refusal = failure_text.decode("utf-8", "replace")
             self._send(failure_status, TEXT, failure_text)
             return False
         self._result = result
@@ -1675,9 +1680,21 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
             self._send(400, TEXT, b"Asking to join needs a name.")
             return
         card = body.get("card") if isinstance(body.get("card"), dict) else None
-        if self._attempt(lambda: self.server.party.ask(body["name"], body.get("password") or "", self.client_address[0],
+        source = self.client_address[0]
+        try:
+            way = ("through the routers or a relay (a tunnel)" if ipaddress.ip_address(source) in TUNNEL_SOURCES
+                   else f"from {source}")
+        except ValueError:
+            way = f"from {source}"
+        if self._attempt(lambda: self.server.party.ask(body["name"], body.get("password") or "", source,
                                                        card, body.get("nonce"), body.get("sig"))):
             self._send(200, JSON_TYPE, json.dumps({"ticket": self._result}).encode("utf-8"))
+            logging.getLogger("privatepartynet.server").info("A request to join %s (%s): taken; the owner or an admin "
+                                                             "is asked, or a returning member comes in", way,
+                                                             clean_name(body["name"]))
+        else:
+            logging.getLogger("privatepartynet.server").info("A request to join %s (%s): refused (%s)", way,
+                                                             clean_name(body["name"]), self._refusal)
 
     def _net_link(self):
         """A member's game network link: {"card", "nonce", "sig", "key", "candidates"}, then the connection stays open.

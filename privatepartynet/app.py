@@ -582,7 +582,7 @@ class Controller:
 
             try:
                 host = punch.HostPunch(self._identity._sign, party.server_id, str(certfile), str(keyfile), party.port,
-                                       party.invite_secrets, poll=15.0, relays=party.host_relays,
+                                       party.invite_secrets, relays=party.host_relays,
                                        ipv6=connect.global_ipv6_addresses)
             except Exception:
                 log.exception("Could not get ready to be reached through the routers")
@@ -610,15 +610,25 @@ class Controller:
     def _invite_code(self):
         if self._party is None or not self._cert_pem:
             return ""
-        candidates = [["lan", a, self._party.port] for a in self._addresses()]
         if self._reach and self._reach.get("state") == "done":
             candidates = self._reach["candidates"]
+        else:
+            # The reach check (router, STUN) takes a few seconds after the party starts. An invite made before it is in
+            # still carries every address this PC knows by itself, IPv6 included: 3.1 put only the LAN ones in it.
+            port = self._party.port
+            candidates = [["lan", a, port] for a in self._addresses()]
+            candidates += [["ipv6", a, port] for a in connect.global_ipv6_addresses()]
+            candidates = candidates[:connect.MAX_CANDIDATES]
         self._start_host_punch()
         secret = self._party.new_invite_secret()
-        return connect.encode_invite(self._name, self._party.passcode, candidates, connect.certificate_fingerprint(self._cert_pem),
+        code = connect.encode_invite(self._name, self._party.passcode, candidates, connect.certificate_fingerprint(self._cert_pem),
                                      server_id=self._settings.get("server_id") or "",
                                      host_sign=self._identity.sign_public.hex() if self._identity else "",
                                      secret=secret, relays=self._party.invite_relays(bytes.fromhex(secret)))
+        log.info("Invite made: %s (addresses: %s)", connect.describe_invite(connect.decode_invite(code)),
+                 ", ".join(f"{address} ({kind}{', ' + connect.vpn_name(address) if connect.vpn_name(address) else ''})"
+                           for kind, address, _ in candidates) or "none")
+        return code
 
     def invite(self):
         """The invite code for this party: the name, the password, where to try and the certificate to check."""
@@ -650,27 +660,46 @@ class Controller:
             return {"ok": False, "message": "Enter the host's address as numbers (like 203.0.113.5) and a port from 1 to 65535."}
         kind = "ipv6" if ":" in address else "lan" if address.startswith(("10.", "192.168.", "172.")) else "public"
         invite = {"name": str(name or "Party")[:40], "password": str(password or ""), "candidates": [[kind, address, port]],
-                  "fingerprint": "", "server_id": "", "host_sign": ""}
+                  "fingerprint": "", "server_id": "", "host_sign": "", "source": "address"}
         return self._begin_join(invite)
 
-    def _begin_join(self, invite):
+    def _begin_join(self, invite, peer=None):
+        """`peer`: the Nearby PC this join asks, so its answer (a password wanted, say) shows there."""
         if self._joiner is not None and self._joiner.status["state"] in ("trying", "waiting"):
             return {"ok": False, "message": "Already asking to join a party. Cancel that first."}
-        if not invite["candidates"]:
+        if peer is None:
+            self._add_nearby(invite)
+        if not invite["candidates"] and not invite.get("secret"):
             return {"ok": False, "message": "That invite has no address to try."}
         if self._identity is None:
             return {"ok": False, "message": self._secure_error or "Enter the password for your saved chats first."}
         self._joiner = connect.Joiner(invite, self._name, identity=self._identity)
+        self._joiner.peer_id = peer
         self._joiner_opened = False
         threading.Thread(target=self._joiner.run, name="privatepartynet-join", daemon=True).start()
         return {"ok": True, "message": "Asking..."}
 
+    def _add_nearby(self, invite):
+        """When the invite's host is also in the Nearby list (seen over a VPN such as Radmin, or a network the invite
+        does not know of), its address there is tried first: the same certificate proves it is the same party."""
+        if self._discovery is None or not invite.get("fingerprint"):
+            return
+        known = {(address, port) for _, address, port in invite["candidates"]}
+        for peer in self._discovery.peer_list():
+            if peer.get("sharing") and peer.get("fp") == invite["fingerprint"] and peer.get("port"):
+                if (peer["address"], peer["port"]) not in known:
+                    log.info("The invite's host is also nearby, at %s%s: trying that address first", peer["address"],
+                             f" ({connect.vpn_name(peer['address'])})" if connect.vpn_name(peer["address"]) else "")
+                    invite["candidates"].insert(0, ["lan", peer["address"], int(peer["port"])])
+
     def join_status(self):
-        """Where the join stands: {state, message}. When the owner has let you in, the party window opens here."""
+        """Where the join stands: {state, message, needs_password, peer}. When the owner has let you in, the party
+        window opens here. `peer` is the Nearby PC asked (None for an invite or an address); `needs_password` says
+        the party wants a password that was not given."""
         joiner = self._joiner
         if joiner is None:
             return {"state": "idle", "message": ""}
-        status = dict(joiner.status)
+        status = dict(joiner.status, needs_password=joiner.needs_password, peer=getattr(joiner, "peer_id", None))
         if status["state"] == "allowed":
             if not self._joiner_opened:
                 self._joiner_opened = True
@@ -718,7 +747,8 @@ class Controller:
             return {"ok": False, "message": "That party is no longer in your list."}
         return self._begin_join({"name": record["name"], "password": record["password"], "candidates": record["candidates"],
                                  "fingerprint": record.get("fingerprint", ""), "server_id": record.get("server_id", ""),
-                                 "host_sign": record.get("host_sign", ""), "secret": record.get("secret", "")})
+                                 "host_sign": record.get("host_sign", ""), "secret": record.get("secret", ""),
+                                 "source": "remembered"})
 
     def forget_joined(self, key):
         if self._store is not None and str(key).startswith("joined-"):
@@ -1267,19 +1297,21 @@ class Controller:
         self._rooms.append(window)
         return {"ok": True, "message": "Party room opened."}
 
-    def ask_join(self, peer_id):
+    def ask_join(self, peer_id, password=""):
         """Ask a nearby PC to let you in. A PC with a party open is asked over HTTPS with your signed identity, checked
         against the certificate its beacon names, so the host knows it is really you and a returning member keeps their
-        role. A PC with no party open is asked over the network beacon, and starts one if its person says yes."""
+        role. A PC with no party open is asked over the network beacon, and starts one if its person says yes.
+        `password` is the party's, for a party that wants one (seen over a VPN, a PC counts as outside the network)."""
         if self._discovery is None:
             return {"ok": False, "message": "Nearby PCs are unavailable on this PC."}
         peer = next((p for p in self._discovery.peer_list() if p["id"] == peer_id), None)
         if peer is None:
             return {"ok": False, "message": "That PC is no longer in the list."}
         if peer.get("sharing") and peer.get("port") and peer.get("fp"):
-            invite = {"name": peer["name"], "password": "", "candidates": [["lan", peer["address"], peer["port"]]],
-                      "fingerprint": peer["fp"], "server_id": "", "host_sign": peer.get("sign") or ""}
-            result = self._begin_join(invite)
+            invite = {"name": peer["name"], "password": str(password or "")[:200],
+                      "candidates": [["lan", peer["address"], peer["port"]]], "fingerprint": peer["fp"], "server_id": "",
+                      "host_sign": peer.get("sign") or "", "source": "nearby"}
+            result = self._begin_join(invite, peer=peer_id)
             if result["ok"]:
                 result["message"] = "Asked. Waiting for the other person to say yes."
             return result
