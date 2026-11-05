@@ -13,7 +13,9 @@ download is refused unless the signature checks out with that key, its size and 
 is newer than the one running (never older: no rollback) and the manifest's version and tag are the release's. The
 file is hashed again just before it runs. Only HTTPS is used, with Windows' certificates, and files only come from
 GitHub's own hosts. A signed manifest may carry the next public key, signed by the current one, which is then trusted
-too (key rotation; kept in the data folder).
+too (key rotation). It is kept in the data folder with that signature, and checked again from the compiled-in keys
+each time, so a key written into the folder is not trusted, and a key the app stops carrying takes those it handed on
+with it.
 
 Installing: an installed copy runs the checked installer for this user, silently with its progress showing, and the
 installer starts the app again. A portable copy unpacks the checked zip beside its own folder and swaps the two once
@@ -173,19 +175,27 @@ def check_manifest(data, signature, keys, release, current):
     if not files:
         raise UpdateError("the manifest lists no files")
     next_key = manifest.get("next_key")
-    learned = None
+    learned = link = None
     if next_key is not None:
         try:
             key, sig = str(next_key["key"]), str(next_key["sig"])
-            if not re.fullmatch(r"[0-9a-f]{64}", key) or not any(verify(k, sig, NEXT_KEY_LABEL + bytes.fromhex(key))
-                                                                   for k in keys):
+            by = next((k for k in keys if _hands_on(k, key, sig)), None) if re.fullmatch(r"[0-9a-f]{64}", key) else None
+            if by is None:
                 raise ValueError("next key")
         except (KeyError, TypeError, ValueError):
             raise UpdateError("the manifest's next key is not signed by the current one") from None
-        learned = key
+        learned, link = key, {"key": key, "by": by, "sig": sig}
     notes = manifest.get("notes") if isinstance(manifest.get("notes"), str) else str(release.get("body") or "")
-    return {"version": version, "tag": tag, "files": files, "next_key": learned, "notes": plain_notes(notes),
-            "prerelease": bool(release.get("prerelease"))}
+    return {"version": version, "tag": tag, "files": files, "next_key": learned, "next_key_link": link,
+            "notes": plain_notes(notes), "prerelease": bool(release.get("prerelease"))}
+
+
+def _hands_on(by, key, sig):
+    """True when `by` signed `key` as the next update key."""
+    try:
+        return verify(by, sig, NEXT_KEY_LABEL + bytes.fromhex(key))
+    except (TypeError, ValueError):
+        return False
 
 
 def plain_notes(text):
@@ -381,9 +391,19 @@ class Updater:
         return self._settings().get("update_prerelease", True) is not False
 
     def keys(self):
-        """The compiled-in keys and those they handed on (key rotation)."""
-        learned = [k for k in self._memory.get("keys", []) if isinstance(k, str) and re.fullmatch(r"[0-9a-f]{64}", k)]
-        return tuple(dict.fromkeys(self.compiled_keys + tuple(learned)))
+        """The compiled-in keys and those they handed on (key rotation). A learned key counts only while the chain of
+        signatures from a compiled-in key to it still checks out: the state file is in the data folder."""
+        trusted = list(dict.fromkeys(self.compiled_keys))
+        links = [link for link in _list(self._memory.get("key_links")) if isinstance(link, dict)]
+        grew = True
+        while grew:
+            grew = False
+            for link in links:
+                key, by, sig = (str(link.get(name) or "") for name in ("key", "by", "sig"))
+                if key not in trusted and by in trusted and re.fullmatch(r"[0-9a-f]{64}", key)                         and _hands_on(by, key, sig):
+                    trusted.append(key)
+                    grew = True
+        return tuple(trusted)
 
     def _load_state(self):
         try:
@@ -535,7 +555,7 @@ class Updater:
         sig = self._small(signature)
         found = check_manifest(data, sig, self.keys(), release, self.current)
         if found["next_key"] and found["next_key"] not in self.keys():
-            self._memory.setdefault("keys", []).append(found["next_key"])
+            self._memory.setdefault("key_links", []).append(found["next_key_link"])
             self._store_state()
             log.info("Update key rotation: a new signing key is now trusted")
         kind = "portable" if self.kind == "portable" else "installer"

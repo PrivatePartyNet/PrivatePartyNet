@@ -150,6 +150,62 @@ class KeyRotationTests(unittest.TestCase):
                            release("3.2.1"), "3.2.0")
 
 
+class LearnedKeyTests(unittest.TestCase):
+    """Keys learned by rotation are kept in the data folder, so they must prove themselves again each time."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.data = Path(temp.name)
+        (self.data / "updates").mkdir()
+
+    def updater(self, keys=(PUBLIC,)):
+        return Updater(dict, lambda **c: None, self.data, lambda: "", current="3.2.0", kind="installed", keys=keys,
+                       fetcher=object(), launcher=lambda *a: None, app_dir=self.data / "app")
+
+    def state(self, **record):
+        (self.data / "updates" / "state.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def test_a_key_written_into_the_state_file_is_not_trusted(self):
+        rogue = Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex()
+        self.state(keys=[rogue])
+        self.assertEqual(self.updater().keys(), (PUBLIC,))
+        self.state(key_links=[{"key": rogue, "by": PUBLIC, "sig": "00" * 64}])
+        self.assertEqual(self.updater().keys(), (PUBLIC,))
+
+    def test_a_learned_key_is_trusted_again_after_a_restart(self):
+        new = Ed25519PrivateKey.generate()
+        new_public = new.public_key().public_bytes_raw().hex()
+        newer_public = Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex()
+        links = [{"key": new_public, "by": PUBLIC, "sig": KEY.sign(NEXT_KEY_LABEL + bytes.fromhex(new_public)).hex()},
+                 {"key": newer_public, "by": new_public,
+                  "sig": new.sign(NEXT_KEY_LABEL + bytes.fromhex(newer_public)).hex()}]
+        self.state(key_links=list(reversed(links)))  # in any order
+        self.assertEqual(self.updater().keys(), (PUBLIC, new_public, newer_public))
+
+    def test_keys_learned_from_a_key_the_app_no_longer_carries_are_dropped_with_it(self):
+        leaked = Ed25519PrivateKey.generate()
+        leaked_public = leaked.public_key().public_bytes_raw().hex()
+        planted = Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex()
+        self.state(key_links=[{"key": planted, "by": leaked_public,
+                               "sig": leaked.sign(NEXT_KEY_LABEL + bytes.fromhex(planted)).hex()}])
+        self.assertIn(planted, self.updater(keys=(leaked_public,)).keys())
+        self.assertEqual(self.updater(keys=(PUBLIC,)).keys(), (PUBLIC,), "a build without the leaked key")
+
+    def test_a_key_handed_on_by_a_release_is_kept_with_its_proof(self):
+        new = Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex()
+        hand_on = {"key": new, "sig": KEY.sign(NEXT_KEY_LABEL + bytes.fromhex(new)).hex()}
+        data, sig = manifest("3.2.1", [entry("3.2.1", "installer", b"x")], next_key=hand_on)
+        up = self.updater()
+        up.small = {"m": data, "s": sig}
+        up._small = lambda item: up.small[item["browser_download_url"]]
+        rel = release("3.2.1", assets=[(manifest_name("3.2.1"), len(data), "m"),
+                                       (manifest_name("3.2.1") + ".sig", len(sig), "s"),
+                                       ("PrivatePartyNetSetup-3.2.1.exe", 1, "https://github.com/x")])
+        up._check_release(rel)
+        self.assertEqual(self.updater().keys(), (PUBLIC, new), "trusted after a restart, from the state file")
+
+
 class NoBackDoorTests(unittest.TestCase):
     def test_no_environment_variable_or_setting_changes_the_key_or_the_address(self):
         source = Path(updater.__file__).read_text(encoding="utf-8")
