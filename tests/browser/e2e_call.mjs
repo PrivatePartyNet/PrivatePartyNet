@@ -180,7 +180,7 @@ async function edgeCpuSeconds(profileFolder) {
     "foreach ($id in $ids) { $p = Get-Process -Id $id -ErrorAction SilentlyContinue; if ($p) { $total += $p.TotalProcessorTime.TotalSeconds } };",
     "Write-Output $total",
   ].join(" ");
-  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   child.stdout.on("data", (chunk) => { out += chunk; });
   // The PowerShell call is bounded: if it has not exited in 30 seconds, the reading is taken as zero.
@@ -191,7 +191,7 @@ async function edgeCpuSeconds(profileFolder) {
 }
 
 function startChild(command, args, label) {
-  const child = spawn(command, args, { windowHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   children.push(child);
   child.on("exit", (code) => {
     if (code !== null && code !== 0) console.log(`(${label} exited with ${code})`);
