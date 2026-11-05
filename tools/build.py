@@ -28,7 +28,6 @@ from privatepartynet import __version__  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "tools"))
 import gohelper  # noqa: E402
-import sign_release  # noqa: E402
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 RELEASE = ROOT / "release"
@@ -271,22 +270,12 @@ def main():
         print(f"  {path.name}  {path.stat().st_size:,} bytes  sha256 {sha256(path)}")
     print(f"  checksums: {sums}")
 
-    step("7. Sign the update manifest")
-    signed = []
-    if sign_release.KEY_FILE.is_file():
-        signed = list(sign_release.sign(__version__, DIST))
-        for path in signed:
-            print(f"  {path.name}  {path.stat().st_size:,} bytes  sha256 {sha256(path)}")
-    else:
-        print(f"  WARNING: no signing key at {sign_release.KEY_FILE}; this build cannot be offered as an update. "
-              "Installed copies only take releases whose update.json is signed (tools/sign_release.py).")
-
     if "--publish" in sys.argv[1:]:
         args = sys.argv[1:]
         after = args[args.index("--publish") + 1:]
         folder = Path(after[0]) if after and not after[0].startswith("--") else RELEASE
-        step(f"8. Publish to {folder}")
-        publish([SETUP, PORTABLE, *signed], sums, folder)
+        step(f"7. Publish to {folder}")
+        publish([SETUP, PORTABLE], sums, folder)
         print(f"  copied to {folder}")
     else:
         print()

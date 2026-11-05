@@ -6,17 +6,14 @@ off). A newer one is downloaded in the background and checked, and then the cont
 Later, which installs it when the app is next closed. With automatic updates off, nothing is asked of GitHub until
 Check for updates is pressed; a newer version then offers Update, Later or Skip this version.
 
-Why a download can be trusted: every release carries PrivatePartyNet-<version>-update.json, which names each file
-with its size and SHA-256, and a detached Ed25519 signature of it (.json.sig). The public key is part of the app
-(TRUSTED_KEYS) and nothing at run time can replace it: no setting, no environment variable, no command line. A
-download is refused unless the signature checks out with that key, its size and hash are the ones signed, the version
-is newer than the one running (never older: no rollback) and the manifest's version and tag are the release's. The
-file is hashed again just before it runs, and held so that nothing can change it until it has started. Only HTTPS is used, with Windows' certificates, and files only come from
-GitHub's own hosts. A signed manifest may carry the next public key, signed by the current one, which is then trusted
-too (key rotation). It is kept in the data folder with that signature, and checked again from the compiled-in keys
-each time, so a key written into the folder is not trusted, and a key the app stops carrying takes those it handed on
-with it. A signed manifest may also retire keys ("revokes", each signed by a trusted key, kept the same way): a retired
-key, and every key learned only through it, is no longer trusted, but the keys are never retired down to none.
+What is installed: the newest release of PrivatePartyNet/PrivatePartyNet on GitHub that is newer than the one running
+(never older: no rollback), whoever published it there (K, 2026-11-05: "Any release on GitHub"; 3.2.0 also asked for
+a signature from one release key, and 3.3.0 dropped that). Its installer or portable zip must carry the name the build
+gives it, and the download must have the size and SHA-256 that GitHub itself publishes for that file (the asset's
+"digest", which GitHub works out from the file it keeps); a release without them is not offered. Only HTTPS is used,
+with Windows' certificates, and only GitHub's own hosts, which no setting, environment variable or command line can
+change. The file is hashed again just before it runs, and held so that nothing can change it until it has started.
+What this rests on is the repository: anyone who can publish a release there can update every copy.
 
 Installing: an installed copy runs the checked installer for this user, silently with its progress showing, and the
 installer starts the app again. A portable copy unpacks the checked zip beside its own folder and swaps the two once
@@ -47,7 +44,6 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from privatepartynet import __version__
-from privatepartynet.identity import verify
 
 log = logging.getLogger("privatepartynet.updater")
 
@@ -56,12 +52,6 @@ REPOSITORY = "PrivatePartyNet/PrivatePartyNet"
 RELEASES_URL = f"https://api.github.com/repos/{REPOSITORY}/releases?per_page=30"
 API_HOSTS = frozenset({"api.github.com"})
 ASSET_HOSTS = frozenset({"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"})
-# The release signing key's public half (tools/sign_release.py --public). Only these, and keys they hand on, are trusted.
-TRUSTED_KEYS = ("88d103cbd9024db9a709a330d229fc7542e482efda81cc3983f4aecbc88cda7c",)
-MANIFEST_LABEL = b"PrivatePartyNet update manifest|"
-NEXT_KEY_LABEL = b"PrivatePartyNet update key|"
-REVOKE_LABEL = b"PrivatePartyNet update key retired|"
-MAX_REVOKES = 16
 FIRST_CHECK = (60.0, 180.0)  # seconds after the app starts, picked at random, so not every copy asks at once
 CHECK_SECONDS = 6 * 3600
 MAX_BACKOFF = 24 * 3600
@@ -147,10 +137,6 @@ def ready_message(version, waiting=""):
     return f"Ready: Restart now, or {APP} {version} installs when you close {APP}."
 
 
-def manifest_name(version):
-    return f"{APP}-{version}-update.json"
-
-
 def file_names(version):
     return {"installer": f"{APP}Setup-{version}.exe", "portable": f"{APP}-{version}-portable.zip"}
 
@@ -158,98 +144,30 @@ def file_names(version):
 # --- checking a release ----------------------------------------------------------------------------------------------
 
 
-def check_manifest(data, signature, keys, release, current):
-    """The manifest of `release` (a GitHub release record), when it is genuine and newer than `current`; else
-    UpdateError. `data` is the manifest file as downloaded, `signature` its .sig file."""
-    text = signature.decode("ascii", "replace").strip() if isinstance(signature, bytes) else str(signature).strip()
-    if not re.fullmatch(r"[0-9a-fA-F]{128}", text):
-        raise UpdateError("the update's signature is malformed")
-    if not any(verify(key, text, MANIFEST_LABEL + data) for key in keys):
-        raise UpdateError("the update's signature does not check out; it was not made by PrivatePartyNet's key")
-    try:
-        manifest = json.loads(data)
-    except ValueError:
-        raise UpdateError("the update's manifest cannot be read") from None
-    if not isinstance(manifest, dict) or manifest.get("app") != APP:
-        raise UpdateError("the manifest is not PrivatePartyNet's")
-    version = parse_version(manifest.get("version"))
+def release_files(release, current):
+    """What `release` (a GitHub release record) offers, when it is newer than `current`: {"version", "tag", "files":
+    {kind: {"name", "size", "sha256"}}, "notes", "prerelease"}; else UpdateError. A file counts only under the name the
+    build gives it, and only with the size and SHA-256 GitHub publishes for it."""
     tag = str(release.get("tag_name") or "")
-    if version is None or manifest.get("tag") != tag or parse_version(tag) != version or manifest["version"] != str(version):
-        raise UpdateError("the manifest's version and tag are not the release's")
+    version = parse_version(tag)
+    if version is None:
+        raise UpdateError(f"{tag!r} is not a version")
     if not version > Version(current):
         raise UpdateError(f"{version} is not newer than {current}; an update never goes back")
     files = {}
-    for entry in manifest.get("files") or []:
-        try:
-            name, size, digest, kind = entry["name"], int(entry["size"]), str(entry["sha256"]).lower(), entry["kind"]
-        except (KeyError, TypeError, ValueError):
-            raise UpdateError("the manifest's file list is damaged") from None
-        if kind not in KINDS or name != file_names(version)[kind] or not 0 < size <= MAX_FILE \
-                or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise UpdateError(f"the manifest's entry for {name!r} is not one this app accepts")
-        files[kind] = {"name": name, "size": size, "sha256": digest}
+    for kind, name in file_names(version).items():
+        item = asset(release, name)
+        if item is None:
+            continue
+        size = _size(item.get("size"))
+        digest = re.fullmatch(r"sha256:([0-9a-f]{64})", str(item.get("digest") or "").lower())
+        if not 0 < size <= MAX_FILE or digest is None:
+            raise UpdateError(f"GitHub gives no size or SHA-256 for {name}")
+        files[kind] = {"name": name, "size": size, "sha256": digest.group(1)}
     if not files:
-        raise UpdateError("the manifest lists no files")
-    next_key = manifest.get("next_key")
-    learned = link = None
-    if next_key is not None:
-        try:
-            key, sig = str(next_key["key"]), str(next_key["sig"])
-            by = next((k for k in keys if _hands_on(k, key, sig)), None) if re.fullmatch(r"[0-9a-f]{64}", key) else None
-            if by is None:
-                raise ValueError("next key")
-        except (KeyError, TypeError, ValueError):
-            raise UpdateError("the manifest's next key is not signed by the current one") from None
-        learned, link = key, {"key": key, "by": by, "sig": sig}
-    revocations = manifest.get("revokes", [])
-    revoke_links = []
-    try:
-        if not isinstance(revocations, list) or len(revocations) > MAX_REVOKES:
-            raise ValueError("revokes")
-        for revocation in revocations:
-            key, sig = str(revocation["key"]), str(revocation["sig"])
-            by = next((k for k in keys if _hands_on(k, key, sig, REVOKE_LABEL)), None) \
-                if re.fullmatch(r"[0-9a-f]{64}", key) else None
-            if by is None:
-                raise ValueError("revoke")
-            revoke_links.append({"key": key, "by": by, "sig": sig})
-    except (KeyError, TypeError, ValueError):
-        raise UpdateError("the manifest's list of revoked keys is not signed by a trusted key") from None
-    notes = manifest.get("notes") if isinstance(manifest.get("notes"), str) else str(release.get("body") or "")
-    return {"version": version, "tag": tag, "files": files, "next_key": learned, "next_key_link": link,
-            "revoke_links": revoke_links, "notes": plain_notes(notes), "prerelease": bool(release.get("prerelease"))}
-
-
-def _hands_on(by, key, sig, label=NEXT_KEY_LABEL):
-    """True when `by` signed `key` with `label`: as the next update key, or (REVOKE_LABEL) as one retired."""
-    try:
-        return verify(by, sig, label + bytes.fromhex(key))
-    except (TypeError, ValueError):
-        return False
-
-
-def _links(records):
-    """The (key, by, sig) of each well-formed record in a list from the state file."""
-    found = []
-    for record in _list(records):
-        if isinstance(record, dict):
-            key, by, sig = (str(record.get(name) or "") for name in ("key", "by", "sig"))
-            if re.fullmatch(r"[0-9a-f]{64}", key):
-                found.append((key, by, sig))
-    return found
-
-
-def _chain(roots, links, banned=frozenset()):
-    """`roots` and every key they hand on, link by link, leaving out `banned` keys (and so what only they handed on)."""
-    trusted = [key for key in dict.fromkeys(roots) if key not in banned]
-    grew = True
-    while grew:
-        grew = False
-        for key, by, sig in links:
-            if key not in trusted and key not in banned and by in trusted and _hands_on(by, key, sig):
-                trusted.append(key)
-                grew = True
-    return trusted
+        raise UpdateError("the release has no installer and no portable copy")
+    return {"version": version, "tag": tag, "files": files, "notes": plain_notes(release.get("body")),
+            "prerelease": bool(release.get("prerelease"))}
 
 
 def plain_notes(text):
@@ -466,13 +384,12 @@ class Updater:
     change the key, the address or the hosts, because only code passes them."""
 
     def __init__(self, settings, save, data_dir, busy, current=__version__, kind=None, api_url=RELEASES_URL,
-                 keys=TRUSTED_KEYS, api_hosts=API_HOSTS, asset_hosts=ASSET_HOSTS, fetcher=None, launcher=None,
+                 api_hosts=API_HOSTS, asset_hosts=ASSET_HOSTS, fetcher=None, launcher=None,
                  app_dir=None, quit=None, clock=time.time):
         self._settings, self._save, self._busy = settings, save, busy
         self.current = str(current)
         self.kind = kind or install_kind()
         self.api_url, self.api_hosts, self.asset_hosts = api_url, frozenset(api_hosts), frozenset(asset_hosts)
-        self.compiled_keys = tuple(keys)
         self.fetcher = fetcher or Fetcher()
         self._launch = launcher or self._spawn
         self._quit = quit or (lambda: None)
@@ -485,7 +402,7 @@ class Updater:
         self._wake = threading.Event()
         self._thread = None
         self._downloading = None  # the thread of a download started by a button, which returns before it ends
-        self.found = None  # the checked release being offered: check_manifest's record, and the file to use
+        self.found = None  # the release being offered: release_files' record, and the file to use
         self.ready = None  # Path of the checked download (installer) or unpacked folder (portable)
         self._unpacked = {}  # the unpacked folder's files (path inside it -> SHA-256), from the checked zip itself
         self.dismissed = None  # a version the person said Later to, with automatic updates off
@@ -503,21 +420,6 @@ class Updater:
     def include_test(self):
         return self._settings().get("update_prerelease", True) is not False
 
-    def keys(self):
-        """The compiled-in keys and those they handed on (key rotation), less the retired ones. A learned key counts
-        only while the chain of signatures from a compiled-in key to it still checks out, and a retirement only when a
-        trusted key signed it: the state file is in the data folder. Retiring every key would leave no way to update
-        at all, so then none is retired."""
-        links = _links(self._memory.get("key_links"))
-        everyone = _chain(self.compiled_keys, links)
-        retired = {key for key, by, sig in _links(self._memory.get("revocations"))
-                   if by in everyone and _hands_on(by, key, sig, REVOKE_LABEL)}
-        trusted = _chain(self.compiled_keys, links, retired) if retired else everyone
-        if not trusted:
-            log.warning("Update keys: the retirements would leave no trusted key; none is applied")
-            trusted = everyone
-        return tuple(trusted)
-
     def _load_state(self):
         try:
             data = json.loads(self._state_file.read_text(encoding="utf-8"))
@@ -527,7 +429,7 @@ class Updater:
             return {}
         # A damaged file keeps only what has the shape it should: the rest is as if never written.
         shapes = {"backoff_until": (int, float), "backoff": (int, float), "checked_at": (int, float), "etag": str,
-                  "releases": list, "key_links": list, "revocations": list}
+                  "releases": list}
         state = {name: value for name, value in data.items()
                  if name in shapes and isinstance(value, shapes[name]) and not isinstance(value, bool)
                  and (not isinstance(value, float) or math.isfinite(value))}
@@ -672,39 +574,13 @@ class Updater:
         self._store_state()
 
     def _check_release(self, release):
-        version = parse_version(release.get("tag_name"))
-        name = manifest_name(version)
-        manifest, signature = asset(release, name), asset(release, name + ".sig")
-        if manifest is None or signature is None:
-            raise UpdateError(f"the release has no signed manifest ({name})")
-        data = self._small(manifest)
-        sig = self._small(signature)
-        found = check_manifest(data, sig, self.keys(), release, self.current)
-        if found["next_key"] and found["next_key"] not in self.keys():
-            self._memory.setdefault("key_links", []).append(found["next_key_link"])
-            self._store_state()
-            log.info("Update key rotation: a new signing key is now trusted")
-        known = {(r.get("key"), r.get("by")) for r in _list(self._memory.get("revocations")) if isinstance(r, dict)}
-        fresh = [r for r in found["revoke_links"] if (r["key"], r["by"]) not in known]
-        if fresh:
-            self._memory["revocations"] = _list(self._memory.get("revocations")) + fresh
-            self._store_state()
-            log.info("Update key rotation: %d signing key(s) retired", len(fresh))
+        found = release_files(release, self.current)
         kind = "portable" if self.kind == "portable" else "installer"
         if kind not in found["files"]:
             raise UpdateError(f"the release has no {kind}")
         entry = found["files"][kind]
-        download = asset(release, entry["name"])
-        if download is None or _size(download.get("size")) != entry["size"]:
-            raise UpdateError(f"the release's {entry['name']} is not the one the manifest signs")
-        found.update(kind=kind, file=entry, url=download.get("browser_download_url"))
+        found.update(kind=kind, file=entry, url=asset(release, entry["name"]).get("browser_download_url"))
         return found
-
-    def _small(self, item):
-        status, _, body = self.fetcher.get(item.get("browser_download_url"), self.asset_hosts, limit=MAX_MANIFEST)
-        if status != 200:
-            raise UpdateError(f"{item.get('name')} could not be downloaded ({status})")
-        return body
 
     # --- downloading -------------------------------------------------------------------------------------------
 
@@ -761,7 +637,7 @@ class Updater:
                 if status != 200 or size != entry["size"]:
                     raise UpdateError(f"the download stopped short ({status}, {size} of {entry['size']} bytes)")
                 if sha256_file(partial) != entry["sha256"]:
-                    raise UpdateError("the download is not the file the release signs (its SHA-256 differs)")
+                    raise UpdateError("the download is not the file GitHub published (its SHA-256 differs)")
                 os.replace(partial, target)
             ready = self._unpack(target, version) if found["kind"] == "portable" else target
         except (UpdateError, OSError, zipfile.BadZipFile) as error:
@@ -1014,5 +890,6 @@ def _slim(release):
     """What is kept of a release between checks (for answers of 304, Not Modified)."""
     return {"tag_name": release.get("tag_name"), "draft": bool(release.get("draft")),
             "prerelease": bool(release.get("prerelease")), "body": plain_notes(release.get("body")),
-            "assets": [{"name": a.get("name"), "size": a.get("size"), "browser_download_url": a.get("browser_download_url")}
+            "assets": [{"name": a.get("name"), "size": a.get("size"), "digest": a.get("digest"),
+                        "browser_download_url": a.get("browser_download_url")}
                        for a in _list(release.get("assets")) if isinstance(a, dict)]}

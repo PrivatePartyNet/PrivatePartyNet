@@ -30,26 +30,17 @@ checksums. It checks each Microsoft installer's signature first and stops if one
 The installer starts the app when it finishes, in a silent install too, because that is how the app's own updates run.
 A scripted install that should not start it adds `/NOLAUNCH=1`: `PrivatePartyNetSetup-<version>.exe /SILENT /NOLAUNCH=1`.
 
-## Make a signed release
+## Make a release
 
-Installed copies update themselves only to releases signed with PrivatePartyNet's release key
-(`privatepartynet\updater.py`, `TRUSTED_KEYS`).
+Installed copies update themselves to the newest release on GitHub that is newer than theirs (`privatepartynet\updater.py`).
+They check each file against the size and SHA-256 GitHub publishes for it, so nothing else is needed.
 
-1. Once: `py tools\sign_release.py --new-key` makes the key in `%APPDATA%\PrivatePartyNet-release\update-signing.key`,
-   sealed for your Windows account, and prints its public key, which goes into `TRUSTED_KEYS`. To move to a new key, sign
-   one release with `py tools\sign_release.py --next-key <new public key>` using the old key; copies that install it
-   trust the new one too. To retire a key that leaked, sign a release with `--revoke <its public key>`: copies stop
-   trusting it and every key it handed on, but never end up with no key at all. To retire the built-in key itself, put
-   the new key in `TRUSTED_KEYS` in place of the old one.
-2. Back the key up, once: `py tools\sign_release.py --export E:\ppn-signing-key.json` asks for a passphrase (12
-   characters or more) and writes the key sealed with it. Keep the file off this PC (a USB stick in a drawer) and the
-   passphrase somewhere else (a password manager). Copying the key folder is not a backup: Windows seals the key for
-   this account on this PC only. Without the key no installed copy can be updated again. On a new PC, or after
-   reinstalling Windows, `py tools\sign_release.py --import E:\ppn-signing-key.json` puts it back.
-3. Raise the version in `privatepartynet\__init__.py` (a test version is, for example, `3.3.0-alpha.1`) and build with
-   `py tools\build.py`. Its last step writes `PrivatePartyNet-<version>-update.json` and `.json.sig` into `dist\`.
-4. Make the GitHub release with the tag `v<version>` (a pre-release for a test version) and upload the installer, the
-   portable zip, the `update.json` and the `.json.sig`. A release without them is never offered.
+1. Raise the version in `privatepartynet\__init__.py` (a test version is, for example, `3.3.0-alpha.1`) and build with
+   `py tools\build.py`.
+2. Make the GitHub release with the tag `v<version>` (a pre-release for a test version) and upload
+   `PrivatePartyNetSetup-<version>.exe` and `PrivatePartyNet-<version>-portable.zip` under exactly those names, with the
+   SHA256 list. Installed copies take the installer, portable copies the zip.
+3. Anyone who can publish a release can update every copy: keep two-factor sign-in on the maintainers' GitHub accounts.
 
 ## What a change needs
 

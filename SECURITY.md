@@ -48,25 +48,20 @@ What leaves your PC:
 - A relay, only when the group set one up or a member turned relaying on (both are off until someone chooses them).
 - With Automatic updates on (the default), a check of PrivatePartyNet's releases on GitHub (api.github.com) shortly
   after the app starts and every six hours, and the download of a newer version from github.com. GitHub sees your
-  public address and that you run PrivatePartyNet. With Automatic updates off (Options), GitHub is only asked when you
+  public address and that you run PrivatePartyNet. With Automatic updates off (Settings), GitHub is only asked when you
   press Check for updates.
 - There are no accounts. The app sends nothing to a company server.
 
 How updates are checked:
 
-- Each release carries `PrivatePartyNet-<version>-update.json`, naming each file with its size and SHA-256, and an
-  Ed25519 signature of it. The public key is built into the app; no setting, environment variable or command line can
-  change it, or the address updates come from. The private key is kept by the maintainer, off this repository, sealed
-  with Windows data protection.
-- The app installs a download only when the signature checks out, its size and SHA-256 are the signed ones (checked
-  again just before it runs), its version is newer than the one running (never older) and the manifest's version and
-  tag are the release's. It talks HTTPS only, with Windows' certificates, and takes files only from github.com and
-  GitHub's download hosts. Release notes are shown as text.
-- A signed manifest may name the next signing key, signed by the current one, so the key can be replaced without
-  a new install, and may retire a key (one that leaked, and every key it handed on). Installed copies keep these with
-  their signatures and check them again each time, so nothing written into their data folder adds or removes a key.
-  The signing key is kept sealed for one Windows account, with a passphrase-sealed backup kept off that PC. If both
-  were lost, installed copies could not be updated; they would keep working as they are.
+- The app takes the newest release of PrivatePartyNet/PrivatePartyNet on GitHub that is newer than the one running
+  (never older). Since 3.3.0 no release key signs it: whoever can publish a release on the repository can update every
+  copy, so the maintainers' GitHub accounts are what this rests on (keep two-factor sign-in on them). 3.2.0 asked for an
+  Ed25519 signature as well; copies still on 3.2.0 need that once, or a new install by hand.
+- A download is used only when its name is the one the build gives it and its size and SHA-256 are the ones GitHub
+  publishes for that file (the release asset's digest), checked again just before it runs. No setting, environment
+  variable or command line changes where updates come from. It talks HTTPS only, with Windows' certificates, and takes
+  files only from github.com and GitHub's download hosts. Release notes are shown as text.
 
 Known limits:
 

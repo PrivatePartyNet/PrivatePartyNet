@@ -1,5 +1,6 @@
-"""Updates: version order, the signed manifest's checks, key rotation, waiting for a party, and the whole flow against
-a fake GitHub on this PC (HTTPS, with a test key passed in by code, as only tests can)."""
+"""Updates: version order, what a release offers (only with the size and SHA-256 GitHub publishes for each file),
+waiting for a party, and the whole flow against a fake GitHub on this PC (HTTPS, its address passed in by code, as only
+tests can)."""
 
 import hashlib
 import io
@@ -17,23 +18,9 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
 from privatepartynet import updater
 from privatepartynet.cert import ensure_certificate
-from privatepartynet.updater import (MANIFEST_LABEL, NEXT_KEY_LABEL, REVOKE_LABEL, Fetcher, UpdateError, Updater,
-                                     Version, candidates, check_manifest, manifest_name)
-
-KEY = Ed25519PrivateKey.generate()
-PUBLIC = KEY.public_key().public_bytes_raw().hex()
-
-
-def manifest(version, files, key=KEY, tag=None, next_key=None, notes="Fixes."):
-    record = {"app": "PrivatePartyNet", "version": version, "tag": tag or "v" + version, "files": files, "notes": notes}
-    if next_key is not None:
-        record["next_key"] = next_key
-    data = json.dumps(record).encode()
-    return data, key.sign(MANIFEST_LABEL + data).hex().encode()
+from privatepartynet.updater import Fetcher, UpdateError, Updater, Version, candidates, release_files
 
 
 def entry(version, kind, content):
@@ -41,9 +28,10 @@ def entry(version, kind, content):
     return {"name": name, "size": len(content), "sha256": hashlib.sha256(content).hexdigest(), "kind": kind}
 
 
-def release(version, prerelease=False, draft=False, assets=()):
-    return {"tag_name": "v" + version, "prerelease": prerelease, "draft": draft, "body": "notes",
-            "assets": [{"name": n, "size": s, "browser_download_url": u} for n, s, u in assets]}
+def release(version, prerelease=False, draft=False, assets=(), body="notes"):
+    """A GitHub release record; each asset is (name, size, url, digest), the digest as GitHub gives it ("sha256:...")."""
+    return {"tag_name": "v" + version, "prerelease": prerelease, "draft": draft, "body": body,
+            "assets": [{"name": n, "size": s, "browser_download_url": u, "digest": d} for n, s, u, d in assets]}
 
 
 class VersionTests(unittest.TestCase):
@@ -59,54 +47,44 @@ class VersionTests(unittest.TestCase):
             self.assertIsNone(updater.parse_version(bad))
 
 
-class ManifestTests(unittest.TestCase):
-    def setUp(self):
-        self.content = b"the installer"
-        self.files = [entry("3.2.1", "installer", self.content)]
+class ReleaseTests(unittest.TestCase):
+    CONTENT = b"the installer"
 
-    def check(self, data, sig, version="3.2.1", current="3.2.0", keys=(PUBLIC,)):
-        return check_manifest(data, sig, keys, release(version), current)
+    def offer(self, version="3.2.1", current="3.2.0", assets=None, body="Fixes."):
+        if assets is None:
+            assets = [(updater.file_names(version)["installer"], len(self.CONTENT), "https://github.com/x",
+                       "sha256:" + hashlib.sha256(self.CONTENT).hexdigest())]
+        return release_files(release(version, assets=assets, body=body), current)
 
-    def test_a_good_manifest_is_accepted(self):
-        found = self.check(*manifest("3.2.1", self.files))
+    def test_a_release_offers_its_files_with_the_size_and_hash_github_publishes(self):
+        found = self.offer()
         self.assertEqual(str(found["version"]), "3.2.1")
-        self.assertEqual(found["files"]["installer"]["sha256"], hashlib.sha256(self.content).hexdigest())
+        self.assertEqual(found["files"], {"installer": {"name": "PrivatePartyNetSetup-3.2.1.exe", "size": len(self.CONTENT),
+                                                        "sha256": hashlib.sha256(self.CONTENT).hexdigest()}})
         self.assertEqual(found["notes"], "Fixes.")
-
-    def test_a_bad_signature_is_refused(self):
-        data, _ = manifest("3.2.1", self.files)
-        with self.assertRaisesRegex(UpdateError, "signature"):
-            self.check(data, Ed25519PrivateKey.generate().sign(MANIFEST_LABEL + data).hex().encode())
-        with self.assertRaisesRegex(UpdateError, "malformed"):
-            self.check(data, b"not hex")
-
-    def test_a_tampered_hash_or_size_breaks_the_signature(self):
-        data, sig = manifest("3.2.1", self.files)
-        for change in (b'"size": 13', self.files[0]["sha256"].encode()):
-            tampered = data.replace(change, change[:-1] + (b"4" if change[-1:] != b"4" else b"5"))
-            self.assertNotEqual(tampered, data)
-            with self.assertRaisesRegex(UpdateError, "signature"):
-                self.check(tampered, sig)
 
     def test_no_rollback_and_no_same_version(self):
         for current in ("3.2.1", "3.3.0"):
             with self.subTest(current=current):
                 with self.assertRaisesRegex(UpdateError, "not newer"):
-                    self.check(*manifest("3.2.1", self.files), current=current)
+                    self.offer(current=current)
 
-    def test_the_manifests_version_and_tag_must_be_the_releases(self):
-        with self.assertRaisesRegex(UpdateError, "version and tag"):
-            self.check(*manifest("3.2.1", self.files), version="3.2.2")  # a manifest moved to another release
-        with self.assertRaisesRegex(UpdateError, "version and tag"):
-            self.check(*manifest("3.2.1", self.files, tag="v3.2.2"))
+    def test_a_file_without_githubs_size_or_hash_is_refused(self):
+        name = "PrivatePartyNetSetup-3.2.1.exe"
+        good = "sha256:" + "a" * 64
+        for size, digest in ((13, None), (13, "md5:" + "a" * 32), (13, "sha256:xyz"), (0, good), (True, good), ("13", good)):
+            with self.subTest(size=size, digest=digest):
+                with self.assertRaisesRegex(UpdateError, "no size or SHA-256"):
+                    self.offer(assets=[(name, size, "https://github.com/x", digest)])
 
-    def test_a_file_name_that_is_not_the_versions_own_is_refused(self):
-        files = [dict(self.files[0], name="evil.exe")]
-        with self.assertRaisesRegex(UpdateError, "not one this app accepts"):
-            self.check(*manifest("3.2.1", files))
+    def test_only_the_names_the_build_gives_count(self):
+        good = "sha256:" + "a" * 64
+        with self.assertRaisesRegex(UpdateError, "no installer and no portable"):
+            self.offer(assets=[("evil.exe", 13, "https://github.com/x", good),
+                               ("PrivatePartyNetSetup-3.2.2.exe", 13, "https://github.com/y", good)])
 
     def test_release_notes_are_plain_text_and_short(self):
-        found = self.check(*manifest("3.2.1", self.files, notes="<b>bold</b>\x1b[31m" + "x" * 5000))
+        found = self.offer(body="<b>bold</b>\x1b[31m" + "x" * 5000)
         self.assertTrue(found["notes"].startswith("<b>bold</b>[31m"), "kept as text, control characters dropped")
         self.assertLessEqual(len(found["notes"]), updater.MAX_NOTES + 3)
 
@@ -126,157 +104,6 @@ class CandidateTests(unittest.TestCase):
 
     def test_a_skipped_version_is_not_offered(self):
         self.assertEqual(self.tags(include_test=False, skipped="3.2.1"), [])
-
-
-class KeyRotationTests(unittest.TestCase):
-    def test_a_next_key_signed_by_the_current_one_is_learned_and_then_trusted(self):
-        new = Ed25519PrivateKey.generate()
-        new_public = new.public_key().public_bytes_raw().hex()
-        files = [entry("3.2.1", "installer", b"x")]
-        hand_on = {"key": new_public, "sig": KEY.sign(NEXT_KEY_LABEL + bytes.fromhex(new_public)).hex()}
-        found = check_manifest(*manifest("3.2.1", files, next_key=hand_on), (PUBLIC,), release("3.2.1"), "3.2.0")
-        self.assertEqual(found["next_key"], new_public)
-        later = manifest("3.3.0", [entry("3.3.0", "installer", b"y")], key=new)
-        with self.assertRaises(UpdateError):
-            check_manifest(*later, (PUBLIC,), release("3.3.0"), "3.2.1")  # not before it was learned
-        check_manifest(*later, (PUBLIC, new_public), release("3.3.0"), "3.2.1")
-
-    def test_a_next_key_not_signed_by_the_current_one_is_refused(self):
-        rogue = Ed25519PrivateKey.generate()
-        rogue_public = rogue.public_key().public_bytes_raw().hex()
-        hand_on = {"key": rogue_public, "sig": rogue.sign(NEXT_KEY_LABEL + bytes.fromhex(rogue_public)).hex()}
-        with self.assertRaisesRegex(UpdateError, "next key"):
-            check_manifest(*manifest("3.2.1", [entry("3.2.1", "installer", b"x")], next_key=hand_on), (PUBLIC,),
-                           release("3.2.1"), "3.2.0")
-
-
-class StateFileCase(unittest.TestCase):
-    """An updater whose state file a test writes, with no network."""
-
-    def setUp(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        self.data = Path(temp.name)
-        (self.data / "updates").mkdir()
-
-    def updater(self, keys=(PUBLIC,)):
-        return Updater(dict, lambda **c: None, self.data, lambda: "", current="3.2.0", kind="installed", keys=keys,
-                       fetcher=object(), launcher=lambda *a: None, app_dir=self.data / "app")
-
-    def state(self, **record):
-        (self.data / "updates" / "state.json").write_text(json.dumps(record), encoding="utf-8")
-
-
-class LearnedKeyTests(StateFileCase):
-    """Keys learned by rotation are kept in the data folder, so they must prove themselves again each time."""
-
-    def test_a_key_written_into_the_state_file_is_not_trusted(self):
-        rogue = Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex()
-        self.state(keys=[rogue])
-        self.assertEqual(self.updater().keys(), (PUBLIC,))
-        self.state(key_links=[{"key": rogue, "by": PUBLIC, "sig": "00" * 64}])
-        self.assertEqual(self.updater().keys(), (PUBLIC,))
-
-    def test_a_learned_key_is_trusted_again_after_a_restart(self):
-        new = Ed25519PrivateKey.generate()
-        new_public = new.public_key().public_bytes_raw().hex()
-        newer_public = Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex()
-        links = [{"key": new_public, "by": PUBLIC, "sig": KEY.sign(NEXT_KEY_LABEL + bytes.fromhex(new_public)).hex()},
-                 {"key": newer_public, "by": new_public,
-                  "sig": new.sign(NEXT_KEY_LABEL + bytes.fromhex(newer_public)).hex()}]
-        self.state(key_links=list(reversed(links)))  # in any order
-        self.assertEqual(self.updater().keys(), (PUBLIC, new_public, newer_public))
-
-    def test_keys_learned_from_a_key_the_app_no_longer_carries_are_dropped_with_it(self):
-        leaked = Ed25519PrivateKey.generate()
-        leaked_public = leaked.public_key().public_bytes_raw().hex()
-        planted = Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex()
-        self.state(key_links=[{"key": planted, "by": leaked_public,
-                               "sig": leaked.sign(NEXT_KEY_LABEL + bytes.fromhex(planted)).hex()}])
-        self.assertIn(planted, self.updater(keys=(leaked_public,)).keys())
-        self.assertEqual(self.updater(keys=(PUBLIC,)).keys(), (PUBLIC,), "a build without the leaked key")
-
-    def test_a_key_handed_on_by_a_release_is_kept_with_its_proof(self):
-        new = Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex()
-        hand_on = {"key": new, "sig": KEY.sign(NEXT_KEY_LABEL + bytes.fromhex(new)).hex()}
-        data, sig = manifest("3.2.1", [entry("3.2.1", "installer", b"x")], next_key=hand_on)
-        up = self.updater()
-        up.small = {"m": data, "s": sig}
-        up._small = lambda item: up.small[item["browser_download_url"]]
-        rel = release("3.2.1", assets=[(manifest_name("3.2.1"), len(data), "m"),
-                                       (manifest_name("3.2.1") + ".sig", len(sig), "s"),
-                                       ("PrivatePartyNetSetup-3.2.1.exe", 1, "https://github.com/x")])
-        up._check_release(rel)
-        self.assertEqual(self.updater().keys(), (PUBLIC, new), "trusted after a restart, from the state file")
-
-
-def new_key():
-    key = Ed25519PrivateKey.generate()
-    return key, key.public_key().public_bytes_raw().hex()
-
-
-def link(by_key, key, label=NEXT_KEY_LABEL):
-    by = by_key.public_key().public_bytes_raw().hex()
-    return {"key": key, "by": by, "sig": by_key.sign(label + bytes.fromhex(key)).hex()}
-
-
-class RevocationTests(StateFileCase):
-    """A manifest may retire keys ("revokes"). A retired key, and whatever was learned only through it, is no longer
-    trusted; but the keys can never be retired down to none."""
-
-    def test_a_signed_revocation_in_a_manifest_is_accepted_and_an_unsigned_one_refused(self):
-        _, gone = new_key()
-        files = [entry("3.2.1", "installer", b"x")]
-        revocation = {"key": gone, "sig": KEY.sign(REVOKE_LABEL + bytes.fromhex(gone)).hex()}
-        record = json.loads(manifest("3.2.1", files)[0])
-        data = json.dumps(dict(record, revokes=[revocation])).encode()
-        found = check_manifest(data, KEY.sign(MANIFEST_LABEL + data).hex(), (PUBLIC,), release("3.2.1"), "3.2.0")
-        self.assertEqual(found["revoke_links"], [{"key": gone, "by": PUBLIC, "sig": revocation["sig"]}])
-        rogue, _ = new_key()
-        for bad in ([{"key": gone, "sig": rogue.sign(REVOKE_LABEL + bytes.fromhex(gone)).hex()}],
-                    [{"key": gone, "sig": KEY.sign(NEXT_KEY_LABEL + bytes.fromhex(gone)).hex()}],  # another label
-                    [{"key": "nothex"}], "everyone"):
-            data = json.dumps(dict(record, revokes=bad)).encode()
-            with self.assertRaisesRegex(UpdateError, "revok"):
-                check_manifest(data, KEY.sign(MANIFEST_LABEL + data).hex(), (PUBLIC,), release("3.2.1"), "3.2.0")
-
-    def test_a_revoked_key_and_what_was_learned_through_it_are_dropped(self):
-        leaked, leaked_public = new_key()
-        _, planted = new_key()
-        _, other = new_key()
-        self.state(key_links=[link(KEY, leaked_public), link(leaked, planted), link(KEY, other)],
-                   revocations=[link(KEY, leaked_public, REVOKE_LABEL)])
-        self.assertEqual(self.updater().keys(), (PUBLIC, other))
-
-    def test_a_revocation_written_by_hand_is_ignored(self):
-        learned, learned_public = new_key()
-        rogue, _ = new_key()
-        self.state(key_links=[link(KEY, learned_public)],
-                   revocations=[dict(link(KEY, learned_public, REVOKE_LABEL), sig="00" * 64),
-                                link(rogue, learned_public, REVOKE_LABEL), {"key": PUBLIC}])
-        self.assertEqual(self.updater().keys(), (PUBLIC, learned_public))
-
-    def test_the_keys_are_never_revoked_down_to_none(self):
-        self.state(revocations=[link(KEY, PUBLIC, REVOKE_LABEL)])
-        self.assertEqual(self.updater().keys(), (PUBLIC,))
-        _, learned = new_key()
-        self.state(key_links=[link(KEY, learned)], revocations=[link(KEY, PUBLIC, REVOKE_LABEL)])
-        self.assertEqual(self.updater().keys(), (PUBLIC, learned), "dropping the only root would leave nothing")
-
-    def test_a_revocation_from_a_release_is_kept_with_its_proof(self):
-        learned, learned_public = new_key()
-        self.state(key_links=[link(KEY, learned_public)])
-        files = [entry("3.2.1", "installer", b"x")]
-        record = json.loads(manifest("3.2.1", files)[0])
-        revocation = {"key": learned_public, "sig": KEY.sign(REVOKE_LABEL + bytes.fromhex(learned_public)).hex()}
-        data = json.dumps(dict(record, revokes=[revocation])).encode()
-        sig = KEY.sign(MANIFEST_LABEL + data).hex().encode()
-        up = self.updater()
-        up._small = lambda item: {"m": data, "s": sig}[item["browser_download_url"]]
-        up._check_release(release("3.2.1", assets=[(manifest_name("3.2.1"), len(data), "m"),
-                                                   (manifest_name("3.2.1") + ".sig", len(sig), "s"),
-                                                   ("PrivatePartyNetSetup-3.2.1.exe", 1, "https://github.com/x")]))
-        self.assertEqual(self.updater().keys(), (PUBLIC,), "after a restart too")
 
 
 class InstallKindTests(unittest.TestCase):
@@ -312,7 +139,7 @@ class InstallKindTests(unittest.TestCase):
 
 
 class NoBackDoorTests(unittest.TestCase):
-    def test_no_environment_variable_or_setting_changes_the_key_or_the_address(self):
+    def test_no_environment_variable_or_setting_changes_the_address(self):
         source = Path(updater.__file__).read_text(encoding="utf-8")
         # The one use of os.environ hands it on, with the swap's folders added, to the process that swaps them.
         spawn = "env={**os.environ, **env} if env else None"
@@ -324,8 +151,7 @@ class NoBackDoorTests(unittest.TestCase):
         for argument in ("api_url", "keys", "hosts", "fetcher"):
             self.assertNotIn(argument, call, "the app passes only settings, folders and callbacks")
         self.assertEqual(updater.RELEASES_URL, "https://api.github.com/repos/PrivatePartyNet/PrivatePartyNet/releases?per_page=30")
-        self.assertEqual(len(updater.TRUSTED_KEYS), 1)
-        self.assertEqual(len(bytes.fromhex(updater.TRUSTED_KEYS[0])), 32)
+        self.assertEqual(updater.API_HOSTS, {"api.github.com"})
 
     def test_only_https_on_allowed_hosts(self):
         fetcher = Fetcher()
@@ -394,18 +220,15 @@ class FakeGitHub:
         context.check_hostname = False  # the test certificate names localhost; it is still the one pinned as the CA
         return context
 
-    def publish(self, version, payloads, prerelease=False, key=KEY, sign=True):
-        """A release of `version` whose files are `payloads` {kind: bytes}, with a signed manifest."""
+    def publish(self, version, payloads, prerelease=False, digests=True):
+        """A release of `version` whose files are `payloads` {kind: bytes}, each with the SHA-256 GitHub gives
+        (digests=False: a release whose files have none)."""
         files = [entry(version, kind, content) for kind, content in payloads.items()]
-        data, sig = manifest(version, files, key=key)
         assets = []
         for item in files:
             self.files[f"/assets/{item['name']}"] = payloads[item["kind"]]
-            assets.append((item["name"], item["size"], f"{self.base}/assets/{item['name']}"))
-        if sign:
-            for name, body in ((manifest_name(version), data), (manifest_name(version) + ".sig", sig)):
-                self.files[f"/assets/{name}"] = body
-                assets.append((name, len(body), f"{self.base}/assets/{name}"))
+            assets.append((item["name"], item["size"], f"{self.base}/assets/{item['name']}",
+                           "sha256:" + item["sha256"] if digests else None))
         self.releases.insert(0, release(version, prerelease=prerelease, assets=assets))
 
     def close(self):
@@ -427,7 +250,7 @@ class FlowTests(unittest.TestCase):
     def updater(self, kind="installed", app_dir=None):
         up = Updater(lambda: self.settings, lambda **c: self.settings.update(c), self.folder / "data",
                      lambda: self.busy, current="3.2.0", kind=kind, api_url=f"{self.github.base}/releases",
-                     keys=(PUBLIC,), api_hosts={"127.0.0.1"}, asset_hosts={"127.0.0.1"},
+                     api_hosts={"127.0.0.1"}, asset_hosts={"127.0.0.1"},
                      fetcher=Fetcher(self.github.client_context(), timeout=5), launcher=self.launch,
                      app_dir=app_dir or self.folder / "app" / "PrivatePartyNet", quit=lambda: self.quits.append(1))
         self.addCleanup(up.join_download, 30)  # a button's check downloads in the background: let it end first
@@ -474,7 +297,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(command[1:], ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1"])
         self.assertEqual(self.quits, [1], "the app closes so the installer can replace it")
 
-    def test_a_download_that_is_not_the_signed_file_is_refused(self):
+    def test_a_download_that_is_not_the_file_github_published_is_refused(self):
         self.github.publish("3.2.1", {"installer": b"the real one"})
         self.github.files["/assets/PrivatePartyNetSetup-3.2.1.exe"] = b"the evil one"  # same size, other bytes
         view = self.updater().check(manual=False)
@@ -482,15 +305,16 @@ class FlowTests(unittest.TestCase):
         self.assertIn("SHA-256", view["message"])
         self.assertFalse((self.folder / "data" / "updates" / "PrivatePartyNetSetup-3.2.1.exe").exists())
 
-    def test_a_release_without_a_signed_manifest_is_not_offered(self):
-        self.github.publish("3.2.1", {"installer": b"x"}, sign=False)
+    def test_a_release_without_githubs_hashes_is_not_offered(self):
+        self.github.publish("3.2.1", {"installer": b"x"}, digests=False)
         view = self.updater().check(manual=True)
         self.assertEqual(view["state"], "error")
-        self.assertIn("no signed manifest", view["message"])
+        self.assertIn("no size or SHA-256", view["message"])
 
-    def test_a_manifest_signed_by_another_key_is_refused(self):
-        self.github.publish("3.2.1", {"installer": b"x"}, key=Ed25519PrivateKey.generate())
-        self.assertIn("signature", self.updater().check(manual=True)["message"])
+    def test_a_release_needs_no_signature(self):
+        """K, 2026-11-05: whatever release is newest on GitHub. Nothing but the installer is published here."""
+        self.github.publish("3.2.1", {"installer": b"just the installer"})
+        self.assertEqual(self.updater().check(manual=False)["state"], "ready")
 
     def test_a_download_redirected_to_another_host_is_refused(self):
         self.github.publish("3.2.1", {"installer": b"x" * 10})
