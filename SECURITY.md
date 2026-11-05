@@ -63,7 +63,10 @@ How updates are checked:
   tag are the release's. It talks HTTPS only, with Windows' certificates, and takes files only from github.com and
   GitHub's download hosts. Release notes are shown as text.
 - A signed manifest may name the next signing key, signed by the current one, so the key can be replaced without
-  a new install. If the key were lost, installed copies could not be updated; they would keep working as they are.
+  a new install, and may retire a key (one that leaked, and every key it handed on). Installed copies keep these with
+  their signatures and check them again each time, so nothing written into their data folder adds or removes a key.
+  The signing key is kept sealed for one Windows account, with a passphrase-sealed backup kept off that PC. If both
+  were lost, installed copies could not be updated; they would keep working as they are.
 
 Known limits:
 
