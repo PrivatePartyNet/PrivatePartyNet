@@ -101,6 +101,7 @@ Host only:
 - The party uses a certificate made on the host's PC, which no authority has signed. The PrivatePartyNet windows accept it without a warning.
 - A screen does not appear: stop it and press Go Live again. The bar at the bottom counts open connections (for example "Connected to 2 of 2").
 - Logs: Options, Open data folder opens `%LOCALAPPDATA%\PrivatePartyNet`, which contains `privatepartynet.log`. The About page lists every folder.
+- An invite does not connect: the message says what was tried and what was missing (no IPv6 address in the invite, no relay, an older PrivatePartyNet on the host). The log has each step on both PCs: the invite's contents (never its password or keys), each address tried, the DHT lookup, the router kinds found, and which way worked or why each did not. Both PCs should run the same, newest version. Friends who share a VPN for LAN games (Radmin VPN, Hamachi, ZeroTier, Tailscale) reach each other over it: invites carry those addresses, and a host also seen under Nearby PCs is tried there first.
 
 ## Files
 

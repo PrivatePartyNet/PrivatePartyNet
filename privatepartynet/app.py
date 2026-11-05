@@ -323,7 +323,7 @@ class Controller:
         except OSError as exc:
             log.exception("Could not start network discovery")
             self._discovery = None
-            self._discovery_error = f"Nearby PCs are unavailable: {exc}"
+            self._discovery_error = f"Nearby PCs are unavailable: {plain_error(exc)}"
         self._dm = None
         self._start_dm()
         self._probe_network = discovery_port != 0  # port 0 means a test or diagnostic run: no router or STUN calls
@@ -369,7 +369,7 @@ class Controller:
             self._secure_error = "That is not the password."
         except (VaultError, OSError) as exc:
             log.exception("Could not open the encrypted store")
-            self._secure_error = f"Your saved chats could not be opened: {exc}"
+            self._secure_error = f"Your saved chats could not be opened: {plain_error(exc)}"
 
     def unlock(self, password):
         """Give the password that protects the saved chats. Returns {ok, message}."""
@@ -391,7 +391,8 @@ class Controller:
         except WrongPassword:
             return {"ok": False, "message": "That is not the current password."}
         except (Locked, VaultError, ValueError) as exc:
-            return {"ok": False, "message": str(exc)}
+            log.warning("The chat password was not changed: %s", exc)
+            return {"ok": False, "message": plain_error(exc)}
         return {"ok": True, "message": ""}
 
     # --- direct messages -------------------------------------------------------------------------------------
@@ -594,7 +595,7 @@ class Controller:
 
             try:
                 host = punch.HostPunch(self._identity._sign, party.server_id, str(certfile), str(keyfile), party.port,
-                                       party.invite_secrets, poll=15.0, relays=party.host_relays,
+                                       party.invite_secrets, relays=party.host_relays,
                                        ipv6=connect.global_ipv6_addresses)
             except Exception:
                 log.exception("Could not get ready to be reached through the routers")
@@ -622,16 +623,26 @@ class Controller:
     def _invite_code(self):
         if self._party is None or not self._cert_pem:
             return ""
-        candidates = [["lan", a, self._party.port] for a in self._addresses()]
         if self._reach and self._reach.get("state") == "done":
             candidates = self._reach["candidates"]
+        else:
+            # The reach check (router, STUN) takes a few seconds after the party starts. An invite made before it is in
+            # still carries every address this PC knows by itself, IPv6 included: 3.1 put only the LAN ones in it.
+            port = self._party.port
+            candidates = [["lan", a, port] for a in self._addresses()]
+            candidates += [["ipv6", a, port] for a in connect.global_ipv6_addresses()]
+            candidates = candidates[:connect.MAX_CANDIDATES]
         self._start_host_punch()
         secret = self._party.new_invite_secret()
         whole, spki = pins_of_pem(self._cert_pem)
-        return connect.encode_invite(self._name, self._party.passcode, candidates, whole,
+        code = connect.encode_invite(self._name, self._party.passcode, candidates, whole,
                                      server_id=self._settings.get("server_id") or "",
                                      host_sign=self._identity.sign_public.hex() if self._identity else "",
                                      secret=secret, relays=self._party.invite_relays(bytes.fromhex(secret)), spki=spki)
+        log.info("Invite made: %s (addresses: %s)", connect.describe_invite(connect.decode_invite(code)),
+                 ", ".join(f"{address} ({kind}{', ' + connect.vpn_name(address) if connect.vpn_name(address) else ''})"
+                           for kind, address, _ in candidates) or "none")
+        return code
 
     def invite(self):
         """The invite code for this party: the name, the password, where to try and the certificate to check."""
@@ -663,27 +674,47 @@ class Controller:
             return {"ok": False, "message": "Enter the host's address as numbers (like 203.0.113.5) and a port from 1 to 65535."}
         kind = "ipv6" if ":" in address else "lan" if address.startswith(("10.", "192.168.", "172.")) else "public"
         invite = {"name": str(name or "Party")[:40], "password": str(password or ""), "candidates": [[kind, address, port]],
-                  "fingerprint": "", "server_id": "", "host_sign": ""}
+                  "fingerprint": "", "server_id": "", "host_sign": "", "source": "address"}
         return self._begin_join(invite)
 
-    def _begin_join(self, invite):
+    def _begin_join(self, invite, peer=None):
+        """`peer`: the Nearby PC this join asks, so its answer (a password wanted, say) shows there."""
         if self._joiner is not None and self._joiner.status["state"] in ("trying", "waiting"):
             return {"ok": False, "message": "Already asking to join a party. Cancel that first."}
-        if not invite["candidates"]:
+        if peer is None:
+            self._add_nearby(invite)
+        if not invite["candidates"] and not invite.get("secret"):
             return {"ok": False, "message": "That invite has no address to try."}
         if self._identity is None:
             return {"ok": False, "message": self._secure_error or "Enter the password for your saved chats first."}
         self._joiner = connect.Joiner(invite, self._name, identity=self._identity)
+        self._joiner.peer_id = peer
         self._joiner_opened = False
         threading.Thread(target=self._joiner.run, name="privatepartynet-join", daemon=True).start()
         return {"ok": True, "message": "Asking..."}
 
+    def _add_nearby(self, invite):
+        """When the invite's host is also in the Nearby list (seen over a VPN such as Radmin, or a network the invite
+        does not know of), its address there is tried first: the same certificate proves it is the same party."""
+        pins = {invite.get("fingerprint") or "", invite.get("spki") or ""} - {""}
+        if self._discovery is None or not pins:
+            return
+        known = {(address, port) for _, address, port in invite["candidates"]}
+        for peer in self._discovery.peer_list():
+            if peer.get("sharing") and pins & {peer.get("fp"), peer.get("spki")} and peer.get("port"):
+                if (peer["address"], peer["port"]) not in known:
+                    log.info("The invite's host is also nearby, at %s%s: trying that address first", peer["address"],
+                             f" ({connect.vpn_name(peer['address'])})" if connect.vpn_name(peer["address"]) else "")
+                    invite["candidates"].insert(0, ["lan", peer["address"], int(peer["port"])])
+
     def join_status(self):
-        """Where the join stands: {state, message}. When the owner has let you in, the party window opens here."""
+        """Where the join stands: {state, message, needs_password, peer}. When the owner has let you in, the party
+        window opens here. `peer` is the Nearby PC asked (None for an invite or an address); `needs_password` says
+        the party wants a password that was not given."""
         joiner = self._joiner
         if joiner is None:
             return {"state": "idle", "message": ""}
-        status = dict(joiner.status)
+        status = dict(joiner.status, needs_password=joiner.needs_password, peer=getattr(joiner, "peer_id", None))
         if status["state"] == "allowed":
             if not self._joiner_opened:
                 self._joiner_opened = True
@@ -735,7 +766,7 @@ class Controller:
         return self._begin_join({"name": record["name"], "password": record["password"], "candidates": record["candidates"],
                                  "fingerprint": record.get("fingerprint", ""), "spki": record.get("spki", ""),
                                  "server_id": record.get("server_id", ""), "host_sign": record.get("host_sign", ""),
-                                 "secret": record.get("secret", "")})
+                                 "secret": record.get("secret", ""), "source": "remembered"})
 
     def forget_joined(self, key):
         if self._store is not None and str(key).startswith("joined-"):
@@ -827,7 +858,7 @@ class Controller:
             paths = self._make_paths()
         except Exception as exc:
             log.exception("The game network could not start")
-            return {"ok": False, "message": f"The game network could not start: {exc}"}
+            return {"ok": False, "message": f"The game network could not start: {plain_error(exc)}"}
         public = gamenet.public_key(private)
         game = {"key": key, "session": None, "link": None, "mesh": None, "paths": paths, "stop": stop,
                 "private": private, "public": public}
@@ -838,8 +869,9 @@ class Controller:
             try:
                 address = party.net_host(public, paths.local_candidates())
             except gamenet.NetError as exc:
+                log.warning("The game network could not start: %s", exc)
                 self.game_off()
-                return {"ok": False, "message": f"The game network could not start: {exc}"}
+                return {"ok": False, "message": f"The game network could not start: {plain_error(exc)}"}
             paths.set_on_candidates(lambda candidates: party.net_candidates(party.net_host_user, candidates))
             self._game_session(game, address, party.net_directory().network)
 
@@ -1008,7 +1040,7 @@ class Controller:
             return self._export_to(path, str(passphrase), bool(include_identity))
         except (backup.BackupError, OSError) as exc:
             log.exception("Export failed")
-            return {"ok": False, "message": f"The backup could not be saved: {exc}"}
+            return {"ok": False, "message": f"The backup could not be saved: {plain_error(exc)}"}
 
     def import_chats(self, passphrase, use_identity=False):
         """Merge a backup file into the saved chats. Asks which file. Nothing already here is changed or removed."""
@@ -1023,7 +1055,8 @@ class Controller:
         try:
             return self._import_from(path, str(passphrase or ""), bool(use_identity))
         except (backup.BackupError, VaultError, OSError) as exc:
-            return {"ok": False, "message": str(exc)}
+            log.warning("Import failed", exc_info=isinstance(exc, OSError))
+            return {"ok": False, "message": plain_error(exc)}
 
     # --- wiring from the app entry point -----------------------------------------------------------------
 
@@ -1128,7 +1161,7 @@ class Controller:
             certfile, keyfile = ensure_certificate(self._data_dir, ["localhost", "127.0.0.1", *addresses])
         except (OSError, ValueError) as exc:
             log.exception("Could not create the certificate")
-            return {"ok": False, "message": f"Could not create the certificate: {exc}"}
+            return {"ok": False, "message": f"Could not create the certificate: {plain_error(exc)}"}
         self._cert_pem = Path(certfile).read_text(encoding="utf-8")
         self._certfiles = (str(certfile), str(keyfile))
         passcode = generate_password()  # used only by a brand-new server; an existing one keeps its own
@@ -1141,7 +1174,7 @@ class Controller:
                           owner=self._identity)
         except OSError as exc:
             log.exception("Could not listen on port %s", port)
-            return {"ok": False, "message": f"Could not listen on port {port}: {exc}"}
+            return {"ok": False, "message": f"Could not listen on port {port}: {plain_error(exc)}"}
         party.start()
         party.friend_relays = self._friend_relays  # members who relay for others, for the invites' relays
         party.relay_listeners.append(lambda: party.net_directory().touch())  # members get new relay settings at once
@@ -1282,20 +1315,22 @@ class Controller:
         self._rooms.append(window)
         return {"ok": True, "message": "Party room opened."}
 
-    def ask_join(self, peer_id):
+    def ask_join(self, peer_id, password=""):
         """Ask a nearby PC to let you in. A PC with a party open is asked over HTTPS with your signed identity, checked
         against the certificate its beacon names, so the host knows it is really you and a returning member keeps their
-        role. A PC with no party open is asked over the network beacon, and starts one if its person says yes."""
+        role. A PC with no party open is asked over the network beacon, and starts one if its person says yes.
+        `password` is the party's, for a party that wants one (seen over a VPN, a PC counts as outside the network)."""
         if self._discovery is None:
             return {"ok": False, "message": "Nearby PCs are unavailable on this PC."}
         peer = next((p for p in self._discovery.peer_list() if p["id"] == peer_id), None)
         if peer is None:
             return {"ok": False, "message": "That PC is no longer in the list."}
         if peer.get("sharing") and peer.get("port") and (peer.get("fp") or peer.get("spki")):
-            invite = {"name": peer["name"], "password": "", "candidates": [["lan", peer["address"], peer["port"]]],
-                      "fingerprint": peer.get("fp") or "", "spki": peer.get("spki") or "", "server_id": "",
-                      "host_sign": peer.get("sign") or ""}
-            result = self._begin_join(invite)
+            invite = {"name": peer["name"], "password": str(password or "")[:200],
+                      "candidates": [["lan", peer["address"], peer["port"]]], "fingerprint": peer.get("fp") or "",
+                      "spki": peer.get("spki") or "", "server_id": "", "host_sign": peer.get("sign") or "",
+                      "source": "nearby"}
+            result = self._begin_join(invite, peer=peer_id)
             if result["ok"]:
                 result["message"] = "Asked. Waiting for the other person to say yes."
             return result
@@ -1499,6 +1534,15 @@ def _split_address(text):
     else:
         host, port = text, ""
     return host, (port or None)
+
+
+def plain_error(exc):
+    """What went wrong, for the control panel: an OS error by its reason alone (no "[WinError 10048]" in front, no
+    exception name), anything else by the words it carries. The full exception goes to the log, not here."""
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror.rstrip(".") + "."
+    text = str(exc).strip()
+    return text if text else "something unexpected went wrong; the details are in the log"
 
 
 def window_test(seconds=45):

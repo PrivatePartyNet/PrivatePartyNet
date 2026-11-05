@@ -19,6 +19,9 @@
     nobody: document.getElementById("nobody"),
     ask: document.getElementById("ask"),
     askNote: document.getElementById("askNote"),
+    askPasswordRow: document.getElementById("askPasswordRow"),
+    askPassword: document.getElementById("askPassword"),
+    askWithPassword: document.getElementById("askWithPassword"),
     requests: document.getElementById("requests"),
     requestList: document.getElementById("requestList"),
     themeItems: document.querySelectorAll("#optionsMenu [data-choice]"),
@@ -132,8 +135,12 @@
 
     el.party.hidden = !state.running;
     el.serverPassword.textContent = state.passcode || "";
+    // A join asked from this list answers here; an invite's join answers under the invite box, not here as well.
+    var nearbyJoin = state.join && state.join.peer;
+    el.askPasswordRow.hidden = !(nearbyJoin && state.join.needs_password);
+    if (nearbyJoin) passwordPeer = state.join.peer;
     if (state.join && state.join.message) {
-      put(el.askNote, state.join.message, "ask note");
+      if (nearbyJoin) put(el.askNote, state.join.message, "ask note");
       if (state.join.state !== lastJoinState) {
         lastJoinState = state.join.state;
         if (state.join.state !== "trying" && state.join.state !== "waiting") loadJoined();
@@ -218,7 +225,18 @@
 
   el.ask.addEventListener("click", function () {
     if (!selectedPeer) return;
-    api().ask_join(selectedPeer).then(function (result) { put(el.askNote, result.message, "ask note"); });
+    api().ask_join(selectedPeer, "").then(function (result) { put(el.askNote, result.message, "ask note"); });
+  });
+
+  // A party seen over a VPN (Radmin VPN, say) counts that PC as outside its network, so it wants its password.
+  var passwordPeer = null;
+  el.askWithPassword.addEventListener("click", function () {
+    var peer = passwordPeer || selectedPeer;
+    if (!peer) return;
+    api().ask_join(peer, el.askPassword.value).then(function (result) {
+      put(el.askNote, result.message, "ask note");
+      if (result.ok) el.askPasswordRow.hidden = true;
+    });
   });
 
   // --- the menu bar ------------------------------------------------------------------------------------------
