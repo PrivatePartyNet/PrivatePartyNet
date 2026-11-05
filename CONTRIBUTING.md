@@ -27,6 +27,20 @@ Set `PRIVATEPARTYNET_PYTHON` or `PRIVATEPARTYNET_EDGE` if Python or Edge is some
 checks that the packaged app captures the screen and opens its window, builds the installer with Inno Setup 6, and writes
 checksums. It checks each Microsoft installer's signature first and stops if one does not verify.
 
+## Make a signed release
+
+Installed copies update themselves only to releases signed with PrivatePartyNet's release key
+(`privatepartynet\updater.py`, `TRUSTED_KEYS`).
+
+1. Once: `py tools\sign_release.py --new-key` makes the key in `%APPDATA%\PrivatePartyNet-release\update-signing.key`,
+   sealed for your Windows account, and prints its public key, which goes into `TRUSTED_KEYS`. Back the folder up; without
+   the key no installed copy can be updated again. To move to a new key, sign one release with
+   `py tools\sign_release.py --next-key <new public key>` using the old key; copies that install it trust the new one too.
+2. Raise the version in `privatepartynet\__init__.py` (a test version is, for example, `3.3.0-alpha.1`) and build with
+   `py tools\build.py`. Its last step writes `PrivatePartyNet-<version>-update.json` and `.json.sig` into `dist\`.
+3. Make the GitHub release with the tag `v<version>` (a pre-release for a test version) and upload the installer, the
+   portable zip, the `update.json` and the `.json.sig`. A release without them is never offered.
+
 ## What a change needs
 
 - A test for what changed, next to the tests that are already there. The layout and connection-stats logic are plain functions

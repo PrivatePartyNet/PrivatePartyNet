@@ -1,4 +1,4 @@
-# PrivatePartyNet 3.1.0
+# PrivatePartyNet 3.2.0
 
 A private place for a group of friends to chat, talk, share screens and play LAN games together. One person hosts a server, PCs on the same network find it by themselves, and friends elsewhere join with an invite code. There is no company server and no account to make. Traffic goes through someone else's machine only when two routers let nothing through, and then only through a relay the group chose, encrypted end to end.
 
@@ -24,20 +24,21 @@ A private place for a group of friends to chat, talk, share screens and play LAN
 - Connection bar: the bottom bar shows the app's CPU use, then a chip per person with colored icons for the rates, frame rates and picture sizes that apply. Hover a name for the details, including the CPU spent encoding and decoding for that person. Crowded bars give up detail instead of overflowing.
 - Capture at the size that is needed: the screen is captured at the smallest standard size that covers what the viewers asked for (their tile sizes, or a percentage), and at full size again as soon as someone needs it. On the development PC this halved the processor time of sharing an ultrawide screen to a small tile (10.8% to 5.5% of the PC).
 - Fast capture: screens are captured through the graphics card (Windows Desktop Duplication) with the older GDI capture as a fallback, and encoded with OpenCV when it is available. An ultrawide screen reaches about 57 frames a second at a 60 target on the development PC.
+- Updates: with Automatic updates on (the default), a newer version is downloaded in the background, checked, and offered with Restart now or Later (which installs it when the app next closes). Nothing restarts during a party, a call or while the game network is on. Every update is signed, and the app installs only what its built-in key's signature covers, and never an older version. Options turns automatic updates and test versions on or off and has Check for updates; with automatic updates off, a newer version offers Update, Later or Skip this version.
 - Picture in picture, fullscreen, Light, Dark or Match Windows appearance.
 - An Info menu with an About page (versions and folders) and a How PrivatePartyNet works page, which is updated with every version.
 
-At run time nothing is sent to a company server. The only calls outside your network are a check of your public address (public STUN servers), the router port-open while a party or the game network is running, once an invite has been made, small signed address records on the BitTorrent DHT, the direct connections between members, and a relay: the group's own relay server once the owner sets one, or a member's PC that relays for others. The feature set was designed from Discord's screen share and server features.
+At run time nothing is sent to a company server. The only calls outside your network are a check of your public address (public STUN servers), the router port-open while a party or the game network is running, once an invite has been made, small signed address records on the BitTorrent DHT, the direct connections between members, a relay (the group's own relay server once the owner sets one, or a member's PC that relays for others), and, with Automatic updates on, GitHub: a few minutes after the app starts and every six hours it asks api.github.com for PrivatePartyNet's releases, and it downloads a newer one from github.com. Turn Automatic updates off in the Options menu and GitHub is only asked when you press Check for updates. The feature set was designed from Discord's screen share and server features.
 
 ## Release information
 
 | Field | Value |
 |---|---|
-| Version | 3.1.0 |
+| Version | 3.2.0 |
 | Platform | Windows 10 or 11, 64-bit |
 | License | [Apache License 2.0](LICENSE) |
-| Installer | `PrivatePartyNetSetup-3.1.0.exe`, per user, no administrator rights. It updates an existing PrivatePartyNet in place. |
-| Portable | `PrivatePartyNet-3.1.0-portable.zip`, run from any folder, including a USB stick |
+| Installer | `PrivatePartyNetSetup-3.2.0.exe`, per user, no administrator rights. It updates an existing PrivatePartyNet in place. |
+| Portable | `PrivatePartyNet-3.2.0-portable.zip`, run from any folder, including a USB stick |
 
 ## System requirements and compatibility
 
@@ -48,7 +49,7 @@ At run time nothing is sent to a company server. The only calls outside your net
 
 ## The windows
 
-PrivatePartyNet runs in native windows, not in a browser: the control panel, the party room, and a window for each popped-out screen. The windows use the Microsoft Edge WebView2 runtime. Nothing is downloaded at run time.
+PrivatePartyNet runs in native windows, not in a browser: the control panel, the party room, and a window for each popped-out screen. The windows use the Microsoft Edge WebView2 runtime. The pages are part of the app; none is loaded from the internet.
 
 ## Upgrading
 
@@ -56,15 +57,15 @@ Run a newer `PrivatePartyNetSetup` over an installed copy. Setup recognises the 
 
 ## Options and Info
 
-The Options menu sets the appearance (Match Windows, the default, Light, or Dark) and opens the data folder. The Info menu opens the About page and the How PrivatePartyNet works page.
+The Options menu sets the appearance (Match Windows, the default, Light, or Dark), turns Automatic updates and Include test versions on or off (both on by default), has Check for updates, and opens the data folder. The About page also has Check for updates, with when it last checked and what it found. The Info menu opens the About page and the How PrivatePartyNet works page.
 
 ## Installation and deployment
 
-1. Run `PrivatePartyNetSetup-3.1.0.exe`. It installs for your user account only.
+1. Run `PrivatePartyNetSetup-3.2.0.exe`. It installs for your user account only.
 2. Choose a desktop shortcut and whether to start with Windows. A Start menu entry is always made.
 3. Start PrivatePartyNet.
 
-Portable: unzip `PrivatePartyNet-3.1.0-portable.zip` and run `PrivatePartyNet.exe` in the folder. Nothing is written to the registry.
+Portable: unzip `PrivatePartyNet-3.2.0-portable.zip` and run `PrivatePartyNet.exe` in the folder. Nothing is written to the registry.
 
 Uninstall from Settings, Apps, or the Start menu. Setup asks whether to delete PrivatePartyNet's data folder (settings, certificate, log). The default is to keep it. A silent uninstall always keeps it.
 
@@ -109,6 +110,7 @@ Host only:
 - `privatepartynet\web\`: the control panel (`control.html`), the party room (`room.html`, `room.js`, with the tile layout in `layout.js` and the connection numbers in `netstats.js`), the join message page (`login.html`), the WebRTC helpers (`rtc.js`), the About and How pages (`about.html`, `how.html`, `info.js`), and the styles.
 - `privatepartynet\pathway.py`: the paths between members (direct ways and relays) that the game network uses. `relayproto.py` and `relayclient.py`: the relay protocol and a PC's side of it. `punch.py`: the join through both routers, and through a relay. `gamenet.py`, `gameclient.py` and `netlink.py`: the game network's members, its helper and the member's link to the host.
 - `wghelper\`: the game network helper (Go, built on wireguard-go and Wintun), `PrivatePartyNetGameNet.exe`, which holds the adapter with Windows' permission and carries WireGuard over the app's paths.
+- `privatepartynet\updater.py`: updates (checking GitHub, the signed manifest, downloading, installing). `tools\sign_release.py`: signs a release's manifest (build.py runs it).
 - `relay\`: the relay server a group can run on a rented Linux server, with its setup script, systemd units, Docker files, coturn configuration and firewall, and `verify_memory.py`.
 - `installer\PrivatePartyNet.iss`: the installer.
 - `tests\`: Python tests; `tests\js\` holds the JavaScript tests for the layout and stats code, which a Python test runs when Node is installed. `tests\browser\e2e_call.mjs`: the three-person party test in headless Edge. `tests\browser\rtc_selftest.html`: the WebRTC self-test.

@@ -46,7 +46,24 @@ What leaves your PC:
   address records on the public BitTorrent DHT while an invite is active. These records contain your public address and port,
   signed with the server's key, and anyone watching the DHT can see them.
 - A relay, only when the group set one up or a member turned relaying on (both are off until someone chooses them).
-- There are no accounts and no update check. The app sends nothing to a company server.
+- With Automatic updates on (the default), a check of PrivatePartyNet's releases on GitHub (api.github.com) shortly
+  after the app starts and every six hours, and the download of a newer version from github.com. GitHub sees your
+  public address and that you run PrivatePartyNet. With Automatic updates off (Options), GitHub is only asked when you
+  press Check for updates.
+- There are no accounts. The app sends nothing to a company server.
+
+How updates are checked:
+
+- Each release carries `PrivatePartyNet-<version>-update.json`, naming each file with its size and SHA-256, and an
+  Ed25519 signature of it. The public key is built into the app; no setting, environment variable or command line can
+  change it, or the address updates come from. The private key is kept by the maintainer, off this repository, sealed
+  with Windows data protection.
+- The app installs a download only when the signature checks out, its size and SHA-256 are the signed ones (checked
+  again just before it runs), its version is newer than the one running (never older) and the manifest's version and
+  tag are the release's. It talks HTTPS only, with Windows' certificates, and takes files only from github.com and
+  GitHub's download hosts. Release notes are shown as text.
+- A signed manifest may name the next signing key, signed by the current one, so the key can be replaced without
+  a new install. If the key were lost, installed copies could not be updated; they would keep working as they are.
 
 Known limits:
 
