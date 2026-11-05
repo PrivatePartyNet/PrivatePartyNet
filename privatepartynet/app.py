@@ -8,6 +8,7 @@ browser, because that is where their screen picker lives. Nothing here reaches t
 import base64
 import ctypes
 import importlib.metadata
+import json
 import logging
 import os
 import platform
@@ -1685,36 +1686,84 @@ def plain_error(exc):
     return text if text else "something unexpected went wrong; the details are in the log"
 
 
-def window_test(seconds=45):
-    """Open the control panel in a hidden window, wait for its page and the Python bridge to come up, and close it.
-    Run as: PrivatePartyNet.exe --window-test. Returns 0 when the page loaded and the bridge answered, 1 otherwise. The build
-    runs it on the packaged app, because the window stack (pywebview, pythonnet, WebView2) cannot be reached any other
-    way while a copy of the app is open on the build PC."""
+def window_test(seconds=90):
+    """The one window, in a hidden window of the real window stack (pywebview, pythonnet, WebView2), checked step by step:
+    the shell and its bridge; Home (the control panel) using that bridge from its frame; a party's own room signing in
+    inside a frame and asking the app for things through the shell; an HTTPS room pinned to the party's certificate
+    signing in inside a frame (the certificate check and the frame's cookie, which only real WebView2 can show); and an
+    HTTPS room pinned to another certificate being stopped in its own place while the shell stays.
+    Run as: PrivatePartyNet.exe --window-test. Returns 0 when every step passed, 1 otherwise; each step is in the log.
+    The build runs it on the packaged app. Nothing shows on screen."""
     import shutil
     import tempfile
     import threading
 
     folder = tempfile.mkdtemp(prefix="privatepartynet-window-test-")
     controller = Controller(data_folder=folder, discovery_port=0)
-    window = webview.create_window("PrivatePartyNet", url=str(web_dir() / "control.html"), js_api=controller, hidden=True,
-                                   width=1040, height=740)
-    outcome = {"ok": False, "why": "the page never answered"}
+    shell = ShellServer().start()
+    controller.use_shell(shell)
+    window = webview.create_window("PrivatePartyNet", url=shell.url(), js_api=controller, hidden=True,
+                                   width=1280, height=820)
+    controller.bind_window(window)
+    steps = []
 
-    def probe(win):
-        deadline = time.monotonic() + seconds
-        script = ("typeof window.pywebview !== 'undefined' && typeof window.pywebview.api !== 'undefined' && "
-                  "typeof window.pywebview.api.state === 'function'")
+    def wait(win, script, limit=25.0):
+        deadline = time.monotonic() + limit
         while time.monotonic() < deadline:
             try:
-                if win.evaluate_js(script):
-                    outcome.update(ok=True, why="the page loaded and the bridge answered")
-                    break
-            except Exception as err:  # the window is still starting
-                outcome["why"] = str(err)
+                value = win.evaluate_js(script)
+                if value:
+                    return value
+            except Exception:  # the page is still starting
+                pass
             time.sleep(0.4)
-        win.destroy()
+        return None
 
-    watchdog = threading.Timer(seconds + 20, lambda: os._exit(2))  # a window that never closes must not hang the build
+    def step(name, ok):
+        steps.append((name, bool(ok)))
+        log.info("Window test: %s: %s", name, "ok" if ok else "FAILED")
+        return bool(ok)
+
+    def server(win, key):
+        return (f"(function () {{ var s = window.PPNShell && window.PPNShell.servers().filter(function (x) {{ "
+                f"return x.key === {json.dumps(key)}; }})[0]; return s ? JSON.stringify(s) : null; }})()")
+
+    def probe(win):
+        try:
+            if not step("the shell and its bridge", wait(win, "!!(window.PPNShell && window.pywebview && window.pywebview.api "
+                                                             "&& typeof window.pywebview.api.shell_state === 'function')")):
+                return
+            step("Home uses the window's bridge from its frame", wait(win, (
+                "(function () { try { var w = document.getElementById('view-home').contentWindow; return w.pywebview === "
+                "window.pywebview && w.document.documentElement.classList.contains('in-shell') && "
+                "!!w.document.getElementById('name').value; } catch (e) { return false; } })()")))
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_port:
+                probe_port.bind(("127.0.0.1", 0))
+                port = probe_port.getsockname()[1]
+            started = controller.start("Window test", port)
+            if not step("a party starts", started.get("ok")):
+                return
+            own = wait(win, server(win, "own") + " && JSON.parse(" + server(win, "own") + ").ready && JSON.parse(" +
+                       server(win, "own") + ").calls > 0")
+            step("its room signs in inside a frame and asks the app through the shell", own)
+            party = controller._party
+            pins = pins_of_pem(controller._cert_pem)
+            good = f"https://127.0.0.1:{party.port}/join?token={party.join_token('Pinned guest')}"
+            controller._join({"url": good, "name": "Pinned", "pins": pins, "embed": True})
+            key = f"join:https://127.0.0.1:{party.port}"
+            step("an HTTPS room with the right certificate signs in inside a frame",
+                 wait(win, f"(function () {{ var s = {server(win, key)}; return !!s && JSON.parse(s).ready; }})()", 40))
+            wrong = f"https://127.0.0.2:{party.port}/join?token={party.join_token('Wrong guest')}"
+            controller._join({"url": wrong, "name": "Wrong", "pins": ("0" * 64,), "embed": True})
+            bad = f"join:https://127.0.0.2:{party.port}"
+            step("an HTTPS room with another certificate is stopped in its own place",
+                 wait(win, f"(function () {{ var s = {server(win, bad)}; return !!s && JSON.parse(s).stopped && "
+                           f"!JSON.parse(s).ready; }})()", 40))
+            step("and the window is still the shell", wait(win, "!!window.PPNShell && !!document.getElementById('servers')"))
+        finally:
+            win.destroy()
+
+    watchdog = threading.Timer(seconds + 30, lambda: os._exit(2))  # a window that never closes must not hang the build
     watchdog.daemon = True
     watchdog.start()
     try:
@@ -1722,9 +1771,12 @@ def window_test(seconds=45):
     finally:
         watchdog.cancel()
         controller.shutdown()
+        windowpins.forget_all()
         shutil.rmtree(folder, ignore_errors=True)
-    log.info("Window test: %s (%s)", "passed" if outcome["ok"] else "FAILED", outcome["why"])
-    return 0 if outcome["ok"] else 1
+    passed = len(steps) == 7 and all(ok for _, ok in steps)
+    log.info("Window test: %s (%d of 7 steps passed)", "passed" if passed else "FAILED", sum(ok for _, ok in steps))
+    window_test.steps = steps
+    return 0 if passed else 1
 
 
 def exit_now(code):

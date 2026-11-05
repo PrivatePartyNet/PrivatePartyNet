@@ -156,7 +156,7 @@
 
       var server = { key: info.key, name: name, url: info.url, origin: originOf(info.url), own: Boolean(info.own),
                      frame: frame, item: item, button: button, badge: badge, voiceMark: voiceMark, note: null,
-                     state: cleanState(null), ready: false, timer: null };
+                     state: cleanState(null), ready: false, timer: null, calls: 0 };
       servers.set(info.key, server);
       button.addEventListener("click", function () { show(server.key); });
       button.addEventListener("contextmenu", function (event) {
@@ -342,6 +342,7 @@
 
     function roomCall(server, msg) {
       var id = msg.id;
+      server.calls += 1;
       var reply = function (ok, value) { post(server, { ppn: "result", id: id, ok: ok, value: ok ? value : undefined, error: ok ? undefined : value }); };
       if (ROOM_CALLS.indexOf(msg.method) < 0 || !Array.isArray(msg.args) || msg.args.length > 6) {
         reply(false, "That is not something a party window may ask for.");
@@ -524,6 +525,12 @@
       show: show,
       home: goHome,
       info: showInfo,
+      // what the app's own window test reads (app.py window_test): each room, whether it signed in, and its calls
+      servers: function () {
+        return Array.from(servers.values()).map(function (s) {
+          return { key: s.key, origin: s.origin, ready: s.ready, calls: s.calls, stopped: Boolean(s.note) };
+        });
+      },
     };
 
     function begin() {
