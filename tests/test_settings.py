@@ -19,7 +19,14 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(load_settings(self.folder), {"port": 9100, "name": "Kitchen PC", "theme": "system", "server_id": None,
                                                       "game_server": None, "friend_relay": False, "friend_relay_mbps": 8,
                                                       "game_open": [], "auto_update": True, "update_prerelease": True,
-                                                      "update_skip": ""})
+                                                      "update_skip": "", "reconnect_grace_s": 120})
+
+    def test_the_reconnect_grace_is_kept_within_sense(self):
+        save_settings({"reconnect_grace_s": 300}, self.folder)
+        self.assertEqual(load_settings(self.folder)["reconnect_grace_s"], 300)
+        for bad in (5, 100000, "120", True):
+            save_settings({"reconnect_grace_s": bad}, self.folder)
+            self.assertEqual(load_settings(self.folder)["reconnect_grace_s"], 120, bad)
 
     def test_updates_are_automatic_and_include_test_versions_unless_turned_off(self):
         loaded = load_settings(self.folder)

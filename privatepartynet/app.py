@@ -37,6 +37,7 @@ from privatepartynet.frames import ScreenGrabber
 from privatepartynet.identity import Identity, safety_number
 from privatepartynet.netinfo import LOOPBACK, address_for, lan_addresses
 from privatepartynet.paths import data_dir, web_dir
+from privatepartynet.partylink import PartyLink
 from privatepartynet.server import Forbidden, NotFound, Party, generate_password
 from privatepartynet.settings import THEMES, load_settings, save_settings, valid_mbps, valid_port
 from privatepartynet.store import Store
@@ -155,8 +156,9 @@ class WindowApi:
     a backup. The page is served by the host, so everything it hands over is checked and bounded, and a window is held
     to the one server it first named."""
 
-    def __init__(self, origin, store=None):
+    def __init__(self, origin, store=None, link=None):
         self._origin = origin
+        self._link = link  # a joined party's link (Controller._open_link), None for the host's own window
         self._window = None
         self._children = []
         self._fullscreen = False
@@ -279,6 +281,30 @@ class WindowApi:
         store.put_blob(data)
         return {"ok": True}
 
+    def resume_party(self):
+        """The page lost its party connection for long enough that the host wants this PC's identity before it may come
+        back (GET /link said 409): sign the resume (POST /resume) over the window's link. {ok, message}."""
+        if self._link is None:
+            return {"ok": False, "message": "This window has nothing to resume."}
+        return self._link["resume"]()
+
+    def rejoin_party(self):
+        """The page's place in the party has ended (the grace ran out): ask to join again, as from the control panel,
+        and close this window (a new one opens once the host lets you in)."""
+        if self._link is None:
+            return {"ok": False, "message": "This window cannot rejoin by itself."}
+        result = self._link["rejoin"]()
+        if result.get("ok"):
+            threading.Timer(0.5, self.close_window).start()
+        return result
+
+    def link_state(self):
+        """This window's link to its host: {"state": "ok" | "reconnecting" | "lost", "message", "path"}."""
+        if self._link is None:
+            return {"state": "ok", "message": "", "path": None}
+        link = self._link["link"]
+        return {"state": link.state, "message": link.message, "path": self._link.get("path")}
+
     def close_window(self):
         """Close the window that asked, and its pop-outs. A page calls this when its member leaves the party."""
         window = self._window
@@ -349,6 +375,12 @@ class Controller:
         if self._probe_network:  # a test or diagnostic run (discovery port 0) never asks GitHub
             self.updater.start()
         self._tunnels = {}  # joined server key -> the punch-through tunnel it is reached by
+        self._links = {}  # party window -> its link (partylink.PartyLink and what it needs to resume and rejoin)
+        self._network = None  # this PC's addresses as last seen; a change makes every link reconnect at once
+        self._watching = threading.Event()  # set at shutdown: ends the network watch
+        if self._probe_network:
+            threading.Thread(target=self._watch_network, args=(self._watching,), name="privatepartynet-network-watch",
+                             daemon=True).start()
 
     # --- the key, the identity and the chat store ----------------------------------------------------------
 
@@ -722,7 +754,11 @@ class Controller:
                 self._remember_server(invite, joiner)
                 # The window accepts the certificate this join checked, and no other.
                 self._join({"url": status["url"], "name": invite["name"],
-                            "pins": (joiner.seen_fingerprint, joiner.seen_spki)})
+                            "pins": (joiner.seen_fingerprint, joiner.seen_spki),
+                            "link": {"way": joiner.way, "tunnel": joiner.tunnel, "invite": dict(invite),
+                                     "resume_token": joiner.resume_token,
+                                     "key": "joined-" + (invite.get("server_id") or
+                                                         (invite["fingerprint"] or joiner.seen_fingerprint)[:16])}})
             status["state"], status["message"] = "joined", "Opening the party window."
         status.pop("url", None)
         return status
@@ -849,7 +885,14 @@ class Controller:
             if not record or not (record.get("fingerprint") or record.get("spki")):
                 return {"ok": False, "message": "That server is not in your list."}
             tunnel = self._tunnels.get(key)
-            ordered = [["punch", "127.0.0.1", tunnel.port]] if tunnel is not None else connect._order(record.get("candidates") or [])
+            linked = next((e["link"] for e in self._links.values() if e.get("key") == key), None)
+            if linked is not None:
+                # through the party window's link, which finds the host again after a dropout or a new address
+                ordered = [["link", linked.address, linked.port]]
+            elif tunnel is not None:
+                ordered = [["punch", "127.0.0.1", tunnel.port]]
+            else:
+                ordered = connect._order(record.get("candidates") or [])
             if not ordered:
                 return {"ok": False, "message": "No address is known for that server."}
             server_key = key
@@ -1091,6 +1134,7 @@ class Controller:
             "game": self.game_state(),
             "relay": party.relay_view() if party else None,
             "update": self.updater.view(),
+            "links": self.links_view(),
             "friend_relay": {"on": self._settings.get("friend_relay") is True,
                              "mbps": self._settings.get("friend_relay_mbps", 8), **self._paths_view()},
         }
@@ -1171,7 +1215,7 @@ class Controller:
             party = Party(passcode, port, certfile, keyfile, party_name=name, host_name=name, grabber=self._grabber,
                           theme=self._settings.get("theme", "system"), store=self._store,
                           server_id=self._settings["server_id"], host_user_id=self._identity.user_id,
-                          owner=self._identity)
+                          owner=self._identity, reconnect_grace=self._grace())
         except OSError as exc:
             log.exception("Could not listen on port %s", port)
             return {"ok": False, "message": f"Could not listen on port {port}: {plain_error(exc)}"}
@@ -1375,6 +1419,128 @@ class Controller:
             os.startfile(self._data_dir)
         return {"ok": True, "message": ""}
 
+    # --- staying in a party through bad internet (3.3) --------------------------------------------------------
+
+    def _grace(self):
+        return float(self._settings.get("reconnect_grace_s") or 120)
+
+    def _open_link(self, data, pins):
+        """A party link for a joined window (partylink.py): the window loads the party from it, and it finds the host
+        again when the way breaks. None when the join's address cannot be read (the window then goes straight there)."""
+        spec = dict(data.get("link") or {})
+        parts = urlsplit(data["url"])
+        if not spec.get("way"):
+            try:
+                spec["way"] = (parts.hostname, parts.port or 443)
+            except ValueError:
+                return None
+        if not spec["way"][0]:
+            return None
+        invite = spec.get("invite") or {"name": data.get("name", "Party"), "candidates": [], "fingerprint": ""}
+        entry = {"way": tuple(spec["way"]), "tunnel": spec.get("tunnel"), "invite": invite,
+                 "pins": [p for p in pins if p], "token": spec.get("resume_token") or "",
+                 "key": spec.get("key"), "name": data.get("name") or invite.get("name") or "the party"}
+        link = PartyLink(lambda force: self._find_way(entry, force), name=entry["name"], grace=self._grace(),
+                         on_change=lambda state, message: self._link_changed(entry, state, message))
+        entry["link"] = link
+        entry["path"] = self._path_name(entry)
+        entry["resume"] = lambda: self._resume_link(entry)
+        entry["rejoin"] = lambda: self._rejoin_link(entry)
+        log.info("The window for %s reaches its host through its own address on this PC, %s", entry["name"], link.base)
+        return entry
+
+    @staticmethod
+    def _path_name(entry):
+        if entry.get("tunnel") is not None:
+            return {"ipv6": "punched", "punch": "punched", "relay": "relay"}.get(getattr(entry["tunnel"], "kind", ""),
+                                                                                  "punched")
+        from privatepartynet.linkstate import path_of
+
+        return path_of(entry["way"][0])
+
+    def _find_way(self, entry, force):
+        """The way to a joined party's host: the current one, checked, or with `force` a new one from the ladder: the
+        host's addresses (and its address in the Nearby list), then through both routers or a relay (punch.py)."""
+        if not force:
+            tunnel = entry.get("tunnel")
+            if tunnel is not None and not tunnel.alive():
+                raise OSError("the tunnel to the host stopped answering")
+            return entry["way"]
+        invite = entry["invite"]
+        candidates = [list(c) for c in invite.get("candidates") or []]
+        way = entry["way"]
+        if entry.get("tunnel") is None and way and [way[0], way[1]] not in [[c[1], c[2]] for c in candidates]:
+            candidates.append(["lan", way[0], way[1]])  # the way that just failed, last: it may come back
+        if self._discovery is not None and invite.get("fingerprint"):
+            for peer in self._discovery.peer_list():
+                if peer.get("sharing") and peer.get("fp") in entry["pins"] and peer.get("port"):
+                    candidates.insert(0, ["lan", peer["address"], int(peer["port"])])
+        for kind, address, port in connect._order(candidates):
+            try:
+                connect._connect(address, port, entry["pins"], 3.0).close()
+            except (OSError, connect.ConnectError) as exc:
+                log.info("Finding %s again: %s address %s port %s: %s", entry["name"], kind, address, port, exc)
+                continue
+            self._switch_way(entry, (address, int(port)), None)
+            return entry["way"]
+        if invite.get("secret") and ((invite.get("host_sign") and invite.get("server_id")) or invite.get("relays")):
+            from privatepartynet import punch
+
+            tunnel = punch.join_through(invite.get("host_sign", ""), invite.get("server_id", ""),
+                                        bytes.fromhex(invite["secret"]), entry["pins"] or invite.get("fingerprint"),
+                                        relays=invite.get("relays") or [], ipv6=connect.global_ipv6_addresses)
+            self._switch_way(entry, ("127.0.0.1", tunnel.port), tunnel)
+            return entry["way"]
+        raise OSError("none of the host's addresses answered, and the invite has no way across the internet")
+
+    def _switch_way(self, entry, way, tunnel):
+        old = entry.get("tunnel")
+        entry["way"], entry["tunnel"] = way, tunnel
+        entry["path"] = self._path_name(entry)
+        if old is not None and old is not tunnel:
+            old.close()
+        log.info("%s: now reached %s", entry["name"], "through a tunnel on this PC" if tunnel else f"at {way[0]}")
+
+    def _link_changed(self, entry, state, message):
+        log.info("Party link to %s: %s%s", entry["name"], state, f" ({message})" if message else "")
+
+    def _resume_link(self, entry):
+        """Bring this PC back into its place in a party after a dropout: sign the resume token from the join with this
+        PC's identity, over the window's link (POST /resume). {ok, message}."""
+        if not entry.get("token") or self._identity is None:
+            return {"ok": False, "message": "This party cannot be resumed; ask to join again."}
+        link = entry["link"]
+        ok, gone, why = connect.resume(link.address, link.port, entry["pins"], entry["token"], self._identity, self._name)
+        if not ok:
+            log.info("Resuming %s %s: %s", entry["name"], "was refused" if gone else "did not work yet", why)
+            return {"ok": False, "gone": gone, "message": why[:1].upper() + why[1:] + "."}
+        log.info("Back in %s after a dropout", entry["name"])
+        return {"ok": True, "message": "Reconnected."}
+
+    def _rejoin_link(self, entry):
+        if entry.get("key") and self._store is not None and self._store.server(entry["key"]):
+            return self.rejoin(entry["key"])
+        return {"ok": False, "message": "Ask the host for a new invite."}
+
+    def links_view(self):
+        """Joined parties whose connection is down, for the control panel."""
+        return [{"name": entry["name"], "state": entry["link"].state, "message": entry["link"].message,
+                 "key": entry.get("key") or ""} for entry in list(self._links.values()) if entry["link"].state != "ok"]
+
+    def _watch_network(self, stop, seconds=2.0):
+        """Notice when this PC's network changes (another Wi-Fi, a new address, a VPN up or down) and make every party
+        link reconnect at once, rather than wait for its connections to time out."""
+        while not stop.wait(seconds):
+            try:
+                seen = (tuple(sorted(lan_addresses())), tuple(connect.global_ipv6_addresses()))
+            except Exception:
+                continue
+            if self._network is not None and seen != self._network:
+                log.info("This PC's network changed; reconnecting every party window")
+                for entry in list(self._links.values()):
+                    entry["link"].network_changed()
+            self._network = seen
+
     def _join(self, data):
         """Open the party in its own window, which accepts only the host's certificate: `data["pins"]` (what the join
         checked) or, from a Nearby accept, the pins of `data["cert"]`."""
@@ -1384,6 +1550,10 @@ class Controller:
                 pins = pins_of_pem(data["cert"])
             except ValueError:
                 pins = ()
+        entry = self._open_link(data, pins)
+        if entry is not None:
+            parts = urlsplit(data["url"])
+            data = {**data, "url": entry["link"].base + parts.path + (f"?{parts.query}" if parts.query else "")}
         windowpins.pin(data["url"], pins)
         token = self._feed.issue()
         separator = "&" if "?" in data["url"] else "?"
@@ -1393,13 +1563,20 @@ class Controller:
         if theme != "system":
             url += f"&theme={theme}"
         parts = urlsplit(data["url"])
-        api = WindowApi(f"{parts.scheme}://{parts.netloc}", store=lambda: self._store)
+        api = WindowApi(f"{parts.scheme}://{parts.netloc}", store=lambda: self._store, link=entry)
         window = webview.create_window(f"PrivatePartyNet party: {data['name']}", url=url, width=1280, height=820, js_api=api)
         api._attach(window)
         self._party_windows.add(window)
+        if entry is not None:
+            self._links[window] = entry
 
         def closed(*_):
             self._party_windows.discard(window)
+            gone = self._links.pop(window, None)
+            if gone is not None:
+                gone["link"].close()
+                if gone.get("tunnel") is not None and gone["tunnel"] is not self._tunnels.get(gone.get("key")):
+                    gone["tunnel"].close()
             self.updater.busy_changed()
 
         window.events.closed += closed
@@ -1492,6 +1669,9 @@ class Controller:
 
     def shutdown(self, *_):
         """Called when the control window closes. Ends the party and says goodbye to the network."""
+        self._watching.set()
+        for entry in list(self._links.values()):
+            entry["link"].close()
         self.stop()
         self._feed.stop()
         if self._discovery is not None:

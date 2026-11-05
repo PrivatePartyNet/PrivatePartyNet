@@ -61,7 +61,8 @@ class WindowApiTests(unittest.TestCase):
 
     def test_what_the_page_may_call_is_only_what_is_meant(self):
         public = {name for name in dir(WindowApi) if not name.startswith("_")}
-        self.assertEqual(public, {"open_viewer", "close_window", "set_fullscreen", "keep_chat", "keep_blob"})
+        self.assertEqual(public, {"open_viewer", "close_window", "set_fullscreen", "keep_chat", "keep_blob",
+                                  "resume_party", "rejoin_party", "link_state"})
 
     def test_closing_the_window_destroys_it(self):
         api, window = self.make()

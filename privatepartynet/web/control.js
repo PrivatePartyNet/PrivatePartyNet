@@ -58,6 +58,9 @@
     joinPassword: document.getElementById("joinPassword"),
     joinAddressBtn: document.getElementById("joinAddressBtn"),
     joinStatus: document.getElementById("joinStatus"),
+    linkNote: document.getElementById("linkNote"),
+    linkText: document.getElementById("linkText"),
+    linkRejoin: document.getElementById("linkRejoin"),
     joined: document.getElementById("joined"),
     gameList: document.getElementById("gameList"),
     gameNone: document.getElementById("gameNone"),
@@ -148,12 +151,28 @@
     }
     el.others.textContent = state.others === 1 ? "1 person besides you" : state.others + " people besides you";
 
+    renderLinks(state.links || []);
     renderPeers(state.peers);
     renderRequests(state.requests);
 
     var message = state.notice || state.problem || "";
     if (message) say(message);
   }
+
+  // A joined party whose connection dropped: "Connection to ... lost; reconnecting", and once its window gave up,
+  // a Rejoin button (the party window has one too).
+  var lostKey = "";
+  function renderLinks(links) {
+    el.linkNote.hidden = links.length === 0;
+    put(el.linkText, links.map(function (l) { return l.message; }).join(" "), "links");
+    var lost = links.filter(function (l) { return l.state === "lost" && l.key; })[0];
+    lostKey = lost ? lost.key : "";
+    el.linkRejoin.hidden = !lostKey;
+  }
+  el.linkRejoin.addEventListener("click", function () {
+    if (!lostKey) return;
+    api().rejoin(lostKey).then(function (result) { put(el.linkText, result.message, "links"); });
+  });
 
   function renderPeers(peers) {
     el.peers.textContent = "";

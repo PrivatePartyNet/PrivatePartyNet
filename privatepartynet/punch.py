@@ -320,6 +320,7 @@ class TunnelHost:
 
         self.sock = sock
         self.party_port = party_port
+        self.sources = set()  # tunnel sources this host's joiners came from (linkstate.TUNNEL_WAYS)
         self._loop = _Loop("privatepartynet-tunnel-host")
         configuration = QuicConfiguration(is_client=False, alpn_protocols=[ALPN], idle_timeout=IDLE_SECONDS)
         configuration.load_cert_chain(certfile, keyfile)
@@ -343,6 +344,7 @@ class TunnelHost:
             from privatepartynet import linkstate
 
             linkstate.TUNNEL_WAYS[tunnel_source(remote[:2])] = "relay" if way == "a relay" else "punched"
+            self.sources.add(tunnel_source(remote[:2]))
         self.peers.add(remote[:2])
         try:
             party_reader, party_writer = await asyncio.wait_for(asyncio.open_connection(
@@ -363,6 +365,10 @@ class TunnelHost:
         asyncio.run_coroutine_threadsafe(send(), self._loop.loop)
 
     def close(self):
+        from privatepartynet import linkstate
+
+        for source in self.sources:
+            linkstate.TUNNEL_WAYS.pop(source, None)
         self._loop.stop(closing=(self.server, self.transport))
 
 
@@ -474,6 +480,24 @@ class TunnelClient:
                 raise Unanswered(f"no answer within {connect_seconds:.0f} seconds", self.heard_host) from exc
             raise
         self.port = self._listener.sockets[0].getsockname()[1]
+
+    def alive(self, seconds=3.0, fresh=2.0):
+        """True when the host still answers over this tunnel (a QUIC ping), checked at most every `fresh` seconds. The
+        local port keeps accepting connections after the tunnel itself has died, so this is how a party link tells."""
+        now = time.monotonic()
+        if now - getattr(self, "_checked", (0.0, False))[0] < fresh:
+            return self._checked[1]
+        if self.protocol._closed.is_set():
+            self._checked = (now, False)
+            return False
+        try:
+            asyncio.run_coroutine_threadsafe(asyncio.wait_for(self.protocol.ping(), seconds), self._loop.loop).result(
+                seconds + 1)
+            ok = True
+        except Exception:
+            ok = False
+        self._checked = (time.monotonic(), ok)
+        return ok
 
     def close(self):
         self._loop.stop(closing=(self._listener, self.protocol, self.transport))
@@ -755,11 +779,15 @@ def join_relayed(secret, fingerprint, relays, connect_seconds=CONNECT_SECONDS, b
     raise PunchError("; ".join(why) or "no relay to try")
 
 
+PREFER_IPV6_SECONDS = 0.5  # IPv4 opened first: how long to wait for IPv6, which has no NAT to lose state in
+
+
 def _first_tunnel(attempts, fingerprint):
-    """Try every (kind, sock, remote, seconds) at once. Returns (the first tunnel that opens or None, {kind: the
-    exception that ended each other one}). Attempts still running when one wins are closed when they end."""
-    lock, done = threading.Lock(), threading.Event()
-    state = {"client": None, "left": len(attempts)}
+    """Try every (kind, sock, remote, seconds) at once. Returns (the tunnel to use or None, {kind: the exception that
+    ended each other one}). IPv6 is preferred: when IPv4 opens first, IPv6 still has PREFER_IPV6_SECONDS to open too.
+    Attempts still running when one is chosen are closed when they end."""
+    lock, done, v6_done = threading.Lock(), threading.Event(), threading.Event()
+    state = {"client": None, "left": len(attempts), "taken": False}
     why = {}
 
     def attempt(kind, sock, remote, seconds):
@@ -771,20 +799,30 @@ def _first_tunnel(attempts, fingerprint):
             why[kind] = exc
             log.info("Over %s: %s", "IPv6" if kind == "ipv6" else "IPv4", _attempt_words(exc))
         with lock:
-            if client is not None and state["client"] is None:
-                state["client"], client = client, None
+            if client is not None and not state["taken"]:
+                if state["client"] is None:
+                    state["client"], client = client, None
+                elif kind == "ipv6":
+                    state["client"], client = client, state["client"]  # IPv6 just after IPv4: IPv6 it is
             state["left"] -= 1
             fatal = isinstance(why.get(kind), PunchError) and not isinstance(why.get(kind), Unanswered)
             if state["client"] is not None or state["left"] == 0 or fatal:
                 done.set()
+        if kind == "ipv6":
+            v6_done.set()
         if client is not None:
-            client.close()  # the other way won first
+            client.close()  # the other way was chosen
 
     for kind, sock, remote, seconds in attempts:
         threading.Thread(target=attempt, args=(kind, sock, remote, seconds), name=f"privatepartynet-punch-{kind}",
                          daemon=True).start()
     done.wait()
     with lock:
+        first = state["client"]
+    if first is not None and first.kind != "ipv6" and any(a[0] == "ipv6" for a in attempts):
+        v6_done.wait(PREFER_IPV6_SECONDS)
+    with lock:
+        state["taken"] = True
         return state["client"], dict(why)
 
 
