@@ -576,9 +576,21 @@
     var through = friend.through || [];
     el.friendRelayNow.textContent = through.length ? "Going through this PC now: " + through.join(", ") + "." : "";
     el.friendRelayNow.hidden = !through.length;
-    var ways = friend.ways || [];
-    el.pathWays.textContent = ways.length ? "Game network: " + ways.join("; ") + "." : "";
-    el.pathWays.hidden = !ways.length;
+    // Each member's way and latency on the game network, with the party room's colours (pingview.js).
+    var gameMembers = friend.members || [];
+    el.pathWays.textContent = "";
+    if (gameMembers.length) el.pathWays.append("Game network: ");
+    gameMembers.forEach(function (member, index) {
+      var line = window.PrivatePartyNetPingView.gameLine(member);
+      var item = document.createElement("span");
+      item.className = "gameping";
+      item.dataset.quality = line.quality;
+      var dot = document.createElement("span");
+      dot.className = "pdot";
+      item.append(dot, document.createTextNode(line.text));
+      el.pathWays.append(item, index < gameMembers.length - 1 ? "; " : ".");
+    });
+    el.pathWays.hidden = !gameMembers.length;
     var problems = friend.problems || [];
     put(el.pathProblems, problems.length ? "Cannot reach " + problems.join(" ") : "", "game network paths");
     el.pathProblems.hidden = !problems.length;

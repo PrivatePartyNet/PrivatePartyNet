@@ -110,6 +110,16 @@ class LadderTests(Base):
         self.exchange(a, b)
         self.assertEqual(a.changes[0], "lan")
 
+    def test_the_way_in_use_reports_its_round_trip_for_the_game_networks_latency(self):
+        a, b = Member(self, addresses=[("lan", "127.0.0.1")]), Member(self, addresses=[("lan", "127.0.0.1")])
+        mesh(a, b)
+        self.assertTrue(wait_for(lambda: a.paths[b.id].kind == "lan"))
+        self.assertTrue(wait_for(lambda: a.manager.state()["peers"][b.id]["rtt"] is not None))
+        seen = a.manager.state()["peers"][b.id]
+        self.assertEqual(seen["kind"], "lan")
+        self.assertIsInstance(seen["rtt"], int, "whole milliseconds, from the probes the paths send anyway")
+        self.assertTrue(0 <= seen["rtt"] < 500, seen)
+
     def test_two_easy_routers_punch_through(self):
         stun = self.stuns()
         a, b = Member(self, behind="easy", stun=stun), Member(self, behind="easy", stun=stun)

@@ -59,3 +59,10 @@ details summary { cursor: pointer; }
 .light { width: 11px; height: 11px; border-radius: 50%; background: var(--border); flex: none; }
 .light.on { background: #16a34a; box-shadow: 0 0 6px #16a34a; }
 .light.starting { background: #ca8a04; }
+
+/* The game network's latency to each member, coloured as the party room colours a ping (pingview.js). */
+.gameping { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.gameping .pdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; background: var(--muted); }
+.gameping[data-quality="good"] .pdot { background: var(--success); }
+.gameping[data-quality="fair"] .pdot { background: #d4b106; }
+.gameping[data-quality="poor"] .pdot { background: var(--danger); }
