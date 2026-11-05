@@ -351,6 +351,9 @@ class ControllerTests(unittest.TestCase):
         self.assertIn('id="askPassword"', page)
         self.assertIn("ask_join(peer, el.askPassword.value)", script)
         self.assertIn("state.join.needs_password", script)
+        style = (web_dir() / "control.css").read_text(encoding="utf-8")
+        # .row sets display: flex, which beats the hidden attribute; the 3.2.0 build first showed the box at all times
+        self.assertIn(".row[hidden] { display: none; }", style)
 
 
 class VpnAdapterTests(unittest.TestCase):
