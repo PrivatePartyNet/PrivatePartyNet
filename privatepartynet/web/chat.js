@@ -1,5 +1,5 @@
 // Channels and chat for one server: the channel list, each channel's messages, scroll-back, unread counts and the
-// owner's and admins' channel controls. The page (room.js) feeds it the server's events and gives it the few things it
+// owner's and admins' channel controls, and the channels this person muted. The page (room.js) feeds it the server's events and gives it the few things it
 // needs from outside: post, getJson, notice, avatar, and what to do when someone joins or leaves a voice channel.
 // All text from other people goes in through textContent, never innerHTML.
 (function () {
@@ -102,6 +102,7 @@
     var lastSpeaker = null;
     var editing = null; // { id, kind, mode } while a channel name is being typed
     var server = null; // { id, name } from the hello
+    var muted = new Set(); // text channel ids this person muted on this server (only on this PC)
     var toKeep = []; // messages not yet handed to this PC's own store
     var keepTimer = null;
 
@@ -146,6 +147,7 @@
 
     function hello(msg) {
       server = msg.server ? { id: msg.server, name: msg.party } : null;
+      muted = server ? readMuted(store(), server.id) : new Set();
       state.meId = msg.you.id;
       state.role = msg.you.role;
       setChannels(msg.channels || []);
@@ -396,6 +398,27 @@
       return people;
     }
 
+    function store() {
+      if (options.storage) return options.storage;
+      try {
+        return typeof window !== "undefined" ? window.localStorage : null;
+      } catch (err) {
+        return null; // storage can be blocked; a mute then lasts for this visit
+      }
+    }
+
+    function isMuted(id) {
+      return muted.has(String(id));
+    }
+
+    function toggleMute(channel) {
+      var id = String(channel.id);
+      if (muted.has(id)) muted.delete(id); else muted.add(id);
+      if (server) writeMuted(store(), server.id, muted);
+      renderChannels();
+      return muted.has(id);
+    }
+
     function smallButton(label, title, handler) {
       var button = document.createElement("button");
       button.className = "secondary small";
@@ -444,7 +467,8 @@
       state.channels.forEach(function (channel) {
         var item = document.createElement("li");
         var isVoice = channel.kind === "voice";
-        item.className = "channel " + channel.kind + (channel.id === state.current ? " current" : "");
+        var silent = !isVoice && isMuted(channel.id);
+        item.className = "channel " + channel.kind + (channel.id === state.current ? " current" : "") + (silent ? " muted" : "");
         if (editing && editing.id === channel.id) {
           item.append(nameEditor(channel.name, function (name) {
             channelAction({ action: "rename", id: channel.id, name: name });
@@ -461,9 +485,13 @@
         label.textContent = glyph ? channel.name : (isVoice ? "Voice  " : "#  ") + channel.name;
         if (glyph) row.append(glyph);
         row.append(label);
-        item.setAttribute("aria-label", (isVoice ? "Voice channel " : "Text channel ") + channel.name);
+        item.setAttribute("aria-label", (isVoice ? "Voice channel " : "Text channel ") + channel.name + (silent ? ", muted" : ""));
+        if (silent && typeof PPNIcons !== "undefined") {
+          var bell = PPNIcons.node("bell-off");
+          if (bell) { bell.classList.add("muted-mark"); row.append(bell); }
+        }
         var unread = buffer(channel.id).unread;
-        if (!isVoice && unread && channel.id !== state.current) {
+        if (showsUnread(channel, unread, state.current, silent)) {
           var badge = document.createElement("span");
           badge.className = "unread";
           badge.textContent = unread > 99 ? "99+" : String(unread);
@@ -477,6 +505,15 @@
           joinButton.classList.add("join");
           if (inHere) joinButton.classList.add("in");
           row.append(joinButton);
+        }
+        if (!isVoice) {
+          row.append(smallButton(silent ? "Unmute" : "Mute", silent ? "Show this channel's unread count again"
+            : "Stop counting unread messages here (only for you, on this PC)", function () { toggleMute(channel); }));
+          // Right-click is the quick way to the same thing.
+          row.addEventListener("contextmenu", function (event) {
+            event.preventDefault();
+            options.notice((toggleMute(channel) ? "Muted #" : "Unmuted #") + channel.name + ". Right-click it again to undo.");
+          });
         }
         if (isStaff()) {
           row.append(smallButton("Rename", "Rename this channel", function () {
@@ -540,11 +577,44 @@
       select: select,
       current: function () { return state.current; },
       voiceChannel: function () { return state.voice; },
+      muted: function () { return Array.from(muted); },
     };
   }
 
+  // Muted channels, per server, in this PC's storage for the page's address. A muted channel's messages still arrive and
+  // show when it is opened; it only stops showing a count. Damaged or missing storage gives no muted channels.
+  function mutedKey(serverId) {
+    return "ppn.muted." + serverId;
+  }
+
+  function readMuted(storage, serverId) {
+    try {
+      var list = JSON.parse((storage && storage.getItem(mutedKey(serverId))) || "[]");
+      if (!Array.isArray(list)) return new Set();
+      return new Set(list.filter(function (x) { return typeof x === "string" || typeof x === "number"; }).map(String));
+    } catch (err) {
+      return new Set();
+    }
+  }
+
+  function writeMuted(storage, serverId, set) {
+    try {
+      if (!storage) return;
+      if (set.size) storage.setItem(mutedKey(serverId), JSON.stringify(Array.from(set)));
+      else storage.removeItem(mutedKey(serverId));
+    } catch (err) {
+      // not saved; the mute still applies for this visit
+    }
+  }
+
+  // A count shows on a text channel that has unread messages, is not the one open, and is not muted.
+  function showsUnread(channel, unread, current, isMutedChannel) {
+    return channel.kind !== "voice" && unread > 0 && channel.id !== current && !isMutedChannel;
+  }
+
   var api = { create: create, encodingPlan: encodingPlan, preparePicture: preparePicture, dropTarget: dropTarget, hasFiles: hasFiles,
-              MAX_BYTES: MAX_BYTES, MAX_DROPPED: MAX_DROPPED };
+              readMuted: readMuted, writeMuted: writeMuted, showsUnread: showsUnread, MAX_BYTES: MAX_BYTES,
+              MAX_DROPPED: MAX_DROPPED };
   if (typeof window !== "undefined") window.PartyChat = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 })();

@@ -20,6 +20,7 @@
     home: '<path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/>',
     server: '<path d="M12 3l9 4.5-9 4.5-9-4.5z"/><path d="M3 12l9 4.5 9-4.5"/><path d="M3 16.5L12 21l9-4.5"/>',
     hash: '<path d="M5 9h15M4 15h15M10 3L8 21M16 3l-2 18"/>',
+    "bell-off": '<path d="M6 8a6 6 0 0112 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 003.4 0"/><path d="M3 3l18 18"/>',
     speaker: '<path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.5 8.5a5 5 0 010 7"/><path d="M19 6a8.5 8.5 0 010 12"/>',
     mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0"/><path d="M12 18v3M9 21h6"/>',
     "mic-off": '<path d="M3 3l18 18"/><path d="M9 9v2a3 3 0 005 2.1"/><path d="M15 9.3V6a3 3 0 00-5.6-1.5"/><path d="M5 11a7 7 0 0011.2 5.6M19 11a7 7 0 01-.6 2.8"/><path d="M12 18v3M9 21h6"/>',

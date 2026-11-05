@@ -628,6 +628,21 @@ async function main() {
     "document.getElementById('chatTitle').textContent === 'maps' && document.getElementById('messages').textContent.includes('a message in maps')")));
   check("and gives the other channel's reader an unread count instead of showing in their channel", await waitFor(() => host.evaluate(
     "document.getElementById('chatTitle').textContent === 'general' && !document.getElementById('messages').textContent.includes('a message in maps') && !!document.querySelector('#channelList .unread')")));
+
+  // 7b2. Muting a channel: the host right-clicks maps; its count goes, it is dimmed with a bell, and a new message there
+  // adds no count. The mute is kept on this PC for this server, and Unmute brings the count back.
+  const mapsItem = "[...document.querySelectorAll('#channelList .channel.text')].find(function (li) { return li.textContent.includes('maps'); })";
+  await host.evaluate(`${mapsItem}.querySelector('.channel-row').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))`);
+  check("right-clicking a channel mutes it: no count, dimmed, a bell, and the choice is saved", await waitFor(() => host.evaluate(
+    `(function () { var li = ${mapsItem}; return li.classList.contains('muted') && !li.querySelector('.unread') && !!li.querySelector('.muted-mark') &&
+       Object.keys(localStorage).some(function (k) { return k.indexOf('ppn.muted.') === 0; }); })()`)));
+  await sam.evaluate("(function () { document.getElementById('chatText').value = 'another in maps'; document.getElementById('chatForm').requestSubmit(); })()");
+  await waitFor(() => host.evaluate("[...document.querySelectorAll('#channelList .channel.text')].length > 0"));
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  check("a new message in a muted channel adds no count", await host.evaluate(`!${mapsItem}.querySelector('.unread')`));
+  await host.evaluate(`[...${mapsItem}.querySelectorAll('button')].find(function (b) { return b.textContent === 'Unmute'; }).click()`);
+  check("Unmute brings the count back", await waitFor(() => host.evaluate(
+    `!!${mapsItem}.querySelector('.unread') && !${mapsItem}.classList.contains('muted') && ${mapsItem}.querySelector('.unread').textContent === '2'`)));
   await sam.evaluate("[...document.querySelectorAll('#channelList .channel.text .channel-row')].find(function (r) { return r.textContent.includes('general'); }).click()");
 
   // 7c. Pictures: a big picture is dragged onto the window (onto the screens, not the chat: the whole window takes a drop)

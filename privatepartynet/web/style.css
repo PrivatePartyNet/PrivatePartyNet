@@ -27,6 +27,8 @@ html, body { overflow: hidden; }
 .channel.text .channel-row:hover { background: var(--surface-2); color: var(--text); }
 .channel.current .channel-row { background: var(--selected); color: var(--text); font-weight: 600; }
 .channel.voice .channel-row { cursor: default; }
+.channel.muted .channel-name { opacity: 0.7; }
+.channel .channel-row > .ic.muted-mark { opacity: 0.7; width: 14px; height: 14px; }
 .channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel .channel-row button.small { display: none; min-height: 22px; padding: 0 var(--sp-2); }
 .channel .channel-row:hover button.small, .channel .channel-row:focus-within button.small { display: inline-flex; }
