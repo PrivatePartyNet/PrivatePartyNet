@@ -211,7 +211,8 @@ def check_packaged_capture():
 
 def main():
     step("1. Unit tests")
-    run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], timeout=2700)  # about 20 minutes as of 3.1
+    tests = run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], timeout=2700)  # about 20 minutes as of 3.1
+    print("  " + "; ".join(line for line in tests.stderr.splitlines() if line.startswith(("Ran ", "OK"))), flush=True)
 
     step("2. Build the game network helper and package the app with PyInstaller")
     shutil.rmtree(ROOT / "build", ignore_errors=True)
