@@ -51,6 +51,18 @@ class PageScriptTests(unittest.TestCase):
                 self.assertRegex(text, r'href="(/static/)?ui\.css"')
                 self.assertLess(text.index("theme.css"), text.index("ui.css"), "the colors load before the components")
 
+    def test_every_window_follows_the_persons_own_look(self):
+        """Accent, text size and spacing (Settings, Appearance) reach every window: each loads appearance.js before the
+        script that applies it, and the party window asks the app for it (WindowApi.appearance)."""
+        for page, script in (("control.html", "appearance-ui.js"), ("room.html", "room.js"), ("dm.html", "dm.js"),
+                             ("about.html", "info.js"), ("how.html", "info.js")):
+            text = read(page)
+            with self.subTest(page=page):
+                self.assertRegex(text, r'src="(/static/)?appearance\.js"')
+                self.assertLess(text.index("appearance.js"), text.index(script))
+                self.assertTrue(re.search(r"\b(PPNAppearance|A)\.apply\(document", read(script)), f"{script} applies it")
+        self.assertIn("api.appearance()", read("room.js"))
+
     def test_the_party_server_serves_every_file_the_room_loads(self):
         from privatepartynet.server import STATIC_TYPES
 

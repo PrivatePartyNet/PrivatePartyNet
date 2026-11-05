@@ -172,7 +172,8 @@ class WindowApi:
     def open_viewer(self, path):
         if not isinstance(path, str) or not path.startswith("/join?token=") or any(c in path for c in "\\\r\n\t "):
             return {"ok": False, "message": "That window cannot be opened."}
-        api = WindowApi(self._origin, appearance=self._appearance)  # a pop-out shows one screen; the member's own window keeps the chat
+        # a pop-out shows one screen, in this person's look; the member's own window keeps the chat
+        api = WindowApi(self._origin, appearance=self._appearance)
         child = webview.create_window("PrivatePartyNet screen", url=self._origin + path, width=960, height=540, js_api=api)
         api._attach(child)
         self._children.append(child)

@@ -4,7 +4,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import privatepartynet.app as app_module
 from privatepartynet.app import Controller, WindowApi, webview_options
 from privatepartynet.settings import load_settings
 
@@ -60,7 +62,23 @@ class WindowApiTests(unittest.TestCase):
 
     def test_what_the_page_may_call_is_only_what_is_meant(self):
         public = {name for name in dir(WindowApi) if not name.startswith("_")}
-        self.assertEqual(public, {"open_viewer", "close_window", "set_fullscreen", "keep_chat", "keep_blob"})
+        self.assertEqual(public, {"open_viewer", "close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance"})
+
+    def test_a_party_page_reads_this_persons_look_and_nothing_else(self):
+        """The party window, the host's or a member's, follows this person's own accent, text size and spacing."""
+        look = {"accent": "#16a34a", "text_scale": 115, "density": "compact"}
+        self.assertEqual(WindowApi("https://192.168.0.5:8765", appearance=lambda: look).appearance(), look)
+        self.assertIsNone(WindowApi("http://127.0.0.1:1").appearance(), "a window made without it gets nothing")
+
+    def test_a_pop_out_follows_the_same_look(self):
+        look = {"accent": None, "text_scale": 100, "density": "default"}
+        api = WindowApi("http://127.0.0.1:1", appearance=lambda: look)
+        api._window = FakeWindow()
+        made = []
+        with mock.patch.object(app_module.webview, "create_window",
+                               side_effect=lambda *a, **k: made.append(k["js_api"]) or FakeWindow()):
+            self.assertTrue(api.open_viewer("/join?token=abc")["ok"])
+        self.assertEqual(made[0].appearance(), look)
 
     def test_closing_the_window_destroys_it(self):
         api, window = self.make()
@@ -200,12 +218,12 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(load_settings(self.folder)["name"], "Kitchen PC")
 
     def test_the_theme_is_remembered_and_checked(self):
+        self.assertEqual(self.controller.state()["theme"], "dark", "dark until the person picks another (K, 2026-11-04)")
+        self.assertTrue(self.controller.set_theme("system")["ok"])
         self.assertEqual(self.controller.state()["theme"], "system")
-        self.assertTrue(self.controller.set_theme("dark")["ok"])
-        self.assertEqual(self.controller.state()["theme"], "dark")
-        self.assertEqual(load_settings(self.folder)["theme"], "dark")
+        self.assertEqual(load_settings(self.folder)["theme"], "system")
         self.assertFalse(self.controller.set_theme("neon")["ok"])
-        self.assertEqual(self.controller.state()["theme"], "dark")
+        self.assertEqual(self.controller.state()["theme"], "system")
 
     def test_a_theme_change_reaches_a_running_party(self):
         self.controller.start("Desk", free_port())
