@@ -68,6 +68,33 @@ class ShellTests(unittest.TestCase):
         public = {name for name in dir(WindowApi) if not name.startswith("_")}
         self.assertEqual(set(ROOM_CALLS), public)
 
+    def test_your_server_is_on_the_rail_for_good_once_made(self):
+        # K, November 5th: "When, I, or anybody else start a new server ... it should permanently go on their list"
+        self.assertEqual(self.controller.shell_state()["servers"], [], "no server of your own yet")
+        self.assertTrue(self.controller.create_server("Friday games", "Desk", free_port())["ok"])
+        (own,) = self.controller.shell_state()["servers"]
+        self.assertEqual((own["key"], own["own"], own["name"], own["state"]), ("own", True, "Friday games", "open"))
+        self.controller.stop()
+        (own,) = self.controller.shell_state()["servers"]
+        self.assertEqual((own["key"], own["name"], own["state"]), ("own", "Friday games", "stopped"),
+                         "stopped, it stays on the rail with its name")
+        self.assertTrue(self.controller.rename_server("Saturday")["ok"])
+        self.assertEqual(self.controller.server_name(), "Saturday", "renamed while stopped, kept with the server")
+        self.controller.start("Desk", free_port())
+        self.assertEqual(self.controller._party.party_name, "Saturday")
+
+    def test_your_server_starts_with_the_app_unless_turned_off(self):
+        self.controller.create_server("Mine", "Desk", free_port())
+        self.controller.stop()
+        self.controller.start_saved()
+        self.assertIsNotNone(self.controller._party, "on by default")
+        self.assertNotIn(True, [e.get("select") for e in self.events() if e["type"] == "open"][-1:],
+                         "starting with the app does not jump to it")
+        self.controller.stop()
+        self.controller.set_server_autostart(False)
+        self.controller.start_saved()
+        self.assertIsNone(self.controller._party)
+
     def test_your_party_is_on_the_rail_while_it_runs(self):
         self.assertTrue(self.controller.start("Desk", free_port())["ok"])
         (opened,) = self.events()
@@ -97,22 +124,34 @@ class ShellTests(unittest.TestCase):
 
     def test_a_host_that_can_open_in_a_frame_joins_on_the_rail(self):
         url = "https://192.168.1.20:8765/join?token=abc"
-        self.controller._join({"url": url, "name": "Kay's party", "pins": ("a" * 64,), "embed": True})
+        self.controller._join({"url": url, "name": "Kay's server", "pins": ("a" * 64,), "embed": True, "key": "joined-k"})
         (opened,) = self.events()
-        self.assertEqual((opened["key"], opened["name"], opened["own"]), ("join:https://192.168.1.20:8765", "Kay's party", False))
+        self.assertEqual((opened["key"], opened["name"], opened["own"]), ("joined-k", "Kay's server", False))
         self.assertIn("token=abc", opened["url"])
         self.assertIn("feed_token=", opened["url"], "the member's own screen feed comes along")
-        self.assertIn("join:https://192.168.1.20:8765", self.controller._party_windows, "an update waits for the call")
+        self.assertIn("joined-k", self.controller._party_windows, "an update waits for the call")
         self.assertTrue(self.controller._update_busy())
-        self.controller.room_call("join:https://192.168.1.20:8765", "close_window", [])
+        self.controller.room_call("joined-k", "close_window", [])
         self.assertEqual(self.controller._party_windows, set())
 
-    def test_an_older_host_opens_in_a_window_of_its_own(self):
-        made = []
-        with mock.patch.object(app.webview, "create_window", lambda *a, **k: made.append(k["url"]) or FakeWindow()):
-            self.controller._join({"url": "https://192.168.1.20:8765/join?token=abc", "name": "Old", "pins": ("a" * 64,)})
-        self.assertEqual(len(made), 1)
-        self.assertEqual(self.events(), [])
+    def test_a_host_that_does_not_say_embed_still_opens_in_its_place_never_a_window(self):
+        # K, November 5th: "be sure that PPN never exists in more than one window". A 3.3.0 host leaves "embed" out of a
+        # returning member's answer and its room opens here fine; one too old to sign in gets a card from the rail.
+        self.controller._join({"url": "https://192.168.1.20:8765/join?token=abc", "name": "Old", "pins": ("a" * 64,),
+                               "key": "joined-old"})
+        (opened,) = self.events()
+        self.assertEqual((opened["type"], opened["key"]), ("open", "joined-old"))
+
+    def test_a_room_hands_its_server_this_persons_picture(self):
+        gif = __import__("base64").b64encode(b"GIF89a" + b"\x00" * 8).decode()
+        self.assertTrue(self.controller.set_picture(gif)["ok"])
+        self.controller.start("Desk", free_port())
+        picture = self.controller.room_call("own", "my_picture", [])
+        self.assertEqual(picture["data"], gif)
+        self.assertEqual(self.controller.shell_state()["picture"], picture["hash"])
+        self.assertFalse(self.controller.set_picture("PHN2Zz4=")["ok"], "an SVG is not a picture here")
+        self.assertTrue(self.controller.set_picture("")["ok"])
+        self.assertEqual(self.controller.room_call("own", "my_picture", []), {"hash": None, "data": ""})
 
     def test_about_how_and_messages_open_in_the_window(self):
         self.controller.open_about()

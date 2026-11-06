@@ -75,7 +75,7 @@
   // Before sending a file of `size` bytes: "" when the server's limits allow it, else why not (the server checks too).
   function fileProblem(size, storage) {
     if (!storage) return "";
-    if (storage.files === false) return "This party keeps no files.";
+    if (storage.files === false) return "This server keeps no files.";
     if (storage.limit && size > storage.limit) return "Files can be up to " + humanSize(storage.limit) + " on this server.";
     if (storage.cap && storage.used + size > storage.cap) {
       return "This server's storage is full (" + humanSize(storage.used) + " of " + humanSize(storage.cap) +
@@ -136,7 +136,8 @@
     var el = options.el;
     var state = {
       channels: [],
-      current: null,
+      current: null, // the text channel whose chat is open
+      viewing: null, // the voice channel being looked at instead (its screens), or null when the chat is shown
       voice: null,
       role: "member",
       meId: null,
@@ -153,7 +154,7 @@
     var keepTimer = null;
 
     // Hand what arrives to this PC's own store, in batches, through options.keep (the app's bridge). The host's own
-    // window has no keep: the party there stores everything itself.
+    // room has no keep: the server there stores everything itself.
     function keep(list) {
       if (!options.keep || !server) return;
       Array.prototype.push.apply(toKeep, list);
@@ -217,6 +218,10 @@
         if (!channelById(id)) state.buffers.delete(id);
       });
       if (state.voice && !channelById(state.voice)) state.voice = null;
+      if (state.viewing && !channelById(state.viewing)) {
+        state.viewing = null;
+        if (options.onSelect) options.onSelect(state.current);
+      }
       renderChannels();
       renderMessages();
     }
@@ -259,14 +264,28 @@
 
     // --- choosing a channel --------------------------------------------------------------------------------
 
+    // A text channel's chat goes in the middle of the room (K, November 5th: "chats should be tied specifically to a
+    // text channel").
     function select(id) {
       var channel = channelById(id);
       if (!channel || channel.kind !== "text") return;
       state.current = id;
+      state.viewing = null;
       buffer(id).unread = 0;
       renderChannels();
       renderMessages();
+      renderComposer();
+      if (options.onSelect) options.onSelect(id);
       el.chatText.focus();
+    }
+
+    // A voice channel's screens go in the middle instead; the chat waits where it was.
+    function view(id) {
+      var channel = channelById(id);
+      if (!channel || channel.kind !== "voice") return;
+      state.viewing = id;
+      renderChannels();
+      if (options.onView) options.onView(id);
     }
 
     // --- messages ------------------------------------------------------------------------------------------
@@ -640,7 +659,8 @@
         var item = document.createElement("li");
         var isVoice = channel.kind === "voice";
         var silent = !isVoice && isMuted(channel.id);
-        item.className = "channel " + channel.kind + (channel.id === state.current ? " current" : "") + (silent ? " muted" : "");
+        var shown = isVoice ? channel.id === state.viewing : channel.id === state.current && !state.viewing;
+        item.className = "channel " + channel.kind + (shown ? " current" : "") + (silent ? " muted" : "");
         if (editing && editing.id === channel.id) {
           item.append(nameEditor(channel.name, function (name) {
             channelAction({ action: "rename", id: channel.id, name: name });
@@ -663,16 +683,19 @@
           if (bell) { bell.classList.add("muted-mark"); row.append(bell); }
         }
         var unread = buffer(channel.id).unread;
-        if (showsUnread(channel, unread, state.current, silent)) {
+        if (showsUnread(channel, unread, state.viewing ? null : state.current, silent)) {
           var badge = document.createElement("span");
           badge.className = "unread";
           badge.textContent = unread > 99 ? "99+" : String(unread);
           row.append(badge);
         }
         // Voice is joined with this button only, never by clicking the channel's name: a stray click must not open the mic.
-        if (isVoice && state.role !== "guest") {
+        // Clicking the name shows the channel (who is in it, and its screens once you are in it). Guests join to watch and
+        // listen; their microphone never opens.
+        if (isVoice) {
           var inHere = state.voice === channel.id;
-          var joinButton = smallButton(inHere ? "Leave" : "Join", inHere ? "Leave this voice channel" : "Join this voice channel",
+          var joinButton = smallButton(inHere ? "Leave" : "Join", inHere ? "Leave this voice channel"
+            : state.role === "guest" ? "Join to watch and listen (guests do not talk)" : "Join this voice channel",
             function () { options.onVoice(inHere ? null : channel.id, channel.name); });
           joinButton.classList.add("join");
           if (inHere) joinButton.classList.add("in");
@@ -700,6 +723,9 @@
         if (!isVoice) {
           row.addEventListener("click", function () { select(channel.id); });
         } else {
+          row.addEventListener("click", function (event) {
+            if (!event.target.closest("button")) view(channel.id);
+          });
           var people = occupants(channel.id);
           if (people.length) {
             var list = document.createElement("ul");
@@ -712,6 +738,14 @@
               who.textContent = person.name + (person.id === state.meId ? " (you)" : "");
               if (options.avatar) li.append(options.avatar(person.name, person.id));
               li.append(who);
+              var screens = person.shares ? person.shares.length : 0;
+              if (screens) {
+                var live = document.createElement("span");
+                live.className = "live";
+                live.textContent = screens > 1 ? "LIVE " + screens : "LIVE";
+                live.title = person.name + " is sharing " + (screens > 1 ? screens + " screens" : "a screen") + " in this channel";
+                li.append(live);
+              }
               list.append(li);
             });
             item.append(list);
@@ -747,7 +781,10 @@
       setMembers: setMembers,
       send: send,
       select: select,
+      view: view,
       current: function () { return state.current; },
+      viewing: function () { return state.viewing; },
+      occupants: occupants,
       voiceChannel: function () { return state.voice; },
       muted: function () { return Array.from(muted); },
       // what the one window's rail shows: unread messages in the text channels that are not muted
@@ -761,7 +798,10 @@
           renderChannels();
         }
       },
+      // pictures came or changed: draw the list and the messages again with them
+      refresh: function () { renderChannels(); renderMessages(); },
       channelName: function (id) { var c = channelById(id); return c ? c.name : ""; },
+      channel: channelById,
       setStorage: function (info) { storage = info || null; },
       storage: function () { return storage; },
       // someone deleted a message: it goes from the list (copies saved on PCs stay there)

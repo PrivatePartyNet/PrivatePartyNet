@@ -42,57 +42,58 @@ class FakeWindow:
 
 
 class WindowApiTests(unittest.TestCase):
-    def make(self):
-        api = WindowApi("http://127.0.0.1:1")
-        window = FakeWindow()
-        api._window = window
-        return api, window
-
-    def test_fullscreen_turns_the_window_on_once_and_off_once(self):
-        api, window = self.make()
-        self.assertEqual(api.set_fullscreen(True), {"ok": True, "fullscreen": True})
-        self.assertEqual(api.set_fullscreen(True), {"ok": True, "fullscreen": True})
-        self.assertEqual(window.toggles, 1, "asking again for what is already so does nothing")
-        self.assertEqual(api.set_fullscreen(False), {"ok": True, "fullscreen": False})
-        self.assertEqual(window.toggles, 2)
-        api.set_fullscreen(False)
-        self.assertEqual(window.toggles, 2)
+    def test_fullscreen_is_the_whole_windows(self):
+        asked = []
+        api = WindowApi("http://127.0.0.1:1", fullscreen=lambda on: asked.append(on) or {"ok": True, "fullscreen": on})
+        self.assertEqual(api.set_fullscreen(1), {"ok": True, "fullscreen": True})
+        self.assertEqual(asked, [True])
 
     def test_fullscreen_without_a_window_says_so(self):
         self.assertEqual(WindowApi("http://127.0.0.1:1").set_fullscreen(True), {"ok": False, "fullscreen": False})
 
     def test_what_the_page_may_call_is_only_what_is_meant(self):
         public = {name for name in dir(WindowApi) if not name.startswith("_")}
-        self.assertEqual(public, {"open_viewer", "close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance"})
+        self.assertEqual(public, {"close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture",
+                                  "server_look"})
+        self.assertNotIn("open_viewer", public, "no pop-out windows: PrivatePartyNet is one window")
 
     def test_a_party_page_reads_this_persons_look_and_nothing_else(self):
-        """The party window, the host's or a member's, follows this person's own accent, text size and spacing."""
+        """The server's room, the host's or a member's, follows this person's own accent, text size and spacing."""
         look = {"accent": "#16a34a", "text_scale": 115, "density": "compact"}
         self.assertEqual(WindowApi("https://192.168.0.5:8765", appearance=lambda: look).appearance(), look)
-        self.assertIsNone(WindowApi("http://127.0.0.1:1").appearance(), "a window made without it gets nothing")
+        self.assertIsNone(WindowApi("http://127.0.0.1:1").appearance(), "a room made without it gets nothing")
 
-    def test_a_pop_out_follows_the_same_look(self):
-        look = {"accent": None, "text_scale": 100, "density": "default"}
-        api = WindowApi("http://127.0.0.1:1", appearance=lambda: look)
-        api._window = FakeWindow()
-        made = []
-        with mock.patch.object(app_module.webview, "create_window",
-                               side_effect=lambda *a, **k: made.append(k["js_api"]) or FakeWindow()):
-            self.assertTrue(api.open_viewer("/join?token=abc")["ok"])
-        self.assertEqual(made[0].appearance(), look)
+    def test_a_room_gets_this_persons_picture_to_hand_its_server(self):
+        picture = {"hash": "a" * 64, "data": "R0lGODlh"}
+        self.assertEqual(WindowApi("http://127.0.0.1:1", picture=lambda: picture).my_picture(), picture)
+        self.assertEqual(WindowApi("http://127.0.0.1:1", picture=lambda: None).my_picture(), {"hash": None, "data": ""})
+
+    def test_a_room_says_its_servers_name_and_icon_checked(self):
+        seen = []
+        api = WindowApi("https://192.168.0.5:8765", look=lambda name, data: seen.append((name, data)))
+        gif = __import__("base64").b64encode(b"GIF89a" + b"\x00" * 10).decode()
+        self.assertTrue(api.server_look(" Friday \x07games ", gif)["ok"])
+        self.assertEqual(seen[-1], ("Friday games", b"GIF89a" + b"\x00" * 10))
+        self.assertTrue(api.server_look("No icon", "")["ok"])
+        self.assertEqual(seen[-1], ("No icon", None))
+        for name, icon in (("", ""), ("x", "not base64!"), ("x", __import__("base64").b64encode(b"<svg/>").decode()),
+                           (5, ""), ("x", "A" * (3 * 1024 * 1024))):
+            self.assertFalse(api.server_look(name, icon)["ok"], (name, icon[:10] if isinstance(icon, str) else icon))
+        self.assertEqual(len(seen), 2)
 
     def test_a_members_copy_keeps_what_a_file_was_but_not_its_bytes(self):
         message = {"id": "ab12", "channel": "c1", "ts": 1000.0, "seq": 3, "user": "u1", "name": "Sam", "text": "",
-                   "file": {"id": "0" * 32, "name": "maps.zip", "size": 5000, "type": "application/zip"}}
+                   "file": {"id": "0" * 32, "name": "maps.zip", "size": 5000, "type": "application/zip"}}
         channel, record = WindowApi._clean(message)
         self.assertEqual(record["body"]["file"], {"id": "0" * 32, "name": "maps.zip", "size": 5000, "type": "application/zip"})
         for bad in ({"id": "x", "size": 1}, {"id": "0" * 32, "size": -1}, {"id": "0" * 32, "size": True}, "file"):
             self.assertIsNone(WindowApi._clean(dict(message, file=bad)), bad)
 
-    def test_closing_the_window_destroys_it(self):
-        api, window = self.make()
-        self.assertTrue(api.close_window()["ok"])
-        self.assertTrue(window.destroyed)
+    def test_closing_a_room_takes_it_off_the_rail(self):
+        closed = []
+        self.assertTrue(WindowApi("http://127.0.0.1:1", on_close=lambda: closed.append(1)).close_window()["ok"])
+        self.assertEqual(closed, [1])
+        self.assertFalse(WindowApi("http://127.0.0.1:1").close_window()["ok"])
 
 
 class WebviewOptionsTests(unittest.TestCase):
@@ -474,7 +475,7 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         from privatepartynet import connect
 
         invite = connect.decode_invite(self.host.invite()["invite"])
-        self.assertEqual(invite["name"], "Host")
+        self.assertEqual(invite["name"], "Host's server", "an invite names the server, which is its own thing now")
         self.assertEqual(invite["password"], self.host._passcode)
         self.assertTrue(invite["candidates"])
         self.assertEqual(invite["fingerprint"], connect.certificate_fingerprint(self.host._cert_pem))
@@ -496,7 +497,7 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         record = self.guest._store.server("joined-" + invite["server_id"])
         self.assertEqual((record["fingerprint"], record["spki"]), (whole, spki))
 
-    def test_opening_a_party_window_pins_its_origin_first(self):
+    def test_opening_a_server_pins_its_origin_first(self):
         from unittest import mock
 
         from privatepartynet import windowpins
@@ -507,17 +508,13 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         url = f"https://127.0.0.1:{self.host._party.port}/join?token=x"
         guest = Controller(data_folder=self.folder + "/window", discovery_port=0, grabber=FakeGrabber())
         self.addCleanup(guest.shutdown)
-        seen = []
-
-        def create_window(*args, **kwargs):
-            seen.append(windowpins.allowed(kwargs["url"], self.host._cert_pem))
-            return mock.MagicMock()
-
-        with mock.patch.object(app.webview, "create_window", create_window):
-            guest._join({"url": url, "name": "Host", "pins": (whole, spki)})
-            guest._join({"url": url.replace("token=x", "token=y"), "name": "Host",
-                         "cert": self.host._cert_pem})  # a Nearby accept carries the certificate itself
-        self.assertEqual(seen, [True, True])
+        guest.use_shell(mock.MagicMock())
+        guest._join({"url": url, "name": "Host", "pins": (whole, spki), "embed": True, "key": "joined-a"})
+        self.assertTrue(windowpins.allowed(url, self.host._cert_pem))
+        windowpins.forget_all()
+        guest._join({"url": url.replace("token=x", "token=y"), "name": "Host", "embed": True, "key": "joined-a",
+                     "cert": self.host._cert_pem})  # a Nearby accept carries the certificate itself
+        self.assertTrue(windowpins.allowed(url, self.host._cert_pem))
 
     def test_there_is_no_invite_when_no_party_is_open(self):
         self.assertFalse(self.guest.invite()["ok"])
@@ -534,26 +531,59 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         from privatepartynet.cert import pins_of_pem
         self.assertEqual(set(opened["pins"]), set(pins_of_pem(self.host._cert_pem)),
                          "the window is pinned to the certificate the join checked")
-        self.assertEqual(opened["name"], "Host")
+        self.assertEqual(opened["name"], "Host's server")
         self.assertTrue(opened["embed"], "a host of this version says its room can open inside the one window")
+        self.assertEqual(opened["key"], "joined-" + self.host._party.server_id, "its place on the list")
         self.assertEqual(self.guest.join_status()["state"], "joined")
         self.assertEqual(len(self.opened), 1, "the window opens once")
 
-    def test_the_party_is_remembered_and_can_be_asked_again(self):
+    def test_the_server_stays_on_the_list_and_comes_back_in_the_one_window(self):
+        # K, November 5th: joining should add the server to the list, it should stay there, and it must never open a
+        # second window. A returning member's answer used to leave out "embed", so their room opened in a window.
         self.guest.join_invite(self.local_invite())
         self.wait_state(self.guest, "waiting")
         (request,) = self.host._party.pending_requests()
         self.host._party.decide_request(self.host._party.host_id, request["id"], True)
         self.wait_state(self.guest, "joined")
-        self.host._party.redeem(self.opened[-1]["url"].split("token=")[1])  # the window would use it; here the test does
+        self.host._party.redeem(self.opened[-1]["url"].split("token=")[1])  # the room would use it; here the test does
         (listed,) = self.guest.joined_servers()
-        self.assertEqual(listed["name"], "Host")
-        self.assertTrue(self.guest.rejoin(listed["key"])["ok"])
-        self.assertEqual(self.wait_state(self.guest, "joined")["state"], "joined",
-                         "someone let in before comes back with no one having to say yes")
+        self.assertEqual((listed["name"], listed["key"]), ("Host's server", "joined-" + self.host._party.server_id))
+        (rail,) = self.guest._rail_servers()
+        self.assertEqual((rail["key"], rail["own"], rail["state"]), (listed["key"], False, "offline"))
+
+        self.assertTrue(self.guest.connect_server(listed["key"])["ok"])
+        self.assertEqual(self.guest._rail_servers()[0]["state"], "connecting")
+        deadline = time.monotonic() + 10
+        while len(self.opened) < 2 and time.monotonic() < deadline:
+            self.guest._check_connecting()
+            time.sleep(0.1)
+        self.assertEqual(len(self.opened), 2, "someone let in before comes back with no one having to say yes")
+        again = self.opened[-1]
+        self.assertEqual(again["key"], listed["key"])
+        self.assertTrue(again["embed"], "and their room opens inside the one window")
         self.assertEqual(self.host._party.pending_requests(), [])
+
+        self.guest._server_look(listed["key"], "Friday games", b"GIF89a" + b"\x00" * 8)
+        (listed,) = self.guest.joined_servers()
+        self.assertEqual(listed["name"], "Friday games", "the room's name for its server is kept for the rail")
+        self.assertTrue(self.guest.server_icon(listed["key"])["src"].startswith("data:image/gif;base64,"))
+
         self.assertTrue(self.guest.forget_joined(listed["key"])["ok"])
         self.assertEqual(self.guest.joined_servers(), [])
+        self.assertEqual(self.guest._rail_servers(), [])
+
+    def test_a_server_that_cannot_be_reached_says_so_in_its_place(self):
+        self.guest._store.save_server("joined-gone", {"name": "Gone", "candidates": [["lan", "127.0.0.1", free_port()]],
+                                                      "password": "", "fingerprint": "0" * 64, "server_id": "",
+                                                      "joined_at": 1})
+        self.assertTrue(self.guest.connect_server("joined-gone")["ok"])
+        deadline = time.monotonic() + 30
+        while "joined-gone" in self.guest._connecting and time.monotonic() < deadline:
+            self.guest._check_connecting()
+            time.sleep(0.2)
+        (rail,) = self.guest._rail_servers()
+        self.assertEqual(rail["state"], "offline")
+        self.assertTrue(rail["message"])
 
     def test_the_second_time_the_person_keeps_the_role_they_were_given(self):
         self.guest.join_invite(self.local_invite())
@@ -704,7 +734,7 @@ class ReviewControllerTests(unittest.TestCase):
         view = self.one.state()["update"]
         self.assertEqual((view["automatic"], view["include_test"]), (True, True))
         self.assertTrue(self.one.start("Desk", free_port())["ok"])
-        self.assertEqual(self.one._update_busy(), "your party")
+        self.assertEqual(self.one._update_busy(), "your server")
         self.one.stop()
         self.assertEqual(self.one._update_busy(), "")
         self.one._game = {"key": "own"}

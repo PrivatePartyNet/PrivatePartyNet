@@ -1,10 +1,10 @@
 /*
- * A party room shown inside the one window (?embedded=1&shell=http://127.0.0.1:PORT). The room is on its party's own
- * address, so it cannot use the window's bridge to the app directly. This gives it window.pywebview.api with the
- * calls a party window may make; each call goes to the shell page by postMessage, addressed to the shell's origin only,
- * and its answer comes back the same way, accepted only from the frame's parent at that origin. Whatever else the shell
- * says (the person's look, the theme, whether this server is shown, a voice command, leave) arrives as a "ppn-shell"
- * event for room.js. A room in its own window (no shell) is left as it is.
+ * A server's room shown inside the one window (?embedded=1&shell=http://127.0.0.1:PORT). The room is on its server's
+ * own address, so it cannot use the window's bridge to the app directly. This gives it window.pywebview.api with the
+ * calls a room may make; each call goes to the shell page by postMessage, addressed to the shell's origin only, and its
+ * answer comes back the same way, accepted only from the frame's parent at that origin. Whatever else the shell says
+ * (the person's look, the theme, whether this server is shown, a voice command, leave) arrives as a "ppn-shell" event
+ * for room.js. A room opened anywhere else (a test browser) is left as it is.
  */
 (function (root, factory) {
   var api = factory();
@@ -13,7 +13,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var METHODS = ["open_viewer", "close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance"];
+  var METHODS = ["close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture", "server_look"];
   var TIMEOUT_MS = 20000;
 
   // The shell's origin from the room's address, or "" when the room is not inside the one window.

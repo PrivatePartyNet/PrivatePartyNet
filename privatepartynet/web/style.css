@@ -1,7 +1,8 @@
 /*
- * The party room: a sidebar of channels and voice controls on the left, the stage of shared screens in the middle, and a
- * panel for chat and members on the right. Components (buttons, fields, badges, menus) are in ui.css. The tile, handle and
- * focus-view rules in the stage section are what layout.js and room.js position things by; keep their names.
+ * A server's room: a sidebar of channels and voice controls on the left, the channel being looked at in the middle (a
+ * text channel's chat, or a voice channel's screens), and the members on the right. Components (buttons, fields, badges,
+ * menus) are in ui.css. The tile, handle and focus-view rules in the stage section are what layout.js and room.js position
+ * things by; keep their names.
  */
 html, body { overflow: hidden; }
 #app { display: grid; grid-template-columns: var(--sidebar-w, 252px) minmax(0, 1fr); height: 100vh; }
@@ -10,9 +11,29 @@ html, body { overflow: hidden; }
 /* --- the sidebar ------------------------------------------------------------------------------------------ */
 
 #sidebar { position: relative; display: flex; flex-direction: column; min-height: 0; background: var(--surface); border-right: 1px solid var(--border); z-index: 30; }
-#serverHead { display: flex; align-items: center; gap: var(--sp-3); height: 56px; padding: 0 var(--sp-4); flex: none; border-bottom: 1px solid var(--border); }
-#serverHead .mark { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; flex: none; background: linear-gradient(145deg, #3d86ff, #2145c9); color: #ffffff; box-shadow: var(--shadow-1); }
-#serverHead .mark .ic { width: 19px; height: 19px; stroke-width: 1.7; }
+#serverHead { display: flex; align-items: stretch; height: 56px; flex: none; border-bottom: 1px solid var(--border); }
+/* the server's name opens its menu, as Discord's does */
+.server-button { display: flex; align-items: center; gap: var(--sp-3); width: 100%; min-width: 0; min-height: 0; padding: 0 var(--sp-3) 0 var(--sp-4);
+  border: 0; border-radius: 0; background: transparent; color: var(--text); text-align: left; font-weight: 400; }
+.server-button:hover:not(:disabled), .server-button[aria-expanded="true"] { background: var(--surface-2); }
+.server-button .chev-down { flex: none; margin-left: auto; color: var(--muted); }
+.mark { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; flex: none; overflow: hidden;
+  background: linear-gradient(145deg, #3d86ff, #2145c9); color: #ffffff; box-shadow: var(--shadow-1); }
+.mark .ic { width: 19px; height: 19px; stroke-width: 1.7; }
+.mark.has-picture { background: var(--surface-2); }
+.mark img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mark.big { width: 64px; height: 64px; border-radius: 18px; }
+.mark.big .ic { width: 32px; height: 32px; }
+.server-menu { position: fixed; z-index: 120; }
+.server-menu[hidden] { display: none; }
+.server-panel { width: 360px; top: 64px; }
+.server-panel .field { margin-bottom: var(--sp-3); }
+.icon-row { display: flex; align-items: flex-start; gap: var(--sp-3); margin-bottom: var(--sp-2); }
+.icon-buttons { display: grid; gap: var(--sp-2); justify-items: start; }
+.icon-buttons .small { font-size: var(--fs-xs); }
+.file-pick { cursor: pointer; }
+.server-panel .problem { color: var(--danger); font-size: var(--fs-sm); margin: var(--sp-1) 0; }
+.server-panel .problem[hidden] { display: none; }
 .server-text { display: grid; min-width: 0; line-height: 1.2; }
 #partyName { font-family: var(--font-display); font-size: var(--fs-lg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #sidebarScroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-3) var(--sp-2); }
@@ -26,7 +47,8 @@ html, body { overflow: hidden; }
 .channel.text .channel-row { cursor: pointer; }
 .channel.text .channel-row:hover { background: var(--surface-2); color: var(--text); }
 .channel.current .channel-row { background: var(--selected); color: var(--text); font-weight: 600; }
-.channel.voice .channel-row { cursor: default; }
+.channel.voice .channel-row { cursor: pointer; }
+.channel.voice .channel-row:hover { background: var(--surface-2); color: var(--text); }
 .channel.muted .channel-name { opacity: 0.7; }
 .channel .channel-row > .ic.muted-mark { opacity: 0.7; width: 14px; height: 14px; }
 .channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -43,6 +65,10 @@ html, body { overflow: hidden; }
 .voice-people li .who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voice-people li.speaking { color: var(--text); }
 .voice-people li.speaking .avatar { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--success); }
+.voice-people li .live { margin-left: auto; font-size: 10px; padding: 1px 5px; }
+/* a person's picture, shown at any size in the round badge without being changed */
+.avatar.has-picture { background: var(--surface-2) !important; overflow: hidden; }
+.avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
 .channel-edit { display: flex; gap: var(--sp-1); padding: 2px var(--sp-1); }
 .channel-edit input { flex: 1; min-width: 0; min-height: 30px; }
 
@@ -78,6 +104,13 @@ html, body { overflow: hidden; }
 .split .chev { width: 34px; height: 36px; display: grid; place-items: center; padding: 0; border-radius: 0 var(--r-md) var(--r-md) 0; background: var(--success-fill); color: #ffffff; border-left: 1px solid rgba(0, 0, 0, 0.25); }
 .split .golive:hover:not(:disabled), .split .chev:hover:not(:disabled) { background: var(--success-fill); filter: brightness(1.1); }
 .split.live .golive, .split.live .chev { background: var(--danger-fill); }
+.split.off .golive, .split.off .chev { opacity: 0.55; }
+.split[hidden] { display: none; }
+.voice-tools { display: flex; align-items: center; gap: var(--sp-2); }
+/* the screens' tools belong to a voice channel's view */
+body[data-view="text"] #voiceTools { display: none; }
+#titleBlock strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#titleNote { font-size: var(--fs-sm); white-space: nowrap; }
 #top button.danger-ghost { min-height: 36px; }
 .popover { top: 64px; }
 
@@ -85,6 +118,9 @@ html, body { overflow: hidden; }
 
 #body { display: flex; flex: 1; min-height: 0; position: relative; }
 #stage { position: relative; flex: 1; min-width: 0; overflow: hidden; background: var(--stage-bg); }
+#stage[hidden], #chat[hidden] { display: none; }
+/* looking at a voice channel you are not in: who is there and the way in, never another channel's screens */
+#stage.elsewhere #tiles, #stage.elsewhere #focusView { display: none; }
 #tiles, #focusView, #guides { position: absolute; inset: 0; }
 #guides { pointer-events: none; z-index: 200; }
 .guide { position: absolute; background: var(--accent); opacity: 0.9; }
@@ -93,6 +129,13 @@ html, body { overflow: hidden; }
 #empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: var(--sp-2); margin: 0; padding: 40px; color: var(--muted); text-align: center; pointer-events: none; }
 #empty .ic { width: 44px; height: 44px; opacity: 0.45; margin-bottom: var(--sp-2); }
 #empty p:first-of-type { color: var(--text); font-family: var(--font-display); font-size: var(--fs-xl); font-weight: 600; }
+#empty button { pointer-events: auto; margin-top: var(--sp-2); }
+.voice-room { list-style: none; margin: var(--sp-3) 0 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: var(--sp-3);
+  pointer-events: auto; max-width: 640px; }
+.voice-room[hidden] { display: none; }
+.voice-room li { display: flex; flex-direction: column; align-items: center; gap: var(--sp-1); width: 96px; color: var(--text); font-size: var(--fs-sm); }
+.voice-room li .avatar { width: 64px; height: 64px; font-size: 24px; }
+.voice-room li span:not(.avatar):not(.live) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .tile { position: absolute; background: var(--video-bg); border-radius: var(--r-md); overflow: visible; user-select: none; -webkit-user-select: none; touch-action: none; box-shadow: var(--shadow-2); cursor: grab; }
 .tile.dragging { cursor: grabbing; box-shadow: var(--shadow-3); outline: 2px solid var(--accent); }
@@ -139,19 +182,11 @@ body.tile-fullscreen #app { grid-template-columns: 1fr; }
 #strip .tile .tools, #strip .handle, #primary .handle { display: none; }
 #strip .hidden-note { font-size: 11px; gap: 4px; padding: 6px; }
 
-/* a popped-out screen: nothing but the picture */
-body.viewer #top, body.viewer #side, body.viewer #statsbar, body.viewer #status, body.viewer #sidebar { display: none; }
-body.viewer #app { grid-template-columns: 1fr; }
-body.viewer #focusView { padding: 0; }
-body.viewer #primary .tile { border-radius: 0; box-shadow: none; cursor: default; }
-body.viewer #primary .tile .frame, body.viewer .hidden-note { border-radius: 0; }
+/* --- the right panel: join requests, your screens, then the members ---------------------------------------------- */
 
-/* --- the right panel: join requests, your screens, then chat and members ---------------------------------------------- */
-
-#side { position: relative; width: var(--side-w, 332px); display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--surface); }
+#side { position: relative; width: var(--side-w, 260px); display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--surface); }
+#side[hidden] { display: none; }
 #side > section { padding: var(--sp-3) var(--sp-4); }
-#side > .tabs { margin: var(--sp-3) var(--sp-3) 0; flex: none; }
-#tabChat.attn::after { content: ""; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: var(--yellow); }
 #requestsBox { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); border-bottom: 1px solid var(--border); }
 #mine { border-bottom: 1px solid var(--border); }
 #requestList, #myShares, #roster { list-style: none; margin: 0; padding: 0; }
@@ -161,7 +196,6 @@ body.viewer #primary .tile .frame, body.viewer .hidden-note { border-radius: 0; 
 #myShares li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 #people { flex: 1; min-height: 0; overflow-y: auto; }
-#people > h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } /* the tab already says Members */
 #roster li { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-2); border-radius: var(--r-md); }
 #roster li:hover { background: var(--surface-2); }
 #roster li.offline { opacity: 0.5; }
@@ -172,10 +206,9 @@ body.viewer #primary .tile .frame, body.viewer .hidden-note { border-radius: 0; 
 #roster li.speaking .avatar { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--success); }
 #roster li .more { min-height: 24px; }
 
-#chat { flex: 1; display: flex; flex-direction: column; min-height: 0; padding-bottom: var(--sp-3); }
-#chat h2 { margin-bottom: var(--sp-2); text-transform: none; letter-spacing: 0; font-size: var(--fs-md); color: var(--text); }
-#chat h2::before { content: "# "; color: var(--muted); }
-#messages { flex: 1; overflow: auto; min-height: 120px; display: flex; flex-direction: column; font-size: var(--fs-md); margin: 0 calc(-1 * var(--sp-2)); padding: 0 var(--sp-2); }
+/* a text channel's chat, in the middle of the room */
+#chat { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0 var(--sp-4) var(--sp-3); background: var(--surface); }
+#messages { flex: 1; overflow: auto; min-height: 120px; display: flex; flex-direction: column; font-size: var(--fs-md); margin: 0 calc(-1 * var(--sp-4)); padding: var(--sp-2) var(--sp-4) 0; }
 .message { display: flex; gap: var(--sp-3); padding: 2px var(--sp-2); border-radius: var(--r-md); margin-top: var(--sp-3); }
 .message.cont { margin-top: 0; }
 .message:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
@@ -235,11 +268,11 @@ body.viewer #primary .tile .frame, body.viewer .hidden-note { border-radius: 0; 
 
 @media (max-width: 1180px) {
   #app { grid-template-columns: var(--sidebar-w, 232px) minmax(0, 1fr); }
-  #side { width: var(--side-w, 288px); }
+  #side { width: var(--side-w, 232px); }
 }
-/* below this the chat panel slides over the screens instead of squeezing them; the top bar button hides it */
+/* below this the member list slides over the middle instead of squeezing it; the top bar button hides it */
 @media (max-width: 940px) {
-  #side { position: absolute; right: 0; top: 0; bottom: 0; z-index: 40; box-shadow: var(--shadow-3); width: min(var(--side-w, 320px), 92vw); }
+  #side { position: absolute; right: 0; top: 0; bottom: 0; z-index: 40; box-shadow: var(--shadow-3); width: min(var(--side-w, 260px), 92vw); }
 }
 @media (max-width: 860px) {
   #app { grid-template-columns: 1fr; }
@@ -253,10 +286,12 @@ body.viewer #primary .tile .frame, body.viewer .hidden-note { border-radius: 0; 
 }
 
 /* Files: the storage meter under the server's name, the limits for the owner and admins, and file cards in the chat. */
-.storage-meter { display: grid; gap: 5px; padding: var(--sp-2) var(--sp-4) var(--sp-3); border-bottom: 1px solid var(--border); font-size: var(--fs-xs); color: var(--muted); }
+/* The text wraps inside the sidebar however narrow it is dragged, and File limits goes to its own line (K, November 5th:
+   the one-line version ran past the sidebar's edge). */
+.storage-meter { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; min-width: 0; padding: var(--sp-2) var(--sp-4) var(--sp-3); border-bottom: 1px solid var(--border); font-size: var(--fs-xs); color: var(--muted); }
 .storage-meter[hidden] { display: none; }
-.storage-line { display: flex; align-items: center; gap: var(--sp-2); }
-.storage-line > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.storage-line { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--sp-2); row-gap: 2px; min-width: 0; }
+.storage-line > span { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
 .storage-meter button.link { min-height: 0; padding: 0; border: 0; background: none; color: var(--accent-ink); font-size: var(--fs-xs); font-weight: 600; cursor: pointer; }
 .storage-meter button.link:hover { text-decoration: underline; }
 .storage-meter button.link[hidden] { display: none; }

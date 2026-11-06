@@ -127,14 +127,15 @@ class Discovery:
         self._send("request", record["_address"])
         return True
 
-    def answer(self, peer_id, accept, url=None, cert=None, embed=False):
-        """Reply to an incoming request. url is the address the requester should open when accepting."""
+    def answer(self, peer_id, accept, url=None, cert=None, embed=False, server=""):
+        """Reply to an incoming request. url is the address the requester should open when accepting; `server` is the
+        server's id, so the requester keeps it in their list of servers."""
         with self._lock:
             address = self._incoming.pop(peer_id, None)
         if address is None:
             return False
         if accept:
-            self._send("accept", address, url=url, cert=cert, embed=1 if embed else 0)
+            self._send("accept", address, url=url, cert=cert, embed=1 if embed else 0, server=server)
         else:
             self._send("decline", address)
         return True
@@ -229,8 +230,11 @@ class Discovery:
                 cert = message.get("cert")
                 if not isinstance(cert, str) or len(cert) > 8192 or not cert.startswith("-----BEGIN CERTIFICATE-----"):
                     cert = ""
+                server = message.get("server")
+                if not isinstance(server, str) or not 8 <= len(server) <= 32 or any(c not in "0123456789abcdef" for c in server):
+                    server = ""
                 self.events.put(("accepted", {"id": peer_id, "name": name, "url": url, "cert": cert,
-                                              "embed": message.get("embed") == 1}))
+                                              "embed": message.get("embed") == 1, "server": server}))
         elif kind == "decline":
             with self._lock:
                 self._outgoing.pop(peer_id, None)

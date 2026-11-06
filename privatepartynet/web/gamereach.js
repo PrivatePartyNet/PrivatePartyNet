@@ -1,6 +1,6 @@
 /*
- * The control panel's "What party members can reach on this PC" menu, under Game network. Each group of Windows
- * services (file sharing, Remote Desktop, ...) is closed to party members unless it is ticked here; the app passes the
+ * The control panel's "What members of your servers can reach on this PC" menu, under Game network. Each group of Windows
+ * services (file sharing, Remote Desktop, ...) is closed to members unless it is ticked here; the app passes the
  * change to the game network helper at once. rows() is a pure function so the tests can run it in Node; the rest fills
  * in #gameReachList in the control panel.
  */

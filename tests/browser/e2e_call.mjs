@@ -323,7 +323,20 @@ async function main() {
   check("Alex connects to both members", await waitFor(() => alex.evaluate("document.getElementById('statsbar').dataset.connected === '2'")));
   check("Sam connects to both members", await waitFor(() => sam.evaluate("document.getElementById('statsbar').dataset.connected === '2'")));
 
-  // 6. Alex goes live. Everyone sees the LIVE badge and a tile for Alex.
+  // 6. Screens belong to a voice channel (K, November 5th). Outside one, Go Live only says so; then all three join
+  // Voice 1, and joining shows the channel, where its screens are.
+  check("a text channel's chat is in the middle when the room opens", await sam.evaluate(
+    "document.body.dataset.view === 'text' && !document.getElementById('chat').hidden && document.getElementById('stage').hidden && document.getElementById('titleText').textContent === 'general'"));
+  await alex.evaluate("document.getElementById('goLive').click()");
+  check("Go Live outside a voice channel says to join one, and shares nothing", await waitFor(() => alex.evaluate(
+    "document.getElementById('status').textContent.includes('Join a voice channel first') && !document.querySelectorAll('#myShares li').length")));
+  const joinVoice = (tab) => tab.evaluate(`[...document.querySelectorAll('#channelList .channel.voice .channel-row button')].find(function (b) { return b.textContent === 'Join'; }).click()`);
+  for (const tab of [alex, sam, host]) await joinVoice(tab);
+  check("joining a voice channel shows it in the middle", await waitFor(() => sam.evaluate(
+    "document.body.dataset.view === 'voice' && !document.getElementById('stage').hidden && document.getElementById('chat').hidden && document.getElementById('titleText').textContent === 'Voice 1'")));
+  check("all three are in Voice 1", await waitFor(() => host.evaluate("document.querySelectorAll('#channelList .voice-people li').length === 3")));
+
+  // Alex goes live. Everyone sees the LIVE badge and a tile for Alex.
   await alex.evaluate("document.getElementById('goLive').click()");
   check("Alex is marked LIVE everywhere", await waitFor(async () =>
     (await host.evaluate("document.getElementById('roster').textContent.includes('LIVE')")) &&
@@ -390,9 +403,7 @@ async function main() {
   check("the bar reads this PC's CPU", await waitFor(() => host.evaluate("document.getElementById('cpuChip').textContent.includes('%')")));
   check("the upscale readout shows a live share", await waitFor(() => sam.evaluate(
     "!document.getElementById('upscaleNote').hidden && document.getElementById('upscaleNote').textContent.includes('CPU now')")));
-  check("each received screen has a Pop out button", await sam.evaluate("[...document.querySelectorAll('#tiles .tile .popout')].length > 0"));
-  await sam.evaluate("document.querySelector('#tiles .tile .popout').click()");
-  check("Pop out explains itself outside the app", await waitFor(() => sam.evaluate("document.getElementById('status').textContent.includes('Pop out needs the PrivatePartyNet app')")));
+  check("no screen offers a window of its own: PrivatePartyNet is one window", await sam.evaluate("!document.querySelector('.tile .popout')"));
 
   // The two views. Clicking a screen makes it big and puts the others in a strip of previews along the bottom.
   const tileSel = (key) => `.tile[data-key="${key}"]`;
@@ -509,8 +520,8 @@ async function main() {
   check("the host captures its screen smaller once its viewers need less", smaller, String(await host.evaluate(lastFeedHeight)));
   if (!smaller) console.log("   decision inputs:", await host.evaluate("window.PartyDebug()"));
   check("and Sam still receives the host's frames", await waitFor(() => sam.evaluate("[...document.querySelectorAll('#peerChips .chip')].some(c => c.querySelector('.cname').textContent === 'Host' && c.dataset.downFps)"), 20_000));
-  check("a received stream's tile has settings, pop out and fullscreen", await sam.evaluate(`document.querySelectorAll('${tileSel(alexKey)} .tools .tool').length === 3 && !!document.querySelector('${tileSel(alexKey)} .tool.settings') && !!document.querySelector('${tileSel(alexKey)} .tool.popout') && !!document.querySelector('${tileSel(alexKey)} .tool.fullscreen')`));
-  check("the host's own tile has settings and fullscreen but no pop out", await host.evaluate(`document.querySelectorAll('${tileSel(ownKey)} .tools .tool').length === 2 && !document.querySelector('${tileSel(ownKey)} .tool.popout')`));
+  check("a received stream's tile has settings and fullscreen", await sam.evaluate(`document.querySelectorAll('${tileSel(alexKey)} .tools .tool').length === 2 && !!document.querySelector('${tileSel(alexKey)} .tool.settings') && !!document.querySelector('${tileSel(alexKey)} .tool.fullscreen')`));
+  check("and so does the host's own tile", await host.evaluate(`document.querySelectorAll('${tileSel(ownKey)} .tools .tool').length === 2`));
   await sam.evaluate(`document.querySelector('${tileSel(alexKey)} .tool.settings').click()`);
   check("the panel sits fully inside the window, wherever the tile is", await sam.evaluate(`(function () { const r = document.querySelector('${tileSel(alexKey)} .stream-panel').getBoundingClientRect(); return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; })()`));
   check("the settings button opens a panel on that tile, named for the stream", await sam.evaluate(`(function () { const p = document.querySelector('${tileSel(alexKey)} .stream-panel'); return !!p && p.querySelector('h3').textContent === 'Alex - Screen 1' && p.querySelectorAll('select').length === 2; })()`));
@@ -563,35 +574,55 @@ async function main() {
   const stageWidth = () => sam.evaluate("document.getElementById('stage').getBoundingClientRect().width");
   const stageBefore = await stageWidth();
   await sam.evaluate("document.getElementById('sideBtn').click()");
-  check("the side panel button hides the side panel", await waitFor(() => sam.evaluate("document.getElementById('side').hidden")));
+  check("the members button hides the member list", await waitFor(() => sam.evaluate("document.getElementById('side').hidden")));
   await sleep(500);
   await shot(sam, "6-side-hidden");
   check("the stage takes the room", await waitFor(async () => (await stageWidth()) > stageBefore + 200));
   await sam.evaluate("document.getElementById('sideBtn').click()");
-  check("pressing it again shows the side panel", await waitFor(() => sam.evaluate("!document.getElementById('side').hidden")));
+  check("pressing it again shows the member list", await waitFor(() => sam.evaluate("!document.getElementById('side').hidden")));
 
-  // A pop-out joins as its own member under its own cookie. The window that opened it keeps working.
-  const alexMember = alexKey.split(":")[0];
-  const popOutPath = () => sam.evaluate(`fetch('/popout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: '${alexMember}', slot: 0 }) }).then(r => r.ok ? r.json().then(j => j.path) : r.text().then(text => 'ERROR ' + text))`);
-  const firstPath = await popOutPath();
-  check("Sam's window gets a pop-out link", String(firstPath).startsWith("/join?token="), String(firstPath));
-  await sam.evaluate(`(function () { window.open(${JSON.stringify(firstPath)}, '_blank', 'popup'); return true; })()`);
-  const viewer = await attachTab((url) => url.includes("view="));
-  check("the pop-out shows one screen", await waitFor(() => viewer.evaluate("document.body.classList.contains('viewer') && document.querySelectorAll('.tile').length === 1")));
-  check("the pop-out's tile is Alex's screen", await viewer.evaluate("document.querySelector('.tile .label').textContent === 'Alex - Screen 1'"));
-  check("the pop-out receives live frames", await waitFor(() => viewer.evaluate("(function () { const v = document.querySelector('.tile video'); return v.videoWidth > 0 && !v.paused; })()")));
-  check("the pop-out's tile has settings and fullscreen, and no pop out", await viewer.evaluate("document.querySelectorAll('.tile .tools .tool').length === 2 && !document.querySelector('.tile .tool.popout')"));
-  await viewer.evaluate("document.querySelector('.tile .tool.fullscreen').click()");
-  check("fullscreen works inside the pop-out", await waitFor(() => viewer.evaluate("!!document.fullscreenElement && document.fullscreenElement.classList.contains('tile')")));
-  await viewer.evaluate("document.querySelector('.tile .tool.fullscreen').click()");
-  await waitFor(() => viewer.evaluate("!document.fullscreenElement"));
-  await viewer.evaluate("document.querySelector('.tile .tool.settings').click()");
-  check("the pop-out has its own settings panel", await viewer.evaluate("!!document.querySelector('.tile .stream-panel')"));
-  const secondPath = await popOutPath();
-  check("a second pop-out still works after the first opened", String(secondPath).startsWith("/join?token="), String(secondPath));
-  check("Sam still has the party after the pop-out joined", await sam.evaluate("document.getElementById('count').textContent.startsWith('3 people') && document.getElementById('chatText').offsetParent !== null"));
-  check("pop-outs are not counted as people", await host.evaluate("document.getElementById('count').textContent.startsWith('3 people')"));
-  await viewer.evaluate("window.pywebview = { api: { close_window: function () { window.__closed = true; return Promise.resolve({ ok: true }); } } }");
+  // 7a. A screen belongs to its voice channel. The owner adds Voice 2 and Alex moves there: Alex's screens end, and the
+  // one Alex starts there goes to nobody in Voice 1. Looking at Voice 2 from Voice 1 shows who is there and the way in,
+  // never its screens. Deleting Voice 2 ends what was shared in it.
+  await host.evaluate(`(function () {
+    document.getElementById('addVoice').click();
+    var input = document.querySelector('#channelList .channel-edit input');
+    input.value = 'Voice 2';
+    document.querySelector('#channelList .channel-edit').requestSubmit();
+  })()`);
+  check("the owner's new voice channel reaches Alex", await waitFor(() => alex.evaluate(
+    "[...document.querySelectorAll('#channelList .channel.voice .channel-name')].some(function (n) { return n.textContent === 'Voice 2'; })")));
+  await alex.evaluate(`[...document.querySelectorAll('#channelList .channel.voice')].find(function (li) { return li.querySelector('.channel-name').textContent === 'Voice 2'; }).querySelector('.channel-row button').click()`);
+  check("moving to another voice channel ends the screens shared in the first", await waitFor(() => alex.evaluate(
+    "!document.querySelectorAll('#myShares li').length && document.getElementById('titleText').textContent === 'Voice 2'")));
+  check("and they go from the screens of the people left behind", await waitFor(() => sam.evaluate(
+    "![...document.querySelectorAll('.tile .label')].some(function (l) { return l.textContent.indexOf('Alex') === 0; })")));
+  await alex.evaluate("document.getElementById('goLive').click()");
+  check("Alex goes live in Voice 2, marked LIVE under that channel", await waitFor(() => sam.evaluate(
+    "(function () { var li = [...document.querySelectorAll('#channelList .channel.voice')].find(function (c) { return c.querySelector('.channel-name').textContent === 'Voice 2'; }); return !!li && !!li.querySelector('.voice-people .live'); })()")));
+  await sleep(2500);
+  check("a screen in Voice 2 never shows in Voice 1", await sam.evaluate(
+    "![...document.querySelectorAll('.tile .label')].some(function (l) { return l.textContent.indexOf('Alex') === 0; })"));
+  await sam.evaluate(`[...document.querySelectorAll('#channelList .channel.voice .channel-name')].find(function (n) { return n.textContent === 'Voice 2'; }).click()`);
+  check("looking at Voice 2 from Voice 1 shows who is there and a way in, not its screens", await waitFor(() => sam.evaluate(
+    "document.getElementById('titleText').textContent === 'Voice 2' && document.getElementById('stage').classList.contains('elsewhere') && !document.getElementById('voiceJoin').hidden && document.getElementById('voiceJoin').textContent === 'Move to Voice 2' && document.getElementById('voiceRoom').textContent.includes('Alex')")));
+  await sam.evaluate(`[...document.querySelectorAll('#channelList .channel.voice .channel-name')].find(function (n) { return n.textContent === 'Voice 1'; }).click()`);
+  check("and back in Voice 1 the host's screen is there", await waitFor(() => sam.evaluate(
+    "!document.getElementById('stage').classList.contains('elsewhere') && [...document.querySelectorAll('.tile .label')].some(function (l) { return l.textContent.indexOf('Host - ') === 0; })")));
+  await host.evaluate(`(function () {
+    var li = [...document.querySelectorAll('#channelList .channel.voice')].find(function (c) { return c.querySelector('.channel-name').textContent === 'Voice 2'; });
+    [...li.querySelectorAll('button')].find(function (b) { return b.textContent === 'Delete'; }).click();
+  })()`);
+  check("deleting a voice channel ends the screens shared in it", await waitFor(() => alex.evaluate(
+    "!document.querySelectorAll('#myShares li').length && document.getElementById('voiceBar').hidden")));
+  // everyone out of voice, for the channel, file and voice steps below
+  await host.evaluate("document.getElementById('voiceLeave').click()");
+  await sam.evaluate("document.getElementById('voiceLeave').click()");
+  check("leaving voice ends the host's screens too", await waitFor(() => host.evaluate("!document.querySelectorAll('#myShares li').length")));
+  await waitFor(() => host.evaluate("!document.querySelectorAll('#channelList .voice-people li').length"));
+  for (const tab of [sam, host]) await tab.evaluate("[...document.querySelectorAll('#channelList .channel.text .channel-row')].find(function (r) { return r.textContent.includes('general'); }).click()");
+  check("picking a text channel brings its chat back to the middle", await waitFor(() => sam.evaluate(
+    "document.body.dataset.view === 'text' && !document.getElementById('chat').hidden && document.getElementById('titleText').textContent === 'general'")));
 
   // 7b. Channels: the server starts with a text and a voice channel, the owner adds one, and it reaches everyone.
   check("a new server lists its text and voice channels", await sam.evaluate(
@@ -623,7 +654,7 @@ async function main() {
   })()`);
   check("a member's page hands what it receives to the app, to keep on that PC", await waitFor(() => sam.evaluate(
     "(window.__kept || []).some(function (m) { return m.text === 'a message in maps' && m.channel && m.ts && m.id; })")));
-  check("and the host's own page does not (the party already stores it there)", await host.evaluate("!(window.__kept || []).length"));
+  check("and the host's own page does not (the server already stores it there)", await host.evaluate("!(window.__kept || []).length"));
   check("a message in another channel shows there", await waitFor(() => sam.evaluate(
     "document.getElementById('chatTitle').textContent === 'maps' && document.getElementById('messages').textContent.includes('a message in maps')")));
   check("and gives the other channel's reader an unread count instead of showing in their channel", await waitFor(() => host.evaluate(
@@ -647,7 +678,7 @@ async function main() {
 
   // 7c. Pictures and files: a big picture is dragged onto the window (onto the screens, not the chat: the whole window
   // takes a drop) with a text file beside it. The picture is saved again in the page at its own size, uploaded, and
-  // shows for everyone at that size; the text file is sent as a file the host keeps; the window stays on the party.
+  // shows for everyone at that size; the text file is sent as a file the host keeps; the window stays on the server.
   const samUrl = await sam.evaluate("location.href");
   const dropState = await sam.evaluate(`(async function () {
     var canvas = document.createElement('canvas');
@@ -683,7 +714,7 @@ async function main() {
     "!document.getElementById('storageMeter').hidden && document.getElementById('storageText').textContent.indexOf('Storage') === 0")));
   check("only the owner and admins are offered the file limits", await sam.evaluate("document.getElementById('storageEdit').hidden") &&
     await host.evaluate("!document.getElementById('storageEdit').hidden"));
-  check("and the window stays on the party", (await sam.evaluate("location.href")) === samUrl);
+  check("and the window stays on the server", (await sam.evaluate("location.href")) === samUrl);
   check("a picture sent by a member reaches the host at its full 3200 by 1800", await waitFor(() => host.evaluate(
     "(function () { var i = document.querySelector('#messages img.chat-image'); return !!i && i.complete && i.naturalWidth === 3200 && i.naturalHeight === 1800; })()")));
   check("and shows for the sender too", await waitFor(() => sam.evaluate("!!document.querySelector('#messages img.chat-image')")));
@@ -734,7 +765,6 @@ async function main() {
 
   // 7d. Voice: two people join the voice channel and hear each other; the third, outside it, hears nothing.
   for (const tab of [host, sam]) await tab.evaluate("window.__errs = []; window.addEventListener('error', function (e) { window.__errs.push(e.message); }); window.addEventListener('unhandledrejection', function (e) { window.__errs.push('rejected: ' + (e.reason && e.reason.message || e.reason)); });");
-  const joinVoice = (tab) => tab.evaluate(`[...document.querySelectorAll('#channelList .channel.voice .channel-row button')].find(function (b) { return b.textContent === 'Join'; }).click()`);
   await joinVoice(host);
   check("joining a voice channel shows the voice bar", await waitFor(() => host.evaluate(
     "!document.getElementById('voiceBar').hidden && document.getElementById('voiceName').textContent === 'Voice 1'")));
@@ -748,12 +778,12 @@ async function main() {
   check("and the other hears them", await waitFor(() => sam.evaluate(
     "(function () { var a = document.querySelectorAll('audio'); return a.length === 1 && a[0].srcObject.getAudioTracks()[0].muted === false; })()"), 20000));
   check("someone outside the voice channel plays no audio", await alex.evaluate("document.querySelectorAll('audio').length === 0"));
-  // With E2E_SHOTS, pictures of the room with voice, chat and a picture in it: the Members tab, narrower windows, light.
+  // With E2E_SHOTS, pictures of the room with voice, chat and a picture in it, narrower windows, light.
   if (process.env.E2E_SHOTS) {
-    await shot(sam, "7-voice-chat");
-    await sam.evaluate("document.getElementById('tabMembers').click()");
-    await shot(sam, "8-members");
-    await sam.evaluate("document.getElementById('tabChat').click()");
+    await shot(sam, "7-voice");
+    await sam.evaluate("[...document.querySelectorAll('#channelList .channel.text .channel-row')].find(function (r) { return r.textContent.includes('general'); }).click()");
+    await sleep(300);
+    await shot(sam, "8-chat");
     await sam.evaluate("document.documentElement.dataset.theme = 'light'");
     await sleep(300);
     await shot(sam, "9-light");
@@ -761,12 +791,10 @@ async function main() {
     // the channel list made wider and the chat panel narrower by their handles, and the Online group folded
     await sam.evaluate(pointerScript("#sidebar .resize-handle", 90, 0));
     await sam.evaluate(pointerScript("#side .resize-handle", 60, 0));
-    await sam.evaluate("document.getElementById('tabMembers').click()");
     await sam.evaluate("document.querySelector('#roster li.group button.fold').click()");
     await sleep(400);
     await shot(sam, "9b-resized-folded");
     await sam.evaluate("document.querySelector('#roster li.group button.fold').click()");
-    await sam.evaluate("document.getElementById('tabChat').click()");
     for (const sel of ["#sidebar .resize-handle", "#side .resize-handle"]) {
       await sam.evaluate(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
     }
@@ -795,6 +823,35 @@ async function main() {
   await host.evaluate("document.getElementById('voiceLeave').click()");
   check("leaving hides the voice bar", await waitFor(() => host.evaluate("document.getElementById('voiceBar').hidden")));
 
+  // 7e. The owner names the server and gives it an icon in Server settings; everyone sees both. Sam's app hands the server
+  // Sam's picture, which shows beside Sam's name for everyone.
+  await host.evaluate("document.getElementById('serverMenuBtn').click()");
+  await host.evaluate("[...document.querySelectorAll('#ctxMenu button')].find(function (b) { return b.textContent === 'Server settings'; }).click()");
+  check("the owner's server menu opens Server settings", await host.evaluate("!document.getElementById('serverPanel').hidden"));
+  await host.evaluate(`(async function () {
+    document.getElementById('serverNameInput').value = 'Friday games';
+    var canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 96;
+    var ctx = canvas.getContext('2d'); ctx.fillStyle = '#16a34a'; ctx.fillRect(0, 0, 96, 96);
+    var blob = await new Promise(function (r) { canvas.toBlob(r, 'image/png'); });
+    var data = new DataTransfer(); data.items.add(new File([blob], 'icon.png', { type: 'image/png' }));
+    var input = document.getElementById('serverIconFile'); input.files = data.files; input.dispatchEvent(new Event('change'));
+    document.getElementById('serverSave').click();
+  })()`);
+  check("everyone sees the server's new name", await waitFor(() => sam.evaluate("document.getElementById('partyName').textContent === 'Friday games'")));
+  check("and its icon", await waitFor(() => sam.evaluate("(function () { var i = document.querySelector('#serverMark img'); return !!i && i.complete && i.naturalWidth === 96; })()")));
+  await sam.evaluate(`(async function () {
+    var canvas = document.createElement('canvas'); canvas.width = 40; canvas.height = 40;
+    var ctx = canvas.getContext('2d'); ctx.fillStyle = '#d946ef'; ctx.fillRect(0, 0, 40, 40);
+    var url = canvas.toDataURL('image/png');
+    var hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(atob(url.split(',')[1]), function (c) { return c.charCodeAt(0); }))))
+      .map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+    window.pywebview = window.pywebview || { api: {} };
+    window.pywebview.api.my_picture = function () { return Promise.resolve({ hash: hash, data: url.split(',')[1] }); };
+    window.dispatchEvent(new Event('pywebviewready'));
+  })()`);
+  check("a person's picture shows beside their name for everyone", await waitFor(() => host.evaluate(
+    "(function () { var row = [...document.querySelectorAll('#roster li[data-id]')].find(function (li) { return li.querySelector('.name').textContent.indexOf('Sam') === 0; }); var i = row && row.querySelector('.avatar img'); return !!i && i.complete && i.naturalWidth === 40; })()")));
+
   // 8. The host removes Sam. Sam is told, and the roster shrinks for the others.
   await host.evaluate(`(function () {
     var row = [...document.querySelectorAll('#roster li[data-id]')].find(function (li) { return li.querySelector('.name').textContent.startsWith('Sam'); });
@@ -803,7 +860,6 @@ async function main() {
   await host.evaluate(`[...document.querySelectorAll('#ctxMenu button')].find(function (b) { return b.textContent.startsWith('Remove'); }).click()`);
   check("Sam is told the host removed them", await waitFor(() => sam.evaluate("document.getElementById('status').textContent.includes('removed you')")));
   check("the host sees two people again", await waitFor(() => host.evaluate("document.getElementById('count').textContent.startsWith('2 people')")));
-  check("Sam's pop-out is asked to close with them", await waitFor(() => viewer.evaluate("window.__closed === true")));
 
   // 9. The host's Fullscreen button hides the stats bar, and leaving fullscreen brings it back.
   await host.evaluate("document.getElementById('fullBtn').click()");
@@ -812,10 +868,13 @@ async function main() {
   await host.evaluate("document.getElementById('fullBtn').click()");
   check("the stats bar comes back after leaving fullscreen", await waitFor(() => host.evaluate("!document.getElementById('statsbar').hidden")));
 
-  // 10. Alex leaves on their own.
+  // 10. Alex leaves on their own, from the server menu under the server's name.
   await alex.evaluate("window.pywebview = { api: { close_window: function () { window.__closed = true; return Promise.resolve({ ok: true }); } } }");
-  await alex.evaluate("document.getElementById('leaveBtn').click()");
-  check("leaving also closes the party window", await waitFor(() => alex.evaluate("window.__closed === true")));
+  await alex.evaluate("document.getElementById('serverMenuBtn').click()");
+  check("a member's server menu offers Leave server and not the owner's settings", await alex.evaluate(
+    "(function () { var b = [...document.querySelectorAll('#ctxMenu button')].map(function (x) { return x.textContent; }); return b.indexOf('Leave server') >= 0 && b.indexOf('Server settings') < 0; })()"));
+  await alex.evaluate("[...document.querySelectorAll('#ctxMenu button')].find(function (b) { return b.textContent === 'Leave server'; }).click()");
+  check("leaving also takes the server's room away", await waitFor(() => alex.evaluate("window.__closed === true")));
   check("Alex is told they left", await waitFor(() => alex.evaluate("document.getElementById('status').textContent.includes('You left')")));
   check("the host sees one person again", await waitFor(() => host.evaluate("document.getElementById('count').textContent.startsWith('1 person')")));
 

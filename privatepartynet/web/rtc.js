@@ -1,15 +1,15 @@
 /*
- * WebRTC helpers shared by the party page: screens (four video slots per pair) and voice (one audio slot per pair).
+ * WebRTC helpers shared by a server's room: screens (four video slots per pair) and voice (one audio slot per pair).
  *
  * A classic script, so the browser self-test can load it from a file path. Nothing here talks to the server:
- * the party page does its own signaling through the server's relay.
+ * the room does its own signaling through the server's relay.
  */
 (function (global) {
   "use strict";
 
   // On one network the browsers reach each other directly and need no STUN server. Once someone has joined from outside,
   // the page turns STUN on (setStun) so each side learns the public address its router gives it and the two can reach
-  // each other through their routers. When the owner set up the group's relay server, the party also hands each page
+  // each other through their routers. When the owner set up the group's relay server, the server also hands each page
   // TURN credentials for the coturn beside it (short-lived, made for this member): media between two routers that let
   // nothing through goes there, still encrypted end to end. A direct way is always preferred when one works.
   var STUN_SERVERS = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] }];

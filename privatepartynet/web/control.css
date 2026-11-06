@@ -110,3 +110,7 @@ html.rail-compact .navbadge { min-width: 16px; padding: 0 4px; font-size: 10px; 
 /* Settings, Sounds: each group's switch with a Play button beside it */
 .sound-row { display: flex; align-items: center; gap: var(--sp-3); justify-content: space-between; }
 .sound-row .switch { flex: 1; }
+
+/* Your server card on Home: room between the name, the port and the start-with-the-app box */
+#ownBox > .row + .row, #ownBox > .check { margin-top: var(--sp-3); }
+#myPicture { flex: none; }

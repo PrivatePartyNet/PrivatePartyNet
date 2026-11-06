@@ -1,6 +1,10 @@
 /*
- * The party page, for the host and for every member. Each pair of online members keeps one WebRTC connection.
- * Screen shares travel over those connections. Chat and the roster come through the server's event stream.
+ * A server's room, for the host and for every member. Each pair of online members keeps one WebRTC connection.
+ * Screen shares and voice travel over those connections. Chat and the roster come through the server's event stream.
+ *
+ * The middle of the room shows one channel at a time, as Discord does: a text channel's chat, or a voice channel's
+ * screens (K, November 5th: chats are tied to a text channel, and screens to a voice channel). A screen can only be
+ * shared from inside a voice channel, goes only to the people in that channel, and shows only to them.
  *
  * Connection rule: between two members, the one with the lower id makes the offer. The other side answers.
  * That way each pair negotiates exactly once, and a reconnect simply renegotiates.
@@ -41,7 +45,6 @@
     size: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
     cpu: '<rect x="7" y="7" width="10" height="10" rx="1"/><path d="M9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4"/>',
     gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
-    popout: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
     expand: '<path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/>',
     shrink: '<path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/>',
   };
@@ -69,7 +72,6 @@
     showHidden: document.getElementById("showHidden"),
     pip: document.getElementById("pipBtn"),
     full: document.getElementById("fullBtn"),
-    leave: document.getElementById("leaveBtn"),
     stage: document.getElementById("stage"),
     tiles: document.getElementById("tiles"),
     focusView: document.getElementById("focusView"),
@@ -110,6 +112,24 @@
     requestsBox: document.getElementById("requestsBox"),
     requestList: document.getElementById("requestList"),
     status: document.getElementById("status"),
+    chat: document.getElementById("chat"),
+    titleIcon: document.getElementById("titleIcon"),
+    titleText: document.getElementById("titleText"),
+    titleNote: document.getElementById("titleNote"),
+    emptyTitle: document.getElementById("emptyTitle"),
+    emptyText: document.getElementById("emptyText"),
+    voiceRoom: document.getElementById("voiceRoom"),
+    voiceJoin: document.getElementById("voiceJoin"),
+    serverMenuBtn: document.getElementById("serverMenuBtn"),
+    serverMark: document.getElementById("serverMark"),
+    serverPanel: document.getElementById("serverPanel"),
+    serverNameInput: document.getElementById("serverNameInput"),
+    serverIconPreview: document.getElementById("serverIconPreview"),
+    serverIconFile: document.getElementById("serverIconFile"),
+    serverIconClear: document.getElementById("serverIconClear"),
+    serverProblem: document.getElementById("serverProblem"),
+    serverSave: document.getElementById("serverSave"),
+    serverClose: document.getElementById("serverClose"),
   };
 
   var me = null;
@@ -142,26 +162,21 @@
   var upscaleBusyMs = 0; // time spent drawing upscaled frames since the last CPU readout
 
   var PARAMS = new URLSearchParams(location.search);
-  // A pop-out window shows one screen. Its view is "member:slot", the same key as that screen's tile. It shares the app's
-  // cookie jar with the window that opened it, so it says on every request that it is the pop-out.
-  var VIEW = PARAMS.get("view");
-  if (VIEW) document.body.classList.add("viewer");
-  var VIEW_HEADERS = VIEW ? { "X-PrivatePartyNet-View": "1" } : {};
 
   restorePrefs();
 
-  var events = new EventSource(VIEW ? "/events?as=viewer" : "/events");
+  var events = new EventSource("/events");
   events.onmessage = function (event) {
     handle(JSON.parse(event.data));
   };
   events.onerror = function () {
     if (events.readyState === EventSource.CLOSED) {
-      notice("The connection to the party ended. Reload the page to join again.");
+      notice("The connection to the server ended. Choose the server on the left to connect again.");
     }
   };
 
-  // The theme comes from the party; a window opened with its own ?theme= keeps that choice.
-  // A join window opens the party with ?feed= (this PC's own screen feed) and ?token=; its ?theme= wins.
+  // The theme comes from the server; a room opened with its own ?theme= keeps that choice.
+  // The app opens a joined server's room with ?feed= (this PC's own screen feed) and ?token=; its ?theme= wins.
   var FEED = PARAMS.get("feed");
   var FEED_TOKEN = PARAMS.get("feed_token");
   var THEME_OVERRIDE = PARAMS.get("theme");
@@ -227,9 +242,10 @@
       applyTheme(msg.theme);
       me = msg.you;
       hostId = msg.host;
-      el.partyName.textContent = msg.party;
+      lastVoice = me.voice || null;
+      setServerLook(msg.party, msg.icon);
       el.myName.value = me.name;
-      document.title = "PrivatePartyNet: " + msg.party;
+      syncPicture();
       RTC.setStun(!!msg.stun, msg.turn);
       chat.hello(msg);
       setStorage(msg.storage);
@@ -240,12 +256,15 @@
       hostId = msg.host;
       members = new Map(msg.members.map(function (m) { return [m.id, m]; }));
       if (me && members.has(me.id)) me = members.get(me.id);
+      voiceChanged();
       reconcile();
       renderRoster();
       chat.setMembers(members);
       voice.sync();
       checkCompanions();
+      peers.forEach(function (entry, id) { attachAll(id); }); // who is in my voice channel may have changed
       sendQualityToEveryone();
+      picturesChanged();
     } else if (msg.type === "history") {
       chat.history(msg);
     } else if (msg.type === "chat") {
@@ -277,15 +296,16 @@
     } else if (msg.type === "kicked" || msg.type === "left") {
       events.close();
       teardownAll();
-      notice(msg.type === "kicked" ? "The host removed you from the party." : "You left the party.");
-      if (VIEW) closeWindow(); // a pop-out goes when the member who opened it does
+      notice(msg.type === "kicked" ? "The owner or an admin removed you from this server." : "You left the server.");
     } else if (msg.type === "stop") {
       events.close();
       teardownAll();
-      notice("The host ended the party.");
-      if (VIEW) closeWindow();
+      notice("The host stopped the server. It stays on your list; it opens again when the host starts it.");
+    } else if (msg.type === "server") {
+      setServerLook(msg.party || msg.name, msg.icon);
     }
     updateCount();
+    renderView();
   }
 
   // --- connections -------------------------------------------------------------------------------------------
@@ -386,6 +406,10 @@
   function attachShare(id, share) {
     var entry = peers.get(id);
     if (!entry) return;
+    if (!sameVoice(id)) { // only the people in this person's voice channel get their screens
+      RTC.setScreenTrack(entry.pc, share.slot, null).catch(function () {});
+      return;
+    }
     RTC.setScreenTrack(entry.pc, share.slot, share.track)
       .then(function () { return RTC.limitSending(entry.pc, share.slot, share.track, entry.wants[share.slot], ceilingOf(share), share.source); })
       .catch(function () {
@@ -411,8 +435,8 @@
     if (!peers.has(id)) return;
     var key = tileKey(id, slot);
     var wanted;
-    if (hiddenKeys.has(key)) {
-      wanted = { mode: "off" };
+    if (hiddenKeys.has(key) || !sameVoice(id) || !watching()) {
+      wanted = { mode: "off" }; // hidden, not in my voice channel, or nobody here is looking at the screens
     } else if (receiveFor(key) === "fit") {
       var tile = tiles.get(key);
       wanted = tile ? RTC.fitTo(tile.querySelector("video")) : RTC.fitTo(el.stage);
@@ -441,6 +465,35 @@
     });
   }
 
+  // --- voice channels and their screens ----------------------------------------------------------------------
+
+  var lastVoice = null; // the voice channel the server last had this person in
+
+  // The voice channel this person is in, as the server last said, or null.
+  function myVoice() {
+    return me && me.voice ? me.voice : null;
+  }
+
+  // True when member `id` is in this person's voice channel: only then do screens go between them.
+  function sameVoice(id) {
+    var member = members.get(id);
+    return Boolean(myVoice() && member && member.online && member.voice === myVoice());
+  }
+
+  // Someone is looking at this person's voice channel's screens: the room is shown and the middle is that channel.
+  function watching() {
+    return Boolean(myVoice()) && shownView.kind === "voice" && shownView.channel === myVoice() && shellShown && !document.hidden;
+  }
+
+  // The server moved this person out of their voice channel, or into another: the screens they shared there end with it.
+  function voiceChanged() {
+    var now = myVoice();
+    if (now === lastVoice) return;
+    lastVoice = now;
+    Array.from(shares.keys()).forEach(stopShare);
+    updateGoLive();
+  }
+
   // --- going live --------------------------------------------------------------------------------------------
 
   // The screen picker must open straight from the click, so nothing above awaits before getDisplayMedia.
@@ -449,6 +502,14 @@
     var key = selectedKey();
     if (key && shares.has(key)) {
       stopShare(key);
+      return;
+    }
+    if (!myVoice()) {
+      notice("Join a voice channel first: your screen goes to the people in your voice channel.");
+      return;
+    }
+    if (me && me.role === "guest") {
+      notice("Guests watch and listen; they do not share screens.");
       return;
     }
     if (shares.size >= RTC.SLOTS) {
@@ -533,13 +594,13 @@
     return { track: track, stop: function () { controller.abort(); } };
   }
 
-  // A frame share learns its picture size from its first frame. The party is told, so receivers can size the tile.
+  // A frame share learns its picture size from its first frame. The server is told, so receivers can size the tile.
   function sizeReporter(key) {
     return function (width, height) {
       var share = shares.get(key);
       if (!share) return;
       if (share.source) {
-        // the capture may be smaller than the screen; the party is told the screen's real size
+        // the capture may be smaller than the screen; the server is told the screen's real size
         width = share.source.width;
         height = share.source.height;
       }
@@ -634,7 +695,7 @@
       ? { slot: share.slot, sharing: true, label: share.label, width: share.width, height: share.height }
       : { slot: share.slot, sharing: false };
     post("/share", body).catch(function () {
-      notice("The party did not hear about that screen. Check the connection to the host.");
+      notice("The server did not hear about that screen. Check the connection to the host.");
     });
   }
 
@@ -675,6 +736,10 @@
     el.goLive.textContent = live ? "Stop sharing" : "Go Live";
     el.goLive.classList.toggle("live", live);
     el.liveSplit.classList.toggle("live", live);
+    var can = Boolean(myVoice()) && !(me && me.role === "guest");
+    el.liveSplit.classList.toggle("off", !can && !live);
+    el.goLive.title = live ? "Stop sharing this screen" : can ? "Share your screen with the people in your voice channel"
+      : me && me.role === "guest" ? "Guests watch and listen; they do not share screens" : "Join a voice channel to share your screen";
   }
 
   function renderMyShares() {
@@ -788,7 +853,7 @@
   function setSideHidden(hidden) {
     el.side.hidden = hidden;
     el.sideBtn.setAttribute("aria-pressed", String(hidden));
-    el.sideBtn.title = hidden ? "Show the side panel" : "Hide the side panel";
+    el.sideBtn.title = hidden ? "Show the member list" : "Hide the member list";
     savePref(PREFS.side, hidden ? "hidden" : "shown");
   }
 
@@ -841,7 +906,7 @@
     var wanted = new Map();
     members.forEach(function (member) {
       var entry = member.id === me.id ? null : peers.get(member.id);
-      if (!entry) return;
+      if (!entry || !sameVoice(member.id)) return; // screens from other channels are not shown here
       sharesOf(member.id).forEach(function (share) {
         var track = RTC.remoteTrack(entry.pc, share.slot);
         if (!track) return;
@@ -858,11 +923,6 @@
       });
     });
 
-    if (VIEW) {
-      Array.from(wanted.keys()).forEach(function (key) {
-        if (key !== VIEW) wanted.delete(key);
-      });
-    }
     Array.from(tiles.keys()).forEach(function (key) {
       if (!wanted.has(key)) removeTile(key);
     });
@@ -881,7 +941,7 @@
       tile.querySelector(".label").textContent = item.name;
       applyHidden(tile, key);
     });
-    el.empty.hidden = wanted.size > 0;
+    el.empty.hidden = wanted.size > 0 && shownView.channel === myVoice();
     layoutTiles();
     tiles.forEach(function (tile, key) {
       setUpscaled(tile, wantsUpscale(tile, key));
@@ -918,9 +978,6 @@
     var tools = document.createElement("div");
     tools.className = "tools";
     tools.append(toolButton("gear", "Settings for this stream", "tool settings", function () { toggleStreamPanel(key); }));
-    if (item.member !== me.id && !VIEW) {
-      tools.append(toolButton("popout", "Open this screen in a window of its own", "tool popout", function () { popOut(item.member, item.slot); }));
-    }
     tools.append(toolButton("expand", "Fullscreen this stream", "tool fullscreen", function () { toggleTileFullscreen(key); }));
     tile.append(tools);
     EDGES.forEach(function (edge) {
@@ -963,7 +1020,6 @@
 
   // Put every tile where it belongs: in the grid, or in the focus view's big area and preview strip.
   function layoutTiles() {
-    if (VIEW) focusKey = tiles.has(VIEW) ? VIEW : null;
     if (focusKey && !tiles.has(focusKey)) focusKey = null;
     var focusing = Boolean(focusKey);
     el.tiles.hidden = focusing;
@@ -1066,13 +1122,13 @@
   function resetLayout() {
     layoutManual = false;
     rects.clear();
-    focusKey = VIEW ? focusKey : null;
+    focusKey = null;
     animateNext = true;
     renderTiles();
   }
 
   function setFocus(key) {
-    if (VIEW || !tiles.has(key)) return;
+    if (!tiles.has(key)) return;
     focusKey = key;
     layoutTiles();
     tiles.forEach(function (tile, k) {
@@ -1081,7 +1137,6 @@
   }
 
   function exitFocus() {
-    if (VIEW) return;
     focusKey = null;
     animateNext = true;
     layoutTiles();
@@ -1093,7 +1148,7 @@
   // --- moving, resizing and clicking a tile ----------------------------------------------------------------
 
   function onTilePointerDown(event) {
-    if (event.button !== 0 || VIEW || document.fullscreenElement) return;
+    if (event.button !== 0 || document.fullscreenElement) return;
     if (event.target.closest("button, .tools, .stream-panel")) return; // a tile's own controls handle themselves
     var tile = event.currentTarget;
     var key = tile.dataset.key;
@@ -1217,7 +1272,7 @@
   // What the owner or an admin may do to one member. The owner can make admins; an admin can only move members and guests.
   function memberMenu(member) {
     var entries = [];
-    if (!me || member.id === me.id || member.id === hostId || member.role === "viewer") return entries;
+    if (!me || member.id === me.id || member.id === hostId) return entries;
     var owner = me.role === "host";
     var admin = me.role === "admin";
     if (!owner && !admin) return entries;
@@ -1230,7 +1285,7 @@
     if (member.role === "guest") entries.push({ label: "Let them talk and post (member)", run: setRole("member") });
     if (member.role === "member") entries.push({ label: "Make guest (watch and read only)", run: setRole("guest") });
     entries.push("-");
-    entries.push({ label: "Remove from the party", danger: true, run: function () { post("/kick", { id: member.id }).catch(function () {}); } });
+    entries.push({ label: "Remove from the server", danger: true, run: function () { post("/kick", { id: member.id }).catch(function () {}); } });
     if (member.user) {
       entries.push({ label: "Ban", danger: true, run: function () { post("/ban", { id: member.id }).catch(function () { notice("That ban was refused."); }); } });
     }
@@ -1245,16 +1300,13 @@
     var mine = item.member === me.id;
     var hidden = hiddenKeys.has(key);
     var entries = [];
-    if (!VIEW) {
-      entries.push(focusKey === key
-        ? { label: "Back to the grid", run: exitFocus }
-        : { label: "Make this stream big", run: function () { setFocus(key); } });
-    }
-    if (!mine && !VIEW) entries.push({ label: "Pop out into its own window", run: function () { popOut(item.member, item.slot); } });
+    entries.push(focusKey === key
+      ? { label: "Back to the grid", run: exitFocus }
+      : { label: "Make this stream big", run: function () { setFocus(key); } });
     entries.push({ label: document.fullscreenElement === tiles.get(key) || tileFull === key ? "Leave fullscreen" : "Fullscreen this stream", run: function () { toggleTileFullscreen(key); } });
     entries.push({ label: "Settings for this stream", run: function () { toggleStreamPanel(key); } });
     entries.push({ label: hidden ? "Show this stream" : "Don't show this stream", danger: !hidden, run: function () { setHidden(key, !hidden); } });
-    if (!VIEW && !focusKey) {
+    if (!focusKey) {
       entries.push("-");
       entries.push({ label: "Reset layout", run: resetLayout });
     }
@@ -1442,8 +1494,7 @@
     renderTiles();
   }
 
-  // Fullscreen belongs to the stream whose button was pressed, in the main window and in a pop-out alike. Inside the
-  // PrivatePartyNet app the window host ignores the browser's fullscreen request (an element would only fill the page inside the
+  // Fullscreen belongs to the stream whose button was pressed. Inside the PrivatePartyNet app the window host ignores the browser's fullscreen request (an element would only fill the page inside the
   // window's frame), so the app is asked to make the window itself cover its display, and the stream fills the window.
   // In a plain browser the browser's own fullscreen is used.
   function appWindow() {
@@ -1451,7 +1502,7 @@
     return api && api.set_fullscreen ? api : null;
   }
 
-  var windowFull = false; // the top bar's Fullscreen: the whole party window covers the display
+  var windowFull = false; // the top bar's Fullscreen: the whole window covers the display
   var tileFull = null; // the key of the stream shown fullscreen by the app's window
 
   function syncFullscreen() {
@@ -1570,7 +1621,7 @@
     } else if (windowFull) {
       windowFull = false;
       syncFullscreen();
-    } else if (focusKey && !VIEW) {
+    } else if (focusKey) {
       exitFocus();
     }
   });
@@ -1637,26 +1688,6 @@
     ctx.drawImage(video, Math.round((width - drawWidth) / 2), Math.round((height - drawHeight) / 2), drawWidth, drawHeight);
   }
 
-  // Pop out: the app opens a window that joins the party as a viewer of this one screen.
-  async function popOut(member, slot) {
-    if (!window.pywebview || !window.pywebview.api) {
-      notice("Pop out needs the PrivatePartyNet app. Open the party from the app.");
-      return;
-    }
-    try {
-      var response = await fetch("/popout", {
-        method: "POST",
-        headers: Object.assign({ "Content-Type": "application/json" }, VIEW_HEADERS),
-        body: JSON.stringify({ target: member, slot: slot }),
-      });
-      if (!response.ok) throw new Error((await response.text()) || "the party would not open it");
-      var link = await response.json();
-      await window.pywebview.api.open_viewer(link.path);
-    } catch (err) {
-      notice("Could not pop the screen out: " + err.message);
-    }
-  }
-
   // --- the roster ------------------------------------------------------------------------------------------
 
   function hueOf(text) {
@@ -1665,19 +1696,47 @@
     return h;
   }
 
-  // A round badge with the first letter of a name, in a color taken from the person, as Discord does.
+  // The picture a person gave this server (Settings, My profile, in their app), by member id or permanent user id.
+  function pictureOf(id) {
+    var member = members.get(id);
+    if (!member) members.forEach(function (m) { if (!member && m.user && m.user === id) member = m; });
+    var hash = member && member.avatar;
+    return typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+  }
+
+  // A round badge with the person's picture, or the first letter of their name in a color taken from them, as Discord does.
   function avatar(name, id) {
     var badge = document.createElement("span");
     badge.className = "avatar";
-    badge.textContent = (name || "?").trim().charAt(0).toUpperCase() || "?";
+    var letter = (name || "?").trim().charAt(0).toUpperCase() || "?";
+    badge.textContent = letter;
     badge.style.background = "hsl(" + hueOf(String(id || name)) + " 45% 42%)";
+    var hash = pictureOf(id);
+    if (hash) {
+      var img = document.createElement("img");
+      img.alt = "";
+      img.src = "/blob?hash=" + hash;
+      img.addEventListener("error", function () { img.remove(); badge.textContent = letter; badge.classList.remove("has-picture"); });
+      badge.textContent = "";
+      badge.classList.add("has-picture");
+      badge.append(img);
+    }
     return badge;
+  }
+
+  // Pictures changed in the roster: the messages already shown get them too.
+  var pictureKey = "";
+  function picturesChanged() {
+    var key = Array.from(members.values()).map(function (m) { return (m.user || m.id) + "=" + (m.avatar || ""); }).sort().join(",");
+    if (key === pictureKey) return;
+    pictureKey = key;
+    chat.refresh();
   }
 
   function renderRoster() {
     el.roster.textContent = "";
     // People who are here come first, then the ones who are away, each under a small heading with a count.
-    var people = Array.from(members.values()).filter(function (m) { return m.role !== "viewer"; }); // viewers are pop-out windows
+    var people = Array.from(members.values());
     var groups = [
       { title: "Online", list: people.filter(function (m) { return m.online; }) },
       { title: "Offline", list: people.filter(function (m) { return !m.online; }) },
@@ -1761,7 +1820,7 @@
   }
 
   function updateCount() {
-    var online = Array.from(members.values()).filter(function (m) { return m.online && m.role !== "viewer"; }).length;
+    var online = Array.from(members.values()).filter(function (m) { return m.online; }).length;
     el.count.textContent = online + (online === 1 ? " person online" : " people online");
   }
 
@@ -1779,16 +1838,93 @@
     getJson: getJson,
     notice: notice,
     avatar: avatar,
-    isHidden: function () { return document.hidden || !shellShown; },
+    isHidden: function () { return document.hidden || !shellShown || shownView.kind !== "text"; },
     // a message from someone else, in a channel that is not muted, while this person is not looking at it
     onArrive: function (msg, isMutedChannel) {
       if (isMutedChannel || !me || msg.from === me.id) return;
       if (!shellShown || document.hidden || !document.hasFocus() || msg.channel !== chat.current()) shellSound("message");
     },
     onVoice: function (channelId, channelName) {
-      if (channelId) voice.join(channelId, channelName);
-      else voice.leave();
+      if (channelId) {
+        voice.join(channelId, channelName, Boolean(me && me.role === "guest"));
+        chat.view(channelId); // joining shows the channel, where its screens are
+      } else {
+        voice.leave();
+      }
     },
+    onSelect: function () { showView("text"); },
+    onView: function (channelId) { showView("voice", channelId); },
+  });
+
+  // --- which channel the middle shows ------------------------------------------------------------------------
+
+  var shownView = { kind: "text", channel: null };
+
+  function showView(kind, channelId) {
+    shownView = { kind: kind, channel: kind === "voice" ? channelId : null };
+    document.body.dataset.view = kind;
+    el.chat.hidden = kind !== "text";
+    el.stage.hidden = kind !== "voice";
+    if (kind === "text") chat.seen();
+    renderView();
+    renderTiles();
+    sendQualityToEveryone(); // screens are received only while someone here looks at them
+  }
+
+  function renderView() {
+    if (!me) return;
+    var voiceView = shownView.kind === "voice";
+    var id = voiceView ? shownView.channel : chat.current();
+    var name = chat.channelName(id) || "";
+    el.titleText.textContent = name;
+    var use = el.titleIcon.querySelector("use");
+    if (use) use.setAttribute("href", voiceView ? "#i-speaker" : "#i-hash");
+    el.titleNote.textContent = "";
+    if (!voiceView) return;
+    var inHere = myVoice() === id;
+    var guest = me.role === "guest";
+    var people = chat.occupants(id);
+    el.titleNote.textContent = people.length ? people.length + (people.length === 1 ? " person in voice" : " people in voice") : "";
+    el.stage.classList.toggle("elsewhere", !inHere);
+    el.liveSplit.hidden = !inHere || guest;
+    if (inHere) {
+      el.emptyTitle.textContent = "Nobody is live yet.";
+      el.emptyText.textContent = guest ? "Screens shared in " + name + " show here." : "Press Go Live to share your screen with the people in " + name + ".";
+    } else {
+      el.emptyTitle.textContent = myVoice() ? "You are in " + chat.channelName(myVoice()) + "." : people.length ? name : name + " is empty.";
+      el.emptyText.textContent = (guest ? "Guests join to watch and listen; they do not talk or share. " : "") +
+        "Screens shared in a voice channel show to the people in it.";
+    }
+    el.voiceJoin.hidden = inHere;
+    el.voiceJoin.textContent = myVoice() ? "Move to " + name : guest ? "Join to watch" : "Join voice";
+    el.voiceRoom.hidden = inHere && tiles.size > 0;
+    // drawn again only when who is there changes, not on every message the room receives
+    var roomKey = id + "|" + people.map(function (p) { return [p.id, p.name, p.avatar || "", sharesOf(p.id).length].join(","); }).join(";");
+    if (roomKey === lastRoomKey) return;
+    lastRoomKey = roomKey;
+    el.voiceRoom.textContent = "";
+    people.forEach(function (person) {
+      var li = document.createElement("li");
+      li.dataset.id = person.id;
+      li.append(avatar(person.name, person.id));
+      var who = document.createElement("span");
+      who.textContent = person.name + (person.id === me.id ? " (you)" : "");
+      li.append(who);
+      if (sharesOf(person.id).length) {
+        var live = document.createElement("span");
+        live.className = "live";
+        live.textContent = "LIVE";
+        li.append(live);
+      }
+      el.voiceRoom.append(li);
+    });
+  }
+  var lastRoomKey = "";
+
+  el.voiceJoin.addEventListener("click", function () {
+    var id = shownView.channel;
+    if (!id) return;
+    voice.join(id, chat.channelName(id), Boolean(me && me.role === "guest"));
   });
 
   var voice = PartyVoice.create({
@@ -1860,14 +1996,16 @@
     post("/name", { name: name }).catch(function () {});
   });
 
-  el.leave.addEventListener("click", function () {
+  // Leaving the server for good (the server menu, or the rail's): the server forgets this session, and the app takes
+  // the server off the list.
+  function leaveServer() {
     events.close();
     teardownAll();
     post("/leave", {}).catch(function () {}).finally(function () {
-      notice("You left the party.");
+      notice("You left the server.");
       closeWindow();
     });
-  });
+  }
 
   // --- picture in picture and fullscreen -------------------------------------------------------------------
 
@@ -1961,7 +2099,7 @@
   // become a "+N".
   function renderStatsBar(connected) {
     var ids = Array.from(peers.keys()).filter(function (id) {
-      return members.has(id) && members.get(id).role !== "viewer";
+      return members.has(id);
     });
     var level = Stats.highestFitting([3, 2, 1, 0], function (candidate) {
       paint(ids, candidate, 0);
@@ -2250,7 +2388,8 @@
       var msg = event.detail || {};
       if (msg.ppn === "visible") {
         shellShown = Boolean(msg.on);
-        if (shellShown) chat.seen();
+        if (shellShown && shownView.kind === "text") chat.seen();
+        sendQualityToEveryone(); // screens are received only while this server is shown
         shellReport();
       } else if (msg.ppn === "appearance" && window.PPNAppearance && msg.look) {
         window.PPNAppearance.apply(document, msg.look);
@@ -2262,7 +2401,9 @@
         if (button && voice.state.channel) button.click();
         shellReport();
       } else if (msg.ppn === "leave") {
-        el.leave.click();
+        leaveServer();
+      } else if (msg.ppn === "picture") {
+        syncPicture();
       }
     });
   }
@@ -2306,8 +2447,8 @@
     renderTiles();
   }
 
-  // Leaving the party closes this window in the app, and the pop-outs it opened. In a plain browser there is nothing
-  // to close and the page stays, showing that the member left.
+  // Leaving the server takes its room off the rail in the app. In a plain browser there is nothing to close and the page
+  // stays, showing that the member left.
   function closeWindow() {
     var api = window.pywebview && window.pywebview.api;
     if (api && api.close_window) api.close_window().catch(function () {});
@@ -2338,19 +2479,19 @@
   async function post(path, body) {
     var response = await fetch(path, {
       method: "POST",
-      headers: Object.assign({ "Content-Type": "application/json" }, VIEW_HEADERS),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     if (!response.ok) {
       var reason = await response.text().catch(function () { return ""; });
-      throw new Error(reason || path + " returned " + response.status); // the party's own words when it gives them
+      throw new Error(reason || path + " returned " + response.status); // the server's own words when it gives them
     }
   }
 
-  // A member's window hands the chat it receives to the app, which keeps an encrypted copy on this PC. The host's own
-  // window (usesFrames) and pop-outs (VIEW) do not: the party stores everything on the host already.
+  // A member's room hands the chat it receives to the app, which keeps an encrypted copy on this PC. The host's own room
+  // (usesFrames) does not: the server stores everything on the host already.
   function keepChat() {
-    if (VIEW || usesFrames()) return null;
+    if (usesFrames()) return null;
     return function (serverId, serverName, channels, messages) {
       var bridge = window.pywebview && window.pywebview.api;
       if (!bridge || !bridge.keep_chat) return Promise.resolve(null);
@@ -2361,7 +2502,7 @@
   function keepPicture(hash) {
     var bridge = window.pywebview && window.pywebview.api;
     if (!bridge || !bridge.keep_blob) return;
-    fetch("/blob?hash=" + encodeURIComponent(hash), { headers: VIEW_HEADERS })
+    fetch("/blob?hash=" + encodeURIComponent(hash))
       .then(function (response) { return response.ok ? response.blob() : null; })
       .then(function (blob) {
         if (!blob) return null;
@@ -2378,14 +2519,14 @@
   async function uploadBlob(blob) {
     var response = await fetch("/blob", {
       method: "POST",
-      headers: Object.assign({ "Content-Type": "application/octet-stream" }, VIEW_HEADERS),
+      headers: { "Content-Type": "application/octet-stream" },
       body: blob,
     });
     if (!response.ok) throw new Error(response.status === 403 ? "Pictures can't be sent right now." : (await response.text()) || "That picture did not upload.");
     return response.json();
   }
 
-  // A file of any kind, sent as it is with its progress showing; the party posts it once it has all arrived.
+  // A file of any kind, sent as it is with its progress showing; the server posts it once it has all arrived.
   // Returns { promise, abort }.
   function uploadFile(file, channel, progress) {
     var request = new XMLHttpRequest();
@@ -2394,7 +2535,6 @@
         "&type=" + encodeURIComponent(file.type || "");
       request.open("POST", "/file?" + query);
       request.setRequestHeader("Content-Type", "application/octet-stream");
-      Object.keys(VIEW_HEADERS).forEach(function (name) { request.setRequestHeader(name, VIEW_HEADERS[name]); });
       request.upload.onprogress = function (event) { if (progress) progress(event.loaded, event.total || file.size); };
       request.onload = function () {
         if (request.status === 200) resolve();
@@ -2499,20 +2639,174 @@
     });
   }
 
+  // --- the server's name and icon, the server menu, and this person's picture ---------------------------------------
+
+  var serverName = "Server";
+  var serverIcon = null;
+  var MAX_PICTURE = 2 * 1024 * 1024;
+
+  function isHash(value) {
+    return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+  }
+
+  function markNode(hash) {
+    if (hash) {
+      var img = document.createElement("img");
+      img.alt = "";
+      img.src = "/blob?hash=" + hash;
+      return img;
+    }
+    return window.PPNIcons ? window.PPNIcons.node("hat") : document.createTextNode("");
+  }
+
+  function setServerLook(name, icon) {
+    if (typeof name === "string" && name) serverName = name;
+    serverIcon = isHash(icon) ? icon : null;
+    el.partyName.textContent = serverName;
+    document.title = serverName + " - PrivatePartyNet";
+    el.serverMark.replaceChildren(markNode(serverIcon));
+    el.serverMark.classList.toggle("has-picture", Boolean(serverIcon));
+    reportLook();
+  }
+
+  function asBase64(blob) {
+    return new Promise(function (resolve) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(String(reader.result).split(",")[1] || ""); };
+      reader.onerror = function () { resolve(""); };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // Tell the app this server's name and icon, for its place on the rail (kept for when the server is out of reach).
+  function reportLook() {
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || !api.server_look || !me) return;
+    var icon = serverIcon;
+    (icon ? fetch("/blob?hash=" + icon).then(function (r) { return r.ok ? r.blob() : null; })
+          .then(function (blob) { return blob ? asBase64(blob) : ""; }) : Promise.resolve(""))
+      .then(function (data) { if (icon === serverIcon) return api.server_look(serverName, data); })
+      .catch(function () { /* the next change tries again */ });
+  }
+
+  // Hand this server the person's own picture from Settings, when it does not have that one yet.
+  var pictureSent = undefined;
+  function syncPicture() {
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || !api.my_picture || !me) return;
+    api.my_picture().then(function (picture) {
+      var want = picture && isHash(picture.hash) ? picture.hash : null;
+      if (want === (me.avatar || null) || want === pictureSent) return null;
+      pictureSent = want;
+      var body = new Uint8Array(0);
+      if (want) {
+        var raw = atob(picture.data || "");
+        body = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i += 1) body[i] = raw.charCodeAt(i);
+      }
+      return fetch("/avatar", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: body });
+    }).catch(function () { pictureSent = undefined; });
+  }
+  window.addEventListener("pywebviewready", function () { syncPicture(); reportLook(); });
+
+  function isOwnerOrAdmin() {
+    return Boolean(me && (me.role === "host" || me.role === "admin"));
+  }
+
+  el.serverMenuBtn.addEventListener("click", function (event) {
+    event.stopPropagation();
+    var box = el.serverMenuBtn.getBoundingClientRect();
+    var entries = [];
+    if (isOwnerOrAdmin()) {
+      entries.push({ label: "Server settings", run: openServerPanel });
+      var info = chat.storage();
+      if (info && info.files !== false) entries.push({ label: "File limits", run: openStoragePanel });
+    }
+    if (me && me.role !== "host") {
+      if (entries.length) entries.push("-");
+      entries.push({ label: "Leave server", danger: true, run: function () {
+        // In the app the rail asks first and takes the server off the list; in a plain browser the room leaves at once.
+        if (window.PPNEmbedded) window.PPNEmbedded.send({ ppn: "leave-server" });
+        else leaveServer();
+      } });
+    }
+    if (!entries.length) entries.push({ label: "Only the owner and admins change this server", run: function () {} });
+    showMenu(entries, box.left + 8, box.bottom + 4);
+  });
+
+  var chosenIcon = null; // a File picked in Server settings, or "" to take the icon away, or null for no change
+
+  function openServerPanel() {
+    chosenIcon = null;
+    el.serverNameInput.value = serverName;
+    el.serverIconPreview.replaceChildren(markNode(serverIcon));
+    el.serverProblem.hidden = true;
+    var r = el.serverMenuBtn.getBoundingClientRect();
+    el.serverPanel.style.left = Math.max(8, r.left + 8) + "px";
+    el.serverPanel.style.top = (r.bottom + 6) + "px";
+    el.serverPanel.hidden = false;
+    el.serverNameInput.focus();
+  }
+
+  function serverProblem(text) {
+    el.serverProblem.textContent = text;
+    el.serverProblem.hidden = !text;
+  }
+
+  el.serverIconFile.addEventListener("change", function () {
+    var file = el.serverIconFile.files && el.serverIconFile.files[0];
+    el.serverIconFile.value = "";
+    if (!file) return;
+    if (file.size > MAX_PICTURE) { serverProblem("An icon can be up to 2 MB."); return; }
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) { serverProblem("Use a PNG, JPEG, GIF or WebP picture."); return; }
+    serverProblem("");
+    chosenIcon = file;
+    var img = document.createElement("img");
+    img.alt = "";
+    img.src = URL.createObjectURL(file);
+    el.serverIconPreview.replaceChildren(img);
+  });
+  el.serverIconClear.addEventListener("click", function () {
+    chosenIcon = "";
+    el.serverIconPreview.replaceChildren(markNode(null));
+  });
+  el.serverClose.addEventListener("click", function () { el.serverPanel.hidden = true; });
+  el.serverSave.addEventListener("click", function () {
+    var name = el.serverNameInput.value.trim();
+    if (!name) { serverProblem("Give the server a name."); return; }
+    var steps = [];
+    if (name !== serverName) steps.push(post("/server", { name: name }));
+    if (chosenIcon !== null) {
+      steps.push(fetch("/server/icon", { method: "POST", headers: { "Content-Type": "application/octet-stream" },
+                                        body: chosenIcon || new Uint8Array(0) })
+        .then(function (response) {
+          if (!response.ok) return response.text().then(function (t) { throw new Error(t || "The icon was not saved."); });
+        }));
+    }
+    Promise.all(steps).then(function () {
+      el.serverPanel.hidden = true;
+      if (steps.length) notice("Server settings saved.");
+    }).catch(function (err) { serverProblem((err && err.message) || "That was not saved."); });
+  });
+  document.addEventListener("click", function (event) {
+    if (!el.serverPanel.hidden && !el.serverPanel.contains(event.target) && !el.serverMenuBtn.contains(event.target) &&
+        !el.ctxMenu.contains(event.target)) el.serverPanel.hidden = true;
+  });
+
   async function getJson(path) {
-    var response = await fetch(path, { headers: VIEW_HEADERS });
+    var response = await fetch(path);
     if (!response.ok) throw new Error(path + " returned " + response.status);
     return response.json();
   }
 
   function restorePrefs() {
-    el.receive.value = VIEW ? "fit" : readPref(PREFS.receive) || "fit";
+    el.receive.value = readPref(PREFS.receive) || "fit";
     el.upscale.value = readPref(PREFS.upscale) || "off";
     el.ceiling.value = readPref(PREFS.ceiling) || "source";
     el.fps.value = readPref(PREFS.fps) || "30";
     el.pointer.value = readPref(PREFS.pointer) || "on";
     myCeiling = ceilingFromChoices();
-    if (!VIEW) setSideHidden(readPref(PREFS.side) === "hidden");
+    setSideHidden(readPref(PREFS.side) === "hidden");
   }
 
   function readPref(key) {

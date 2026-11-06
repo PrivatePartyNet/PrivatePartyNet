@@ -265,15 +265,15 @@ class RoleTests(ServerTestCase):
         with self.assertRaises(NotFound):
             party.set_role(party.host_id, sam, "owner")
 
-    def test_a_guest_reads_the_chat_but_cannot_post_share_or_join_voice(self):
+    def test_a_guest_reads_the_chat_and_may_watch_in_voice_but_cannot_post_or_share(self):
         party = self.party()
         guest, session = self.member(party, "Gus", role="guest")
         with self.assertRaises(Forbidden):
             party.chat(guest, "hello")
         self.assertEqual(self.post(party, "/chat", {"text": "hello"}, session)[0], 403)
+        # screens belong to voice channels, so a guest joins one to watch (their page never opens a microphone)
+        party.join_voice(guest, "voice-1")
         self.assertFalse(party.set_share(guest, 0, True, "Screen"))
-        with self.assertRaises(Forbidden):
-            party.join_voice(guest, "voice-1")
         history = read_until(self.stream(party, session), "history")
         self.assertEqual(history["messages"], [])
 

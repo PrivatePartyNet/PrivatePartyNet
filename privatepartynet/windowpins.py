@@ -26,7 +26,7 @@ REFUSED_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>PrivatePartyNet</title>
 <style>body { font-family: "Segoe UI", system-ui, sans-serif; margin: 0; min-height: 100vh; display: grid;
 place-items: center; text-align: center; } p { max-width: 460px; line-height: 1.5; padding: 0 16px; }</style></head>
-<body><p>This party window was stopped: the PC that answered is not the one PrivatePartyNet checked when you asked to
+<body><p>This server's room was stopped: the PC that answered is not the one PrivatePartyNet checked when you asked to
 join (its certificate is different). Close this window and ask to join again. If it happens again, someone on the
 network may be standing in for the host.</p></body></html>"""
 

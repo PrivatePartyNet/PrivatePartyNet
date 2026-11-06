@@ -18,7 +18,7 @@ from privatepartynet.server import Party
 log = logging.getLogger("privatepartynet.smoke")
 
 CHECKS = [
-    ("/", b"Open this party from the PrivatePartyNet app"),
+    ("/", b"Open this server from the PrivatePartyNet app"),
     ("/static/rtc.js", b"PartyRTC"),
     ("/static/layout.js", b"PrivatePartyNetLayout"),
     ("/static/netstats.js", b"PrivatePartyNetNetStats"),

@@ -625,7 +625,7 @@ class HostPunch:
         if joiner and self.mapping is not None and joiner[2] == "hard" and self.mapping[2] == "hard":
             log.info("Both routers give a new port for every destination, so IPv4 cannot get through; %s",
                      "IPv6 may" if joiner6 and self.tunnel6 is not None else
-                     "only a relay can join them" + ("" if self._relays() else ", and this party has none"))
+                     "only a relay can join them" + ("" if self._relays() else ", and this server has none"))
 
     def _sync_relays(self):
         """Keep every live invite's channel bound on every relay there is now, each carried to the QUIC socket."""
@@ -831,7 +831,7 @@ def _join_punched(host_key, server_id, secret, fingerprint, dht_factory, stun_se
         if host is None and host6 is None:
             log.info("The host was not found on the DHT")
             raise PunchError(f"the host's PC was not found on the DHT (the shared lookup network the invite uses) "
-                             f"within {find_seconds:.0f} seconds: their party may be closed, or their PC cannot reach "
+                             f"within {find_seconds:.0f} seconds: their server may be off, or their PC cannot reach "
                              f"the DHT", facts)
         facts.update(host_found=True, host_version=record_version(found[1]), host_v6=host6 is not None,
                      host_nat=host[2] if host else None)

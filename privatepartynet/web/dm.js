@@ -48,7 +48,7 @@
     return h;
   }
 
-  // A round badge with the first letter of a name, in a color taken from the person (the same as in the party room).
+  // A round badge with the first letter of a name, in a color taken from the person (the same as in a server's room).
   function avatar(name, id) {
     var badge = document.createElement("span");
     badge.className = "avatar";

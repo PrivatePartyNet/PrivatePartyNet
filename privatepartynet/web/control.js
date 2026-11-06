@@ -11,6 +11,19 @@
     name: document.getElementById("name"),
     port: document.getElementById("port"),
     toggle: document.getElementById("toggle"),
+    myPicture: document.getElementById("myPicture"),
+    pictureFile: document.getElementById("pictureFile"),
+    pictureClear: document.getElementById("pictureClear"),
+    pictureNote: document.getElementById("pictureNote"),
+    ownTitle: document.getElementById("ownTitle"),
+    ownNote: document.getElementById("ownNote"),
+    createBox: document.getElementById("createBox"),
+    ownBox: document.getElementById("ownBox"),
+    newServerName: document.getElementById("newServerName"),
+    createServer: document.getElementById("createServer"),
+    serverName: document.getElementById("serverName"),
+    saveServerName: document.getElementById("saveServerName"),
+    autostart: document.getElementById("autostart"),
     notice: document.getElementById("notice"),
     party: document.getElementById("party"),
     others: document.getElementById("others"),
@@ -151,8 +164,22 @@
     if (!nameEditing && document.activeElement !== el.name) el.name.value = state.name;
     if (document.activeElement !== el.port && (!state.running || !el.port.value)) el.port.value = state.port;
     el.port.disabled = state.running;
-    el.toggle.textContent = state.running ? "Stop party" : "Start party";
+    running = state.running;
+    el.toggle.textContent = state.running ? "Stop server" : "Start server";
     el.toggle.className = state.running ? "danger" : "primary";
+    var own = state.server || {};
+    el.createBox.hidden = Boolean(own.made);
+    el.ownBox.hidden = !own.made;
+    el.createServer.disabled = state.locked;
+    el.ownTitle.textContent = own.made ? own.name : "Create your server";
+    el.ownNote.textContent = !own.made
+      ? "Your own server, like a Discord server, run by this PC. It goes on your list on the left for good, and people you invite keep it on theirs."
+      : state.running ? "Running. It is first on your list on the left."
+      : "Stopped. It stays on your list; nobody can reach it until you start it.";
+    if (document.activeElement !== el.serverName) el.serverName.value = own.name || "";
+    if (document.activeElement !== el.newServerName && !el.newServerName.value && state.name) el.newServerName.placeholder = state.name + "'s server";
+    el.autostart.checked = own.autostart !== false;
+    if (state.picture !== shownPicture) loadPicture(state.picture);
 
     el.party.hidden = !state.running;
     el.serverPassword.textContent = state.passcode || "";
@@ -207,7 +234,7 @@
     requests.forEach(function (request) {
       var item = document.createElement("li");
       var text = document.createElement("span");
-      text.textContent = request.name + " (" + request.address + ") wants to join your party";
+      text.textContent = request.name + " (" + request.address + ") wants to join your server";
       var yes = document.createElement("button");
       yes.className = "primary";
       yes.textContent = "Let in";
@@ -232,14 +259,66 @@
     api().rename(el.name.value);
   });
 
+  var running = false;
   el.toggle.addEventListener("click", function () {
-    if (el.toggle.textContent === "Stop party") {
+    if (running) {
       api().stop().then(function (result) { say(result.message); });
       return;
     }
     api().start(el.name.value, Number(el.port.value)).then(function (result) {
       say(result.message);
     });
+  });
+
+  el.createServer.addEventListener("click", function () {
+    var name = el.newServerName.value.trim() || el.newServerName.placeholder;
+    api().create_server(name, el.name.value, Number(el.port.value)).then(function (result) {
+      say(result.message);
+      if (result.ok) el.newServerName.value = "";
+    });
+  });
+  el.saveServerName.addEventListener("click", function () {
+    api().rename_server(el.serverName.value).then(function (result) { say(result.message || "Renamed."); });
+  });
+  el.autostart.addEventListener("change", function () { api().set_server_autostart(el.autostart.checked); });
+
+  // Your picture: shown beside your name on every server (rooms hand it to their servers), kept at its own size.
+  var shownPicture = null;
+  function showPicture(src) {
+    el.myPicture.textContent = "";
+    el.myPicture.classList.toggle("has-picture", Boolean(src));
+    el.pictureClear.hidden = !src;
+    if (src) {
+      var img = document.createElement("img");
+      img.alt = "";
+      img.src = src;
+      el.myPicture.append(img);
+    } else {
+      el.myPicture.textContent = (el.name.value || "?").trim().charAt(0).toUpperCase() || "?";
+    }
+  }
+  function loadPicture(hash) {
+    shownPicture = hash;
+    if (!hash) { showPicture(""); return; }
+    api().picture().then(function (picture) { if (shownPicture === hash) showPicture(picture && picture.src); });
+  }
+  el.pictureFile.addEventListener("change", function () {
+    var file = el.pictureFile.files && el.pictureFile.files[0];
+    el.pictureFile.value = "";
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { say("A picture can be up to 2 MB."); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      api().set_picture(String(reader.result).split(",")[1] || "").then(function (result) {
+        if (!result.ok) { say(result.message); return; }
+        shownPicture = null; // the next state names it
+        showPicture(result.src);
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+  el.pictureClear.addEventListener("click", function () {
+    api().set_picture("").then(function () { shownPicture = null; showPicture(""); });
   });
 
   el.room.addEventListener("click", function () {
@@ -251,7 +330,7 @@
     api().ask_join(selectedPeer, "").then(function (result) { put(el.askNote, result.message, "ask note"); });
   });
 
-  // A party seen over a VPN (Radmin VPN, say) counts that PC as outside its network, so it wants its password.
+  // A server seen over a VPN (Radmin VPN, say) counts that PC as outside its network, so it wants its password.
   var passwordPeer = null;
   el.askWithPassword.addEventListener("click", function () {
     var peer = passwordPeer || selectedPeer;
@@ -537,7 +616,7 @@
       // The code stays in a box under the button, so it can be selected and copied by hand if the clipboard is refused.
       el.inviteOut.value = result.invite;
       el.inviteOut.hidden = false;
-      var done = function () { el.inviteNote.textContent = "Copied. Send it to the person; it contains your party's password."; };
+      var done = function () { el.inviteNote.textContent = "Copied. Send it to the person; it contains your server's password."; };
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(result.invite).then(done, function () {
           el.inviteNote.textContent = "Copy did not work here. The code is in the box below; select it and copy.";
@@ -603,16 +682,16 @@
         name.textContent = server.name;
         var again = document.createElement("button");
         again.className = "secondary";
-        again.textContent = "Ask to join again";
+        again.textContent = "Show";
         again.addEventListener("click", function () {
           api().rejoin(server.key).then(function (result) {
-            showJoin({ state: result.ok ? "trying" : "failed", message: result.message });
-            if (result.ok) watchJoin();
+            if (!result.ok) showJoin({ state: "failed", message: result.message });
           });
         });
         var forget = document.createElement("button");
         forget.className = "secondary";
-        forget.textContent = "Forget";
+        forget.textContent = "Leave";
+        forget.title = "Leave this server for good: it goes from your list";
         forget.addEventListener("click", function () { api().forget_joined(server.key).then(loadJoined); });
         li.append(name, again, forget);
         el.joined.append(li);

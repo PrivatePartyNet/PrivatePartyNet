@@ -256,7 +256,7 @@ class MessageTests(unittest.TestCase):
                                     "the invite has no key for finding the host across the internet")
         self.assertIn("Tried: 26.10.20.30 did not answer.", text)
         self.assertNotIn("invite", text)
-        self.assertIn("party is still open", text)
+        self.assertIn("server is running", text)
 
 
 class OldInviteTests(unittest.TestCase):

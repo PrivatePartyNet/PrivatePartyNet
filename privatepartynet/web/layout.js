@@ -1,5 +1,5 @@
 /*
- * Tile layout for the party room: where each screen sits in the stage, and how a drag or a resize snaps.
+ * Tile layout for a voice channel's screens: where each screen sits in the stage, and how a drag or a resize snaps.
  *
  * Pure functions on plain rectangles { x, y, w, h } and a stage { w, h }, with no page in sight, so the tests can run
  * them in Node. The page (room.js) keeps the state and applies the results.

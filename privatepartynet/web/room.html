@@ -3,23 +3,43 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PrivatePartyNet party</title>
+<title>PrivatePartyNet server</title>
 <link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/ui.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
-<body data-capture="{{capture}}">
+<body data-capture="{{capture}}" data-view="text">
 <div id="app">
 
   <!-- the left sidebar: the server, its channels, the voice controls, and you -->
   <aside id="sidebar" aria-label="Server">
     <header id="serverHead">
-      <span class="mark"><svg class="ic"><use href="#i-hat"></use></svg></span>
-      <div class="server-text">
-        <strong id="partyName">Party</strong>
-        <span id="count" class="muted"></span>
-      </div>
+      <button id="serverMenuBtn" class="server-button" type="button" aria-haspopup="true" aria-expanded="false" title="Server menu">
+        <span id="serverMark" class="mark"><svg class="ic"><use href="#i-hat"></use></svg></span>
+        <span class="server-text">
+          <strong id="partyName">Server</strong>
+          <span id="count" class="muted"></span>
+        </span>
+        <svg class="ic chev-down"><use href="#i-chevron-down"></use></svg>
+      </button>
     </header>
+    <div id="serverMenu" class="menu server-menu" role="menu" hidden></div>
+    <div id="serverPanel" class="popover server-panel" role="dialog" aria-label="Server settings" hidden>
+      <h3>Server settings</h3>
+      <label class="field">Server name
+        <input id="serverNameInput" maxlength="40" autocomplete="off">
+      </label>
+      <div class="icon-row">
+        <span id="serverIconPreview" class="mark big"><svg class="ic"><use href="#i-hat"></use></svg></span>
+        <div class="icon-buttons">
+          <label class="button secondary small file-pick">Choose an icon<input id="serverIconFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden></label>
+          <button id="serverIconClear" class="secondary small" type="button">Remove the icon</button>
+          <span class="muted small">PNG, JPEG, GIF or WebP, up to 2 MB. Shown as it is, never shrunk.</span>
+        </div>
+      </div>
+      <p id="serverProblem" class="problem" role="alert" hidden></p>
+      <div class="row"><button id="serverSave" class="primary small" type="button">Save</button><button id="serverClose" class="secondary small" type="button">Close</button></div>
+    </div>
     <div id="storageMeter" class="storage-meter" hidden>
       <div class="storage-line">
         <span id="storageText"></span>
@@ -87,21 +107,23 @@
   </aside>
 
   <div id="center">
+    <!-- the channel being looked at: a text channel's chat, or a voice channel's screens -->
     <header id="top">
       <button id="sidebarBtn" class="icon" title="Channels and voice" aria-label="Channels and voice"><svg class="ic"><use href="#i-panel-left"></use></svg></button>
-      <div id="titleBlock"><svg class="ic"><use href="#i-screen"></use></svg><strong>Screens</strong></div>
+      <div id="titleBlock"><svg id="titleIcon" class="ic"><use href="#i-hash"></use></svg><strong id="titleText">general</strong><span id="titleNote" class="muted"></span></div>
       <span class="grow"></span>
-      <div class="split" id="liveSplit">
-        <button id="goLive" class="golive">Go Live</button>
-        <button id="liveSettings" class="chev" aria-haspopup="true" aria-expanded="false" aria-controls="livePanel" title="Stream settings" aria-label="Stream settings">
-          <svg class="ic"><use href="#i-chevron-down"></use></svg>
-        </button>
+      <div id="voiceTools" class="voice-tools">
+        <div class="split" id="liveSplit">
+          <button id="goLive" class="golive">Go Live</button>
+          <button id="liveSettings" class="chev" aria-haspopup="true" aria-expanded="false" aria-controls="livePanel" title="Stream settings" aria-label="Stream settings">
+            <svg class="ic"><use href="#i-chevron-down"></use></svg>
+          </button>
+        </div>
+        <button id="viewBtn" class="icon" aria-haspopup="true" aria-expanded="false" aria-controls="viewPanel" title="View options" aria-label="View options"><svg class="ic"><use href="#i-sliders"></use></svg></button>
+        <button id="pipBtn" class="icon" title="Picture in picture" aria-label="Picture in picture"><svg class="ic"><use href="#i-pip"></use></svg></button>
+        <button id="fullBtn" class="icon" title="Fullscreen" aria-label="Fullscreen"><svg class="ic"><use href="#i-fullscreen"></use></svg></button>
       </div>
-      <button id="viewBtn" class="icon" aria-haspopup="true" aria-expanded="false" aria-controls="viewPanel" title="View options" aria-label="View options"><svg class="ic"><use href="#i-sliders"></use></svg></button>
-      <button id="pipBtn" class="icon" title="Picture in picture" aria-label="Picture in picture"><svg class="ic"><use href="#i-pip"></use></svg></button>
-      <button id="fullBtn" class="icon" title="Fullscreen" aria-label="Fullscreen"><svg class="ic"><use href="#i-fullscreen"></use></svg></button>
-      <button id="sideBtn" class="icon" aria-pressed="false" title="Hide the side panel" aria-label="Chat and members"><svg class="ic"><use href="#i-panel-right"></use></svg></button>
-      <button id="leaveBtn" class="danger-ghost">Leave</button>
+      <button id="sideBtn" class="icon" aria-pressed="false" title="Hide the member list" aria-label="Members"><svg class="ic"><use href="#i-users"></use></svg></button>
     </header>
 
     <div id="livePanel" class="popover" role="dialog" aria-label="Stream settings" hidden>
@@ -130,7 +152,7 @@
           <option value="off">Hidden</option>
         </select>
       </label>
-      <p class="muted">Pick a screen, then press Go Live. Pick another and press Go Live again to share it as well.</p>
+      <p class="muted">Your screen goes to the people in your voice channel. Pick a screen, then press Go Live. Pick another and press Go Live again to share it as well.</p>
     </div>
 
     <div id="viewPanel" class="popover" role="dialog" aria-label="View options" hidden>
@@ -159,7 +181,18 @@
     </div>
 
     <div id="body">
-      <main id="stage">
+      <!-- a text channel: its messages and the box to write in -->
+      <section id="chat" aria-labelledby="chatTitle">
+        <h2 id="chatTitle" class="sr-only">Chat</h2>
+        <div id="messages"></div>
+        <form id="chatForm">
+          <input id="chatText" maxlength="500" placeholder="Message this channel" autocomplete="off" aria-label="Message (drop or paste a picture to send it)">
+          <button type="submit" class="send" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button>
+        </form>
+      </section>
+
+      <!-- a voice channel: the screens shared in it, for the people in it -->
+      <main id="stage" hidden>
         <div id="tiles"></div>
         <div id="focusView" hidden>
           <div id="primary"></div>
@@ -167,14 +200,16 @@
         </div>
         <div id="guides"></div>
         <div id="empty">
-          <svg class="ic"><use href="#i-screen"></use></svg>
-          <p>Nobody is live yet.</p>
-          <p class="muted">Press Go Live to share your screen with the party.</p>
+          <svg class="ic"><use href="#i-speaker"></use></svg>
+          <p id="emptyTitle">Nobody is live yet.</p>
+          <p id="emptyText" class="muted">Press Go Live to share your screen with this voice channel.</p>
+          <ul id="voiceRoom" class="voice-room"></ul>
+          <button id="voiceJoin" class="primary" type="button" hidden>Join voice</button>
         </div>
       </main>
 
-      <!-- the right panel: who wants in, your screens, then Chat and Members -->
-      <aside id="side" aria-label="Chat and members">
+      <!-- the right panel: who wants in, your screens, and the members -->
+      <aside id="side" aria-label="Members">
         <section id="requestsBox" hidden>
           <h2>Waiting to join</h2>
           <ul id="requestList"></ul>
@@ -183,22 +218,7 @@
           <h2>Your screens</h2>
           <ul id="myShares"></ul>
         </section>
-
-        <div class="tabs" role="tablist" aria-label="Side panel">
-          <button id="tabChat" role="tab" aria-selected="true" aria-controls="chat">Chat</button>
-          <button id="tabMembers" role="tab" aria-selected="false" aria-controls="people">Members</button>
-        </div>
-
-        <section id="chat" role="tabpanel" aria-labelledby="tabChat">
-          <h2 id="chatTitle">Chat</h2>
-          <div id="messages"></div>
-          <form id="chatForm">
-            <input id="chatText" maxlength="500" placeholder="Message this channel" autocomplete="off" aria-label="Message (drop or paste a picture to send it)">
-            <button type="submit" class="send" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button>
-          </form>
-        </section>
-
-        <section id="people" role="tabpanel" aria-labelledby="tabMembers" hidden>
+        <section id="people">
           <h2>Members</h2>
           <ul id="roster"></ul>
         </section>
@@ -223,7 +243,7 @@
   <div class="drop-card">
     <svg class="ic"><use href="#i-picture"></use></svg>
     <b>Drop to send to <span id="dropChannel">the chat</span></b>
-    <span class="muted">Pictures: PNG, JPEG, GIF or WebP, up to 12 MB each</span>
+    <span class="muted">Any file. Pictures show in the chat at their own size.</span>
   </div>
 </div>
 <div id="status" class="toast error" role="alert" hidden></div>

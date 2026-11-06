@@ -1,7 +1,7 @@
 """The app's own pages, served to its one window on the loopback address.
 
 The main window shows shell.html: the server rail and, in frames, the control panel, direct messages and each server's
-party room. The pages are served over http://127.0.0.1 rather than opened as files, for two reasons. The host's own
+server's room. The pages are served over http://127.0.0.1 rather than opened as files, for two reasons. The host's own
 room is also on 127.0.0.1, so it is the same site as the shell and keeps its strict sign-in cookie inside a frame. And
 the shell and its own pages share one origin, so a page in a frame can use the app's bridge (window.top.pywebview).
 

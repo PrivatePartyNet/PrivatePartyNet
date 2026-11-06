@@ -21,7 +21,7 @@
     </div>
     <nav id="nav" aria-label="Pages">
       <button class="navitem" title="Home" aria-label="Home" data-go="home" aria-current="page"><svg class="ic"><use href="#i-home"></use></svg><span>Home</span><span class="navbadge" id="badgeHome" hidden></span></button>
-      <button class="navitem" title="Join a party" aria-label="Join a party" data-go="join"><svg class="ic"><use href="#i-link"></use></svg><span>Join a party</span></button>
+      <button class="navitem" title="Join a server" aria-label="Join a server" data-go="join"><svg class="ic"><use href="#i-link"></use></svg><span>Join a server</span></button>
       <button class="navitem" title="Nearby PCs" aria-label="Nearby PCs" data-go="nearby"><svg class="ic"><use href="#i-wifi"></use></svg><span>Nearby PCs</span><span class="navbadge neutral" id="badgeNearby" hidden></span></button>
       <button class="navitem" title="Game network" aria-label="Game network" data-go="game"><svg class="ic"><use href="#i-gamepad"></use></svg><span>Game network</span><span class="navlight" id="lightGame" hidden></span></button>
       <button class="navitem" title="Direct messages" aria-label="Direct messages" data-go="messages"><svg class="ic"><use href="#i-chat"></use></svg><span>Direct messages</span><span class="navbadge" id="badgeMessages" hidden></span></button>
@@ -47,36 +47,60 @@
     <section class="page" id="page-home" data-page="home">
       <header class="page-head">
         <h1>Home</h1>
-        <p class="muted">Start a party, or open the one you run. People on your network see it under Nearby PCs.</p>
+        <p class="muted">You, your own server, and how people reach it. Your server and every server you join are listed on the left, and stay there.</p>
       </header>
 
       <div id="requests" class="card accent" hidden>
-        <div class="card-head"><svg class="ic lg"><use href="#i-users"></use></svg><div class="grow"><h2>Asking to join your party</h2><p class="muted">You decide who comes in.</p></div></div>
+        <div class="card-head"><svg class="ic lg"><use href="#i-users"></use></svg><div class="grow"><h2>Asking to join your server</h2><p class="muted">You decide who comes in.</p></div></div>
         <ul id="requestList" class="requests"></ul>
       </div>
 
       <div class="card">
-        <div class="card-head"><svg class="ic lg"><use href="#i-user"></use></svg><div class="grow"><h2>You</h2><p class="muted">Your name shows in the party and on the network. Changes apply at once.</p></div></div>
+        <div class="card-head"><span id="myPicture" class="avatar big" aria-hidden="true"></span><div class="grow"><h2>You</h2><p class="muted">Your name and picture show on every server you are in, beside your messages and in voice. Changes apply at once.</p></div></div>
         <label class="field">Your name
           <input id="name" maxlength="40" autocomplete="off">
         </label>
-        <div class="row bottom">
-          <label class="field small">Port (1024 to 65535)
-            <input id="port" inputmode="numeric" maxlength="5" autocomplete="off">
+        <div class="row">
+          <label class="button secondary file-pick">Choose a picture<input id="pictureFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden></label>
+          <button id="pictureClear" class="secondary" type="button" hidden>Remove the picture</button>
+          <span id="pictureNote" class="muted">PNG, JPEG, GIF or WebP, up to 2 MB. Kept as it is, never shrunk.</span>
+        </div>
+      </div>
+
+      <div id="ownCard" class="card">
+        <div class="card-head"><svg class="ic lg"><use href="#i-server"></use></svg><div class="grow"><h2 id="ownTitle">Create your server</h2><p id="ownNote" class="muted"></p></div></div>
+        <div id="createBox">
+          <label class="field">Server name
+            <input id="newServerName" maxlength="40" autocomplete="off" placeholder="Friday games">
           </label>
-          <button id="toggle" class="primary">Start party</button>
+          <div class="row"><button id="createServer" class="primary">Create your server</button></div>
+        </div>
+        <div id="ownBox" hidden>
+          <div class="row bottom">
+            <label class="field grow">Server name
+              <input id="serverName" maxlength="40" autocomplete="off">
+            </label>
+            <button id="saveServerName" class="secondary">Rename</button>
+          </div>
+          <div class="row bottom">
+            <label class="field small">Port (1024 to 65535)
+              <input id="port" inputmode="numeric" maxlength="5" autocomplete="off">
+            </label>
+            <button id="toggle" class="primary">Start server</button>
+          </div>
+          <label class="check"><input id="autostart" type="checkbox"> Start my server when PrivatePartyNet opens</label>
         </div>
       </div>
 
       <div id="party" class="card" hidden>
-        <div class="card-head"><svg class="ic lg"><use href="#i-server"></use></svg>
-          <div class="grow"><h2>Your party is open</h2><p id="others" class="muted"></p></div>
-          <button id="room" class="secondary"><svg class="ic"><use href="#i-screen"></use></svg>Open party room</button>
+        <div class="card-head"><svg class="ic lg"><use href="#i-users"></use></svg>
+          <div class="grow"><h2>Your server is running</h2><p id="others" class="muted"></p></div>
+          <button id="room" class="secondary"><svg class="ic"><use href="#i-screen"></use></svg>Show your server</button>
         </div>
 
         <div class="subcard">
           <h3>Invite people</h3>
-          <p class="muted">People on your network do not need the password. People joining from outside do, and an invite carries it.</p>
+          <p class="muted">People on your network do not need the password. People joining from outside do, and an invite carries it. Your server goes on their list for good.</p>
           <div class="row">
             <button id="copyInvite" class="secondary"><svg class="ic"><use href="#i-copy"></use></svg>Copy invite</button>
             <span id="inviteNote" class="muted"></span>
@@ -129,8 +153,8 @@
     <!-- Join -->
     <section class="page" id="page-join" data-page="join" hidden>
       <header class="page-head">
-        <h1>Join a party</h1>
-        <p class="muted">Paste an invite code from the host. They see your request and let you in.</p>
+        <h1>Join a server</h1>
+        <p class="muted">Paste an invite code from the host. They see your request and let you in, and the server goes on your list on the left for good.</p>
       </header>
 
       <div id="joinBox" class="card">
@@ -153,7 +177,7 @@
                 <input id="joinPort" inputmode="numeric" maxlength="5" value="8765" autocomplete="off">
               </label>
             </div>
-            <label class="field">Party password
+            <label class="field">Server password
               <input id="joinPassword" type="password" autocomplete="off">
             </label>
             <div class="row"><button id="joinAddressBtn" class="secondary">Ask to join</button></div>
@@ -163,7 +187,7 @@
       </div>
 
       <div class="card">
-        <div class="card-head"><svg class="ic lg"><use href="#i-server"></use></svg><div class="grow"><h2>Servers you joined</h2><p class="muted">Ask to join again when the host is back, or forget a server.</p></div></div>
+        <div class="card-head"><svg class="ic lg"><use href="#i-server"></use></svg><div class="grow"><h2>Servers you joined</h2><p class="muted">The same list as on the left. Show one, or leave it for good.</p></div></div>
         <ul id="joined" class="requests"></ul>
       </div>
     </section>
@@ -185,7 +209,7 @@
           <span id="askNote" class="muted"></span>
         </div>
         <div id="askPasswordRow" class="row bottom" hidden>
-          <label class="field">Party password
+          <label class="field">Server password
             <input id="askPassword" type="password" autocomplete="off">
           </label>
           <button id="askWithPassword" class="secondary">Ask with the password</button>
@@ -202,7 +226,7 @@
 
       <div id="gameBox" class="card">
         <ul id="gameList" class="requests"></ul>
-        <div id="gameNone" class="empty"><svg class="ic"><use href="#i-gamepad"></use></svg><p>Start your party or join one to use its game network.</p></div>
+        <div id="gameNone" class="empty"><svg class="ic"><use href="#i-gamepad"></use></svg><p>Start your server or join one to use its game network.</p></div>
         <p id="gameStatus" class="muted"></p>
         <div class="kv" id="gameAddressRow" hidden><span class="muted">This PC's game address</span><b id="gameAddress" class="mono-text"></b></div>
         <div class="row"><button id="gameOff" class="secondary" hidden>Turn the game network off</button></div>
@@ -217,7 +241,7 @@
 
       <div class="card">
         <div class="card-head"><svg class="ic lg"><use href="#i-network"></use></svg><div class="grow"><h2>Going through this PC</h2><p class="muted">Members who cannot reach each other can pass through a PC that is willing.</p></div></div>
-        <label class="switch"><input id="friendRelay" type="checkbox"><span>Let party members who can't reach each other go through this PC (encrypted; uses your upload)</span></label>
+        <label class="switch"><input id="friendRelay" type="checkbox"><span>Let members who can't reach each other go through this PC (encrypted; uses your upload)</span></label>
         <label class="field small">At most (Mbit/s)
           <input id="friendRelayMbps" inputmode="numeric" maxlength="4" autocomplete="off">
         </label>
@@ -225,9 +249,9 @@
       </div>
 
       <details id="gameReach">
-        <summary>What party members can reach on this PC</summary>
+        <summary>What members of your servers can reach on this PC</summary>
         <div class="details-body">
-          <p class="muted">Games always work. Windows' own services are closed to party members unless you open them here. This is for this PC only and takes effect at once. Bonjour (mDNS), which some games use to find each other, always stays open.</p>
+          <p class="muted">Games always work. Windows' own services are closed to members unless you open them here. This is for this PC only and takes effect at once. Bonjour (mDNS), which some games use to find each other, always stays open.</p>
           <div id="gameReachList" class="stack tight"></div>
         </div>
       </details>
@@ -237,7 +261,7 @@
     <section class="page" id="page-messages" data-page="messages" hidden>
       <header class="page-head">
         <h1>Direct messages</h1>
-        <p class="muted">Write to anyone on your network, with no party open. Messages are sealed to the other person's key and kept on both PCs.</p>
+        <p class="muted">Write to anyone on your network, with no server needed. Messages are sealed to the other person's key and kept on both PCs.</p>
       </header>
       <div id="messagesBox" class="card">
         <div class="row"><button id="openMessages" class="primary"><svg class="ic"><use href="#i-chat"></use></svg>Open messages</button> <span id="dmUnread" class="muted"></span></div>
@@ -332,7 +356,7 @@
             <button role="radio" aria-checked="false" data-density="spacious">Spacious</button>
           </div>
         </div>
-        <p class="muted">These are this PC's own choices; nobody else sees them. Every window on this PC follows them, the parties you join included.</p>
+        <p class="muted">These are this PC's own choices; nobody else sees them. Every window on this PC follows them, the servers you join included.</p>
       </div>
 
       <div class="card" id="soundsCard">
@@ -341,7 +365,7 @@
         <div class="sound-row"><label class="switch"><input type="checkbox" data-sound="voice"><span>Joining and leaving voice, yours and other people's</span></label><button class="secondary small" type="button" data-play="join">Play</button></div>
         <div class="sound-row"><label class="switch"><input type="checkbox" data-sound="mute"><span>Mute, unmute, deafen</span></label><button class="secondary small" type="button" data-play="mute">Play</button></div>
         <div class="sound-row"><label class="switch"><input type="checkbox" data-sound="messages"><span>Messages while you are not looking at them</span></label><button class="secondary small" type="button" data-play="message">Play</button></div>
-        <div class="sound-row"><label class="switch"><input type="checkbox" data-sound="requests"><span>Someone asks to join your party</span></label><button class="secondary small" type="button" data-play="request">Play</button></div>
+        <div class="sound-row"><label class="switch"><input type="checkbox" data-sound="requests"><span>Someone asks to join your server</span></label><button class="secondary small" type="button" data-play="request">Play</button></div>
       </div>
 
       <div class="card" id="updatesCard">

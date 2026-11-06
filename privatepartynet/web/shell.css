@@ -30,7 +30,7 @@ html, body { height: 100%; overflow: hidden; }
 .srv-item { position: relative; display: grid; place-items: center; width: 72px; }
 .srv-item::before { content: ""; position: absolute; left: 0; top: 50%; width: 4px; height: 0; border-radius: 0 4px 4px 0;
   background: var(--text); transform: translateY(-50%); transition: height 0.15s; }
-.srv-item.unread::before { height: 8px; }
+.srv-item.has-unread::before { height: 8px; }
 .srv-item:hover::before { height: 20px; }
 .srv-item.current::before { height: 40px; }
 
@@ -87,3 +87,12 @@ html, body { height: 100%; overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .srv, .srv-item::before { transition: none; }
 }
+
+/* a server whose room is not open: dimmed, with a mark saying it is off or out of reach; connecting pulses */
+.srv-item.away .srv { opacity: 0.55; }
+.srv-item.away .srv:hover, .srv-item.away.current .srv { opacity: 0.85; }
+.srv-mark.off { right: -4px; bottom: -4px; top: auto; width: 14px; height: 14px; background: var(--muted); }
+.srv-item.connecting .srv { animation: srv-pulse 1.4s ease-in-out infinite; }
+@keyframes srv-pulse { 50% { opacity: 0.35; } }
+.view-note .card p { margin: var(--sp-2) 0 var(--sp-4); }
+.view-note .card .row { justify-content: center; flex-wrap: wrap; }

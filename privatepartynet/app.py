@@ -1,4 +1,4 @@
-"""PrivatePartyNet's host app: a native window with the party controls, and the party room in its own native window.
+"""PrivatePartyNet's app: one native window with the rail of servers, Home, and each server's room in it.
 
 The windows are WebView2 windows (pywebview), so there is no browser chrome. The controls are web pages in the
 app's window and talk to this Python object through the bridge. Guests who join from another PC use their own
@@ -55,6 +55,7 @@ _HIDDEN_KINDS = frozenset({"a certificate or key", "a code or token"})
 DEFAULT_PORT = 8765
 REQUEST_LIFETIME = 30.0
 MUTEX_NAME = "Local\\PrivatePartyNet.HostWindow"
+SHOW_EVENT = "Local\\PrivatePartyNet.ShowWindow"  # a second copy sets it; the first brings its window to the front
 ERROR_ALREADY_EXISTS = 183
 
 log = logging.getLogger("privatepartynet")
@@ -83,6 +84,53 @@ def acquire_single_instance():
     return ctypes.get_last_error() != ERROR_ALREADY_EXISTS
 
 
+def ask_first_copy_to_show():
+    """A second copy was started: ask the running one to bring its window to the front, so starting PrivatePartyNet
+    again shows the one window instead of a second one. The second copy may hand its right to take the foreground."""
+    if sys.platform != "win32":
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32.OpenEventW.restype = ctypes.c_void_p
+    kernel32.OpenEventW.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_wchar_p]
+    kernel32.SetEvent.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    user32.AllowSetForegroundWindow(ctypes.c_uint32(0xFFFFFFFF))  # ASFW_ANY
+    handle = kernel32.OpenEventW(0x0002, False, SHOW_EVENT)  # EVENT_MODIFY_STATE
+    if handle:
+        kernel32.SetEvent(handle)
+        kernel32.CloseHandle(handle)
+
+
+def watch_for_second_copy(window, stop):
+    """Bring `window` to the front each time a second copy asks (ask_first_copy_to_show), until `stop` is set. Waits in
+    steps of a second, so it ends within a second of the app closing."""
+    if sys.platform != "win32":
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateEventW.restype = ctypes.c_void_p
+    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_bool, ctypes.c_wchar_p]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel32.CreateEventW(None, False, False, SHOW_EVENT)  # auto-reset
+    if not handle:
+        return
+    try:
+        while not stop.is_set():
+            if kernel32.WaitForSingleObject(handle, 1000) != 0:  # WAIT_OBJECT_0
+                continue
+            try:
+                window.restore()
+                window.show()
+                window.on_top = True
+                window.on_top = False
+            except Exception:
+                log.debug("The window could not be brought to the front", exc_info=True)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def report_crash(exc_type, exc, traceback):
     """Anything the app does not catch is logged, so it does not vanish silently."""
     log.error("Unhandled error", exc_info=(exc_type, exc, traceback))
@@ -92,7 +140,7 @@ CREDITS = (
     ("pywebview", "pywebview", "the native window around the web pages"),
     ("mss", "mss", "screen capture"),
     ("Pillow", "Pillow", "picture encoding"),
-    ("cryptography", "cryptography", "the party's certificate"),
+    ("cryptography", "cryptography", "each server's certificate"),
     ("psutil", "psutil", "the CPU readout"),
     ("pythonnet", "pythonnet", "the bridge to Windows"),
 )
@@ -149,69 +197,65 @@ KEEP_BLOBS = 20  # pictures one call may ask for
 
 
 class WindowApi:
-    """The calls a party window may make into the app. The window's page is the only caller. It may ask for a pop-out
-    window on the same server it came from (the path it sends is checked first), and to close its own window, which
-    closes the pop-outs it opened with it. Names that start with an underscore are not offered to the page.
+    """The calls a server's room may make into the app. The room is a frame of the one window; the window's own page
+    (appshell.js) passes on only these calls (ROOM_CALLS), only from that room's frame, keyed by the server. Names that
+    start with an underscore are not offered. There are no pop-out windows: PrivatePartyNet is one window (K, November
+    5th: "be sure that PPN never exists in more than one window").
 
-    A member's window also hands over the chat it receives (keep_chat, keep_blob), which the app seals into this PC's
-    own store, so the member keeps the history after the party closes, can read it while the host is off, and has it in
-    a backup. The page is served by the host, so everything it hands over is checked and bounded, and a window is held
-    to the one server it first named."""
+    A member's room also hands over the chat it receives (keep_chat, keep_blob), which the app seals into this PC's own
+    store, so the member keeps the history after the server closes, can read it while the host is off, and has it in a
+    backup. The page is served by the host, so everything it hands over is checked and bounded, and a room is held to
+    the one server it first named."""
 
-    def __init__(self, origin, store=None, appearance=None, on_close=None, fullscreen=None):
+    def __init__(self, origin, store=None, appearance=None, on_close=None, fullscreen=None, picture=None, look=None):
         self._origin = origin
         self._appearance = appearance  # a callable giving this person's accent, text size and spacing (Settings)
-        # In the one window a room is a frame: closing it takes it off the rail (on_close), and fullscreen is the whole
-        # window's, shared by every room (fullscreen).
-        self._on_close = on_close
-        self._fullscreen_hook = fullscreen
-        self._window = None
-        self._children = []
-        self._fullscreen = False
-        self._store = store  # a callable returning the store, or None for the host's own window (the party stores it)
+        self._on_close = on_close  # takes the room off the rail
+        self._fullscreen_hook = fullscreen  # the whole window's fullscreen, shared by every room
+        self._picture = picture  # a callable giving this person's own picture: {"hash", "data"} or None
+        self._look = look  # a callable(name, picture bytes or None): the server's name and icon, for its place on the rail
+        self._store = store  # a callable returning the store, or None for the host's own room (the server stores it)
         self._server = None
-
-    def _attach(self, window):
-        """Remember which window this API belongs to, and close its pop-outs whenever it closes."""
-        self._window = window
-        window.events.closed += self._close_children
-        return window
-
-    def _close_children(self, *_):
-        children, self._children = self._children, []
-        for child in children:
-            try:
-                child.destroy()
-            except Exception:
-                log.debug("A pop-out window was already closed", exc_info=True)
 
     def appearance(self):
         """How this person has every window look (their accent, text size and spacing), for the party page to apply."""
         return self._appearance() if self._appearance else None
 
-    def open_viewer(self, path):
-        if not isinstance(path, str) or not path.startswith("/join?token=") or any(c in path for c in "\\\r\n\t "):
-            return {"ok": False, "message": "That window cannot be opened."}
-        # a pop-out shows one screen, in this person's look; the member's own window keeps the chat
-        api = WindowApi(self._origin, appearance=self._appearance)
-        child = webview.create_window("PrivatePartyNet screen", url=self._origin + path, width=960, height=540, js_api=api)
-        api._attach(child)
-        self._children.append(child)
-        return {"ok": True, "message": ""}
-
     def set_fullscreen(self, on):
-        """Make this window cover the whole display it is on, or put it back. The window host ignores the browser's
-        own fullscreen request (an element would only fill the page inside the window's frame), so the page asks here."""
-        if self._fullscreen_hook is not None:
-            return self._fullscreen_hook(bool(on))
-        window = self._window
-        if window is None:
+        """Make the window cover the whole display it is on, or put it back. The window host ignores the browser's own
+        fullscreen request (an element would only fill the page inside the window's frame), so the page asks here."""
+        if self._fullscreen_hook is None:
             return {"ok": False, "fullscreen": False}
-        on = bool(on)
-        if on != self._fullscreen:
-            window.toggle_fullscreen()
-            self._fullscreen = on
-        return {"ok": True, "fullscreen": on}
+        return self._fullscreen_hook(bool(on))
+
+    def my_picture(self):
+        """This person's own picture (Settings, My profile), for the room to hand to its server: {"hash", "data"} (base64)
+        or {"hash": None} when there is none."""
+        picture = self._picture() if self._picture else None
+        return picture or {"hash": None, "data": ""}
+
+    def server_look(self, name, icon_b64=""):
+        """The room says what its server is called and its icon, for its place on the rail (kept for when the server is
+        out of reach). Checked: a name of printable characters, a picture of a known kind up to the icon size."""
+        from privatepartynet.server import MAX_PICTURE, sniff_image
+
+        if not isinstance(name, str) or not isinstance(icon_b64, str) or self._look is None:
+            return {"ok": False}
+        name = "".join(c for c in name if c.isprintable()).strip()[:40]
+        data = None
+        if icon_b64:
+            if len(icon_b64) > MAX_PICTURE * 4 // 3 + 8:
+                return {"ok": False}
+            try:
+                data = base64.b64decode(icon_b64, validate=True)
+            except ValueError:
+                return {"ok": False}
+            if sniff_image(data) is None:
+                return {"ok": False}
+        if not name:
+            return {"ok": False}
+        self._look(name, data)
+        return {"ok": True}
 
     def keep_chat(self, server, server_name, channels, messages):
         """Save chat this window received into this PC's own encrypted store. Returns {ok, missing}: the pictures among
@@ -300,20 +344,15 @@ class WindowApi:
         return {"ok": True}
 
     def close_window(self):
-        """Close the window that asked, and its pop-outs. A page calls this when its member leaves the party."""
-        window = self._window
-        self._close_children()
-        if self._on_close is not None:
-            self._on_close()
-            return {"ok": True, "message": ""}
-        if window is None:
-            return {"ok": False, "message": "No window to close."}
-        window.destroy()
+        """Take the room off the rail. A room calls this when its member leaves the server."""
+        if self._on_close is None:
+            return {"ok": False, "message": "No room to close."}
+        self._on_close()
         return {"ok": True, "message": ""}
 
 
-# What a party room inside the one window may ask of the app: WindowApi's own calls (test_app checks they match).
-ROOM_CALLS = ("open_viewer", "close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance")
+# What a server's room inside the one window may ask of the app: WindowApi's own calls (test_app checks they match).
+ROOM_CALLS = ("close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture", "server_look")
 
 
 class Controller:
@@ -336,8 +375,6 @@ class Controller:
         self._requests = {}  # id -> {id, name, address, at}
         self._notice = ""
         self._window = None
-        self._rooms = []
-        self._info_open = set()
         self._vault = None
         self._store = None
         self._identity = None
@@ -383,6 +420,8 @@ class Controller:
         if self._probe_network:  # a test or diagnostic run (discovery port 0) never asks GitHub
             self.updater.start()
         self._tunnels = {}  # joined server key -> the punch-through tunnel it is reached by
+        self._connecting = {}  # joined server key -> the Joiner reaching it again (connect_server)
+        self._rail_note = {}  # joined server key -> {"state", "message"} when it could not be opened
 
     # --- the key, the identity and the chat store ----------------------------------------------------------
 
@@ -406,9 +445,13 @@ class Controller:
             self._secure_error = f"Your saved chats could not be opened: {plain_error(exc)}"
 
     def unlock(self, password):
-        """Give the password that protects the saved chats. Returns {ok, message}."""
+        """Give the password that protects the saved chats. Returns {ok, message}. Your server and your list of servers
+        come back once it is open."""
+        was_locked = self._store is None
         self._open_secure(str(password or ""))
         self._start_dm()
+        if was_locked and self._store is not None and self._shell is not None:
+            threading.Thread(target=self.start_saved, name="privatepartynet-start-saved", daemon=True).start()
         return {"ok": self._store is not None, "message": self._secure_error}
 
     def set_chat_password(self, new_password, old_password=None):
@@ -669,7 +712,7 @@ class Controller:
         self._start_host_punch()
         secret = self._party.new_invite_secret()
         whole, spki = pins_of_pem(self._cert_pem)
-        code = connect.encode_invite(self._name, self._party.passcode, candidates, whole,
+        code = connect.encode_invite(self._party.party_name, self._party.passcode, candidates, whole,
                                      server_id=self._settings.get("server_id") or "",
                                      host_sign=self._identity.sign_public.hex() if self._identity else "",
                                      secret=secret, relays=self._party.invite_relays(bytes.fromhex(secret)), spki=spki)
@@ -682,7 +725,7 @@ class Controller:
         """The invite code for this party: the name, the password, where to try and the certificate to check."""
         code = self._invite_code()
         if not code:
-            return {"ok": False, "invite": "", "message": "Start the party first."}
+            return {"ok": False, "invite": "", "message": "Start your server first."}
         return {"ok": True, "invite": code, "message": ""}
 
     def join_invite(self, code):
@@ -707,7 +750,7 @@ class Controller:
         except ValueError:
             return {"ok": False, "message": "Enter the host's address as numbers (like 203.0.113.5) and a port from 1 to 65535."}
         kind = "ipv6" if ":" in address else "lan" if address.startswith(("10.", "192.168.", "172.")) else "public"
-        invite = {"name": str(name or "Party")[:40], "password": str(password or ""), "candidates": [[kind, address, port]],
+        invite = {"name": str(name or "Server")[:40], "password": str(password or ""), "candidates": [[kind, address, port]],
                   "fingerprint": "", "server_id": "", "host_sign": "", "source": "address"}
         return self._begin_join(invite)
 
@@ -753,11 +796,11 @@ class Controller:
             if not self._joiner_opened:
                 self._joiner_opened = True
                 invite = joiner.invite
-                self._remember_server(invite, joiner)
-                # The window accepts the certificate this join checked, and no other.
-                self._join({"url": status["url"], "name": invite["name"],
+                key = self._remember_server(invite, joiner)
+                # The room accepts the certificate this join checked, and no other.
+                self._join({"url": status["url"], "name": invite["name"], "key": key,
                             "pins": (joiner.seen_fingerprint, joiner.seen_spki), "embed": getattr(joiner, "embed", False)})
-            status["state"], status["message"] = "joined", "Opening the party window."
+            status["state"], status["message"] = "joined", "You are in. The server is on your list at the left."
         status.pop("url", None)
         return status
 
@@ -767,45 +810,128 @@ class Controller:
         return {"ok": True}
 
     def _remember_server(self, invite, joiner):
-        """Keep what is needed to ask again: the name, where to try, the password and the host's certificate."""
+        """Put the server on this PC's list for good (K, November 5th: joining a server should add it to the list and it
+        should stay there), with what is needed to reach it again: where to try, the password and the host's
+        certificate. Returns its key on the list ("joined-<server id>"), or None when there is no store."""
         if self._store is None:
-            return
+            return None
         fingerprint = invite["fingerprint"] or joiner.seen_fingerprint
         spki = invite.get("spki") or joiner.seen_spki
         key = invite["server_id"] or (fingerprint[:16] if fingerprint else "")
         if not key:
-            return
-        self._store.save_server("joined-" + key, {"name": invite["name"], "candidates": invite["candidates"],
-                                                    "password": invite["password"], "fingerprint": fingerprint,
-                                                    "spki": spki, "server_id": invite["server_id"], "joined": True,
-                                                    "host_sign": invite.get("host_sign", ""),
-                                                    "secret": invite.get("secret", "")})
+            return None
+        key = "joined-" + key
+        old = self._store.server(key) or {}
+        self._store.save_server(key, {**old, "name": old.get("name") or invite["name"], "candidates": invite["candidates"],
+                                      "password": invite["password"], "fingerprint": fingerprint, "spki": spki,
+                                      "server_id": invite["server_id"], "joined": True,
+                                      "host_sign": invite.get("host_sign", ""), "secret": invite.get("secret", ""),
+                                      "joined_at": old.get("joined_at") or time.time()})
         if joiner.tunnel is not None:
-            old = self._tunnels.pop("joined-" + key, None)
-            if old is not None and old is not joiner.tunnel:
-                old.close()
-            self._tunnels["joined-" + key] = joiner.tunnel
+            previous = self._tunnels.pop(key, None)
+            if previous is not None and previous is not joiner.tunnel:
+                previous.close()
+            self._tunnels[key] = joiner.tunnel
+        return key
 
     def joined_servers(self):
-        """Parties joined before, for the list: ask again with one click."""
+        """The servers on this PC's list, in the order they were joined: the rail shows them, the game network page
+        offers them. {key, name, icon} (icon: the hash of the picture kept for it, or "")."""
         if self._store is None:
             return []
-        return [{"key": item["server_id"], "name": item["record"].get("name", "Party")}
-                for item in self._store.server_items() if item["server_id"].startswith("joined-")]
+        items = [(item["record"].get("joined_at") or 0, item["server_id"], item["record"])
+                 for item in self._store.server_items() if item["server_id"].startswith("joined-")]
+        items.sort(key=lambda item: (item[0], item[1]))
+        return [{"key": key, "name": record.get("name") or "Server", "icon": record.get("icon") or ""}
+                for _, key, record in items]
+
+    @staticmethod
+    def _invite_of(record):
+        return {"name": record.get("name") or "Server", "password": record.get("password", ""),
+                "candidates": record.get("candidates") or [], "fingerprint": record.get("fingerprint", ""),
+                "spki": record.get("spki", ""), "server_id": record.get("server_id", ""),
+                "host_sign": record.get("host_sign", ""), "secret": record.get("secret", ""), "source": "remembered"}
+
+    def connect_server(self, key):
+        """Reach a server on the list again: at start, and with Try again on the rail. Someone the server let in before
+        comes straight back in, with no one asked; the room then opens in its place on the rail (shell_state)."""
+        key = str(key or "")
+        record = self._store.server(key) if self._store is not None and key.startswith("joined-") else None
+        if record is None:
+            return {"ok": False, "message": "That server is no longer on your list."}
+        if key in self._room_apis:
+            return {"ok": True, "message": ""}
+        running = self._connecting.get(key)
+        if running is not None and running.status["state"] in ("trying", "waiting"):
+            return {"ok": True, "message": ""}
+        if self._identity is None:
+            return {"ok": False, "message": self._secure_error or "Enter the password for your saved chats first."}
+        invite = self._invite_of(record)
+        if not invite["candidates"] and not invite["secret"]:
+            self._rail_note[key] = {"state": "offline", "message": "No address is known for this server."}
+            return {"ok": False, "message": "No address is known for this server."}
+        joiner = connect.Joiner(invite, self._name, identity=self._identity)
+        joiner.peer_id = None
+        self._connecting[key] = joiner
+        self._rail_note.pop(key, None)
+        threading.Thread(target=joiner.run, name="privatepartynet-reconnect", daemon=True).start()
+        return {"ok": True, "message": ""}
+
+    def _check_connecting(self):
+        """Open the servers that answered since the last look, and note the ones that could not be reached."""
+        for key, joiner in list(self._connecting.items()):
+            status = joiner.status
+            if status["state"] in ("trying", "waiting"):
+                continue
+            del self._connecting[key]
+            if status["state"] == "allowed":
+                self._remember_server(joiner.invite, joiner)
+                record = self._store.server(key) if self._store is not None else None
+                # select False: a server coming back on its own does not take over what the person is looking at; one
+                # they are looking at (its card, Try again) opens right there
+                self._join({"url": status["url"], "name": (record or {}).get("name") or joiner.invite["name"],
+                            "key": key, "pins": (joiner.seen_fingerprint, joiner.seen_spki),
+                            "embed": getattr(joiner, "embed", False), "select": False})
+            else:
+                self._rail_note[key] = {"state": "offline", "message": status.get("message") or "The server did not answer."}
 
     def rejoin(self, key):
-        record = self._store.server(str(key)) if self._store is not None else None
-        if not record or not str(key).startswith("joined-"):
-            return {"ok": False, "message": "That party is no longer in your list."}
-        return self._begin_join({"name": record["name"], "password": record["password"], "candidates": record["candidates"],
-                                 "fingerprint": record.get("fingerprint", ""), "spki": record.get("spki", ""),
-                                 "server_id": record.get("server_id", ""), "host_sign": record.get("host_sign", ""),
-                                 "secret": record.get("secret", ""), "source": "remembered"})
+        """Home's list of servers: reach one again and show it."""
+        result = self.connect_server(key)
+        if result["ok"]:
+            self._shell_queue({"type": "show", "key": str(key)})
+        return result
 
     def forget_joined(self, key):
-        if self._store is not None and str(key).startswith("joined-"):
-            self._store.forget_server(str(key))
-        return {"ok": True}
+        """Leave a server for good: it goes from the list and the rail. Its saved messages stay in the store."""
+        key = str(key or "")
+        if not key.startswith("joined-"):
+            return {"ok": False, "message": "That is not a server you joined."}
+        joiner = self._connecting.pop(key, None)
+        if joiner is not None:
+            joiner.cancel()
+        self._rail_note.pop(key, None)
+        tunnel = self._tunnels.pop(key, None)
+        if tunnel is not None:
+            tunnel.close()
+        if key in self._room_apis:
+            self._shell_room_closed(key)
+        if self._store is not None:
+            self._store.forget_server(key)
+        if self._game is not None and self._game["key"] == key:
+            self.game_off()
+        return {"ok": True, "message": ""}
+
+    def _server_look(self, key, name, data):
+        """A joined server's room said its name and icon: keep them for its place on the rail."""
+        if self._store is None or not key.startswith("joined-"):
+            return
+        record = self._store.server(key)
+        if record is None:
+            return
+        icon = self._store.put_blob(data) if data is not None else ""
+        if record.get("name") != name or (record.get("icon") or "") != icon:
+            self._store.save_server(key, {**record, "name": name, "icon": icon})
 
     # --- the game network ----------------------------------------------------------------------------------
 
@@ -876,7 +1002,7 @@ class Controller:
         stop = threading.Event()
         if key == "own":
             if self._party is None:
-                return {"ok": False, "message": "Start your party first: your server's game network runs while it is open."}
+                return {"ok": False, "message": "Start your server first: its game network runs while it is open."}
             server_key = self._party.server_id
         else:
             record = self._store.server(key) if self._store is not None and key.startswith("joined-") else None
@@ -1085,7 +1211,7 @@ class Controller:
         if path is None:
             return {"ok": False, "message": "Cancelled."}
         if use_identity and self._party is not None:
-            return {"ok": False, "message": "Close your party first: the identity cannot change while it is open."}
+            return {"ok": False, "message": "Stop your server first: the identity cannot change while it is running."}
         try:
             return self._import_from(path, str(passphrase or ""), bool(use_identity))
         except (backup.BackupError, VaultError, OSError) as exc:
@@ -1111,16 +1237,137 @@ class Controller:
             del self._shell_events[:-200]
 
     def shell_state(self):
-        """What the one window's rail needs, asked for every second: unread direct messages, the theme and look, and
-        the servers to open or close and the pages to show since it last asked (each once)."""
+        """What the one window's rail needs, asked for every second: unread direct messages, the theme and look, every
+        server on this PC's list with how it stands, and the rooms to open or close and the pages to show since it last
+        asked (each once)."""
+        self._check_connecting()
         with self._shell_lock:
             events, self._shell_events = self._shell_events, []
         return {"dm_unread": self._dm_unread(), "theme": self._settings.get("theme", "dark"),
                 "appearance": self.appearance(), "sounds": self.sounds(), "running": self._party is not None,
-                "events": events}
+                "servers": self._rail_servers(), "picture": self._settings.get("picture") or "",
+                "name": self._name, "events": events}
+
+    def _rail_servers(self):
+        """The rail's list (K, November 5th: a server you start or join goes on your list and stays there): your own
+        server once you have made one, then every server joined, oldest first. state: "open" (its room is in its place),
+        "starting", "stopped" (your own, not running), "connecting", "offline" (could not be reached; `message` says
+        why)."""
+        listed = []
+        if self._settings.get("server_id"):
+            state = "open" if "own" in self._room_apis else "starting" if self._party is not None else "stopped"
+            listed.append({"key": "own", "name": self.server_name(), "own": True, "state": state, "message": "",
+                           "icon": self._own_icon()})
+        for server in self.joined_servers():
+            key = server["key"]
+            if key in self._room_apis:
+                state, message = "open", ""
+            elif key in self._connecting:
+                state, message = "connecting", self._connecting[key].status.get("message") or ""
+            else:
+                note = self._rail_note.get(key) or {}
+                state, message = note.get("state", "offline"), note.get("message", "")
+            listed.append({"key": key, "name": server["name"], "own": False, "state": state, "message": message,
+                           "icon": server["icon"]})
+        return listed
+
+    def server_icon(self, key):
+        """A server's icon for its place on the rail: {"ok", "src"} (a data: address, "" when it has none)."""
+        key = str(key or "")
+        if key == "own":
+            digest = self._own_icon()
+        else:
+            record = self._store.server(key) if self._store is not None and key.startswith("joined-") else None
+            digest = (record or {}).get("icon") or ""
+        return {"ok": True, "src": self._picture_src(digest)}
+
+    def _picture_src(self, digest):
+        from privatepartynet.server import sniff_image
+
+        if not digest or self._store is None:
+            return ""
+        try:
+            data = self._store.get_blob(digest)
+        except VaultError:
+            return ""
+        if not data or sniff_image(data) is None:
+            return ""
+        return f"data:{sniff_image(data)};base64," + base64.b64encode(data).decode("ascii")
+
+    def _own_icon(self):
+        if self._party is not None:
+            return self._party.icon() or ""
+        record = self._store.server(self._settings["server_id"]) if self._store is not None and self._settings.get("server_id") else None
+        return (record or {}).get("icon") or ""
+
+    def server_name(self):
+        """Your own server's name: the running server's (the owner or an admin may have renamed it from its room), or the
+        saved one."""
+        if self._party is not None:
+            return self._party.party_name
+        record = self._store.server(self._settings["server_id"]) if self._store is not None and self._settings.get("server_id") else None
+        return (record or {}).get("name") or self._settings.get("server_name") or f"{self._name}'s server"
+
+    def rename_server(self, name):
+        """Name your own server (Home, Your server). Its room's server settings do the same for the owner and admins."""
+        name = "".join(c for c in str(name or "") if c.isprintable()).strip()[:40]
+        if not name:
+            return {"ok": False, "message": "Give the server a name."}
+        self._save(server_name=name)
+        if self._party is not None:
+            self._party.rename_server(self._party.host_id, name)
+        elif self._store is not None and self._settings.get("server_id"):
+            record = self._store.server(self._settings["server_id"])
+            if record is not None:
+                self._store.save_server(self._settings["server_id"], {**record, "name": name})
+        return {"ok": True, "message": ""}
+
+    def set_server_autostart(self, on):
+        self._save(server_autostart=bool(on))
+        return {"ok": True, "message": ""}
+
+    # --- your own picture ------------------------------------------------------------------------------------------
+
+    def set_picture(self, data_b64):
+        """Your picture (Settings, My profile), shown beside your name on every server you are in and on the rail. Kept
+        at its own size; up to 2 MB. An empty string takes it away. Rooms hand it to their servers (WindowApi.my_picture)."""
+        from privatepartynet.server import MAX_PICTURE, MAX_PICTURE_TEXT, sniff_image
+
+        if self._store is None:
+            return {"ok": False, "message": self._secure_error or "Enter the password for your saved chats first."}
+        if not data_b64:
+            self._save(picture="")
+            return {"ok": True, "message": "", "src": ""}
+        if not isinstance(data_b64, str) or len(data_b64) > MAX_PICTURE * 4 // 3 + 8:
+            return {"ok": False, "message": f"A picture can be up to {MAX_PICTURE_TEXT}."}
+        try:
+            data = base64.b64decode(data_b64, validate=True)
+        except ValueError:
+            return {"ok": False, "message": "That picture could not be read."}
+        if len(data) > MAX_PICTURE:
+            return {"ok": False, "message": f"A picture can be up to {MAX_PICTURE_TEXT}."}
+        if sniff_image(data) is None:
+            return {"ok": False, "message": "Use a PNG, JPEG, GIF or WebP picture."}
+        self._save(picture=self._store.put_blob(data))
+        return {"ok": True, "message": "", "src": self._picture_src(self._settings["picture"])}
+
+    def picture(self):
+        """Your picture for the page: {"hash", "src"}."""
+        digest = self._settings.get("picture") or ""
+        return {"hash": digest, "src": self._picture_src(digest)}
+
+    def _my_picture(self):
+        digest = self._settings.get("picture") or ""
+        if not digest or self._store is None:
+            return None
+        try:
+            data = self._store.get_blob(digest)
+        except VaultError:
+            return None
+        return {"hash": digest, "data": base64.b64encode(data).decode("ascii")} if data else None
 
     def room_call(self, key, method, args):
-        """A party room inside the one window asks the app for something (roombridge.js, through appshell.js, which
+        """A server's room inside the one window asks the app for something (roombridge.js, through appshell.js, which
         checked it came from that room's frame). Only WindowApi's own calls, and only for the room that asked."""
         api = self._room_apis.get(key) if isinstance(key, str) else None
         if api is None or method not in ROOM_CALLS or not isinstance(args, (list, tuple)) or len(args) > 6:
@@ -1131,11 +1378,11 @@ class Controller:
             return {"ok": False, "message": "That request was not understood."}
 
     def _shell_room(self, key, name, url, origin, own=False, select=True, store=None):
-        """Put a party's room on the rail (or show it when it is there already)."""
+        """Put a server's room in its place on the rail (or show it when it is there already)."""
         if key not in self._room_apis:
             api = WindowApi(origin, store=store, appearance=self.appearance,
-                            on_close=lambda: self._shell_room_closed(key), fullscreen=self._set_fullscreen)
-            api._window = self._window
+                            on_close=lambda: self._shell_room_closed(key), fullscreen=self._set_fullscreen,
+                            picture=self._my_picture, look=lambda name, data: self._server_look(key, name, data))
             self._room_apis[key] = api
             if not own:
                 self._party_windows.add(key)
@@ -1143,9 +1390,7 @@ class Controller:
         self._shell_queue({"type": "open", "key": key, "name": name, "url": url, "own": own, "select": select})
 
     def _shell_room_closed(self, key):
-        api = self._room_apis.pop(key, None)
-        if api is not None:
-            api._close_children()
+        self._room_apis.pop(key, None)
         if key in self._party_windows:
             self._party_windows.discard(key)
             self.updater.busy_changed()
@@ -1159,6 +1404,19 @@ class Controller:
         port = self._party.local_port
         self._shell_room("own", self._party.party_name, f"http://127.0.0.1:{port}/host", f"http://127.0.0.1:{port}",
                          own=True, select=select)
+
+    def start_saved(self):
+        """When the app opens: start your own server if it is set to (on unless turned off in Home), and reach every
+        server on your list again, so the rail is as it was. Runs once the window is up (webview.start), and again
+        after the saved chats' password is given."""
+        if self._store is None or self._identity is None:
+            return
+        if self._settings.get("server_id") and self._settings.get("server_autostart", True) and self._party is None:
+            result = self._start(self._name, self._settings["port"], select=False)
+            if not result["ok"]:
+                log.warning("Your server did not start with the app: %s", result["message"])
+        for server in self.joined_servers():
+            self.connect_server(server["key"])
 
     def _shell_refused(self, refused_origin):
         self._shell_queue({"type": "refused", "origin": refused_origin})
@@ -1197,6 +1455,9 @@ class Controller:
             "locked": self._store is None and self._vault is not None and self._vault.has_password,
             "chat_password": bool(self._vault and self._vault.has_password),
             "user_id": self._identity.user_id if self._identity else "",
+            "server": {"made": bool(self._settings.get("server_id")), "name": self.server_name() if self._settings.get("server_id") else "",
+                       "autostart": self._settings.get("server_autostart", True) is not False},
+            "picture": self._settings.get("picture") or "",
             "dm_unread": self._dm_unread(),
             "reach": self._reach_view(),
             "game": self.game_state(),
@@ -1232,7 +1493,8 @@ class Controller:
                 elif kind == "request":
                     self._requests[data["id"]] = {**data, "at": time.monotonic()}
                 elif kind == "accepted":
-                    self._notice = f"{data['name']} let you in. Opening the party window."
+                    self._notice = f"{data['name']} let you in. The server is on your list at the left."
+                    data["key"] = self._remember_accepted(data)
                     self._join(data)
                 elif kind == "declined":
                     self._notice = f"{data['name']} said no."
@@ -1246,7 +1508,7 @@ class Controller:
 
     def _peer_view(self, peer):
         if peer["sharing"]:
-            state = "party open"
+            state = "server open"
         else:
             state = "idle"
         return {"id": peer["id"], "name": peer["name"], "address": peer["address"], "state": state}
@@ -1254,9 +1516,29 @@ class Controller:
     # --- actions ------------------------------------------------------------------------------------------
 
     def start(self, name, port):
-        """Start the party on this PC. Returns {ok, message}."""
+        """Start your server on this PC (making it the first time). Returns {ok, message}."""
+        return self._start(name, port, select=True)
+
+    def start_own(self):
+        """Start your own server from its place on the rail (it keeps its name, port and everything else)."""
+        if not self._settings.get("server_id"):
+            return {"ok": False, "message": "Create your server on Home first."}
+        return self._start(self._name, self._settings["port"], select=True)
+
+    def create_server(self, server_name, name, port):
+        """Make your own server (the + on the rail, then Home): it goes on your list for good and starts."""
+        server_name = "".join(c for c in str(server_name or "") if c.isprintable()).strip()[:40]
+        if not server_name:
+            return {"ok": False, "message": "Give your server a name."}
+        self._save(server_name=server_name)
+        result = self._start(name, port, select=True)
+        if result["ok"] and self._party is not None and self._party.party_name != server_name:
+            self._party.rename_server(self._party.host_id, server_name)
+        return result
+
+    def _start(self, name, port, select):
         if self._party is not None:
-            return {"ok": True, "message": "The party is already open."}
+            return {"ok": True, "message": "Your server is already running."}
         if self._store is None:
             return {"ok": False, "message": self._secure_error or "Enter the password for your saved chats first."}
         name = clean_name(name)
@@ -1279,7 +1561,8 @@ class Controller:
         try:
             if not self._settings.get("server_id"):
                 self._save(server_id=secrets.token_hex(8))  # this PC's server keeps one id, so its chat is the same each run
-            party = Party(passcode, port, certfile, keyfile, party_name=name, host_name=name, grabber=self._grabber,
+            party = Party(passcode, port, certfile, keyfile, party_name=self._settings.get("server_name") or f"{name}'s server",
+                          host_name=name, grabber=self._grabber,
                           theme=self._settings.get("theme", "dark"), store=self._store,
                           server_id=self._settings["server_id"], host_user_id=self._identity.user_id,
                           owner=self._identity)
@@ -1296,13 +1579,13 @@ class Controller:
             self._start_host_punch()
         if self._discovery is not None:
             self._discovery.set_sharing(port, "party", party.fingerprint, party.spki)
-        log.info("Party started on port %s", port)
-        self.open_room()  # your room opens (in the one window: on the rail, and shown)
-        return {"ok": True, "message": "Party is open."}
+        log.info("Server started on port %s", port)
+        self._open_own_room(select)  # your server's room, in its place on the rail
+        return {"ok": True, "message": "Your server is running."}
 
     def stop(self):
         if self._party is None:
-            return {"ok": True, "message": "No party is running."}
+            return {"ok": True, "message": "Your server is not running."}
         if self._game is not None and self._game["key"] == "own":
             self.game_off()
         self._end_host_punch()
@@ -1314,15 +1597,15 @@ class Controller:
         self._end_reach()
         if self._discovery is not None:
             self._discovery.set_sharing(None, None)
-        log.info("Party stopped")
+        log.info("Server stopped")
         self.updater.busy_changed()
-        return {"ok": True, "message": "Party closed."}
+        return {"ok": True, "message": "Your server is stopped. It stays on your list; start it again any time."}
 
     def set_server_password(self, password):
         """The owner changes the server's password. Invites made before stop working for new people; everyone who was
         let in before still comes back by who they are."""
         if self._party is None:
-            return {"ok": False, "message": "Start the party first."}
+            return {"ok": False, "message": "Start your server first."}
         try:
             self._party.set_password(self._party.host_id, password)
         except (Forbidden, NotFound) as exc:
@@ -1336,7 +1619,7 @@ class Controller:
         certificate fingerprint. Kept with the server; the
         secret never leaves this PC. Returns {ok, message}."""
         if self._party is None:
-            return {"ok": False, "message": "Start the party first."}
+            return {"ok": False, "message": "Start your server first."}
         parts = [_split_address(part) for part in str(address or "").split(",") if part.strip()] or [("", None)]
         host = ", ".join(h for h, _ in parts)
         port = next((p for _, p in parts if p), None)
@@ -1348,7 +1631,7 @@ class Controller:
 
     def clear_relay(self):
         if self._party is None:
-            return {"ok": False, "message": "Start the party first."}
+            return {"ok": False, "message": "Start your server first."}
         self._party.set_relay(self._party.host_id, None)
         return {"ok": True, "message": "Relay server removed."}
 
@@ -1418,18 +1701,11 @@ class Controller:
         return {"ok": True, "message": ""}
 
     def open_room(self):
-        """Open the party room in its own native window, on the loopback address only."""
-        if self._party is not None and self._shell is not None:
-            self._open_own_room(select=True)
-            return {"ok": True, "message": ""}
-        if self._party is None or not webview.windows:
-            return {"ok": False, "message": "Start the party first."}
-        url = f"http://127.0.0.1:{self._party.local_port}/host"
-        api = WindowApi(f"http://127.0.0.1:{self._party.local_port}", appearance=self.appearance)
-        window = webview.create_window(f"PrivatePartyNet party: {self._name}", url=url, width=1280, height=820, js_api=api)
-        api._attach(window)
-        self._rooms.append(window)
-        return {"ok": True, "message": "Party room opened."}
+        """Show your server's room (in its place on the rail)."""
+        if self._party is None or self._shell is None:
+            return {"ok": False, "message": "Start your server first."}
+        self._open_own_room(select=True)
+        return {"ok": True, "message": ""}
 
     def ask_join(self, peer_id, password=""):
         """Ask a nearby PC to let you in. A PC with a party open is asked over HTTPS with your signed identity, checked
@@ -1474,7 +1750,7 @@ class Controller:
                 return result
         token = self._party.join_token(request["name"])
         url = f"https://{address_for(request['address'])}:{self._party.port}/join?token={token}"
-        self._discovery.answer(request_id, True, url, cert=self._cert_pem, embed=True)
+        self._discovery.answer(request_id, True, url, cert=self._cert_pem, embed=True, server=self._party.server_id)
         return {"ok": True, "message": f"{request['name']} is joining your party."}
 
     def set_theme(self, theme):
@@ -1515,15 +1791,44 @@ class Controller:
             os.startfile(self._data_dir)
         return {"ok": True, "message": ""}
 
+    def _remember_accepted(self, data):
+        """A Nearby PC let you in over the network beacon: its server goes on your list like any other."""
+        if self._store is None:
+            return None
+        try:
+            whole, spki = pins_of_pem(data["cert"]) if data.get("cert") else ("", "")
+        except ValueError:
+            whole, spki = "", ""
+        parts = urlsplit(data["url"])
+        invite = {"name": data.get("name") or "Server", "password": "", "fingerprint": whole, "spki": spki,
+                  "server_id": data.get("server") or "", "host_sign": "",
+                  "candidates": [["lan", parts.hostname, parts.port or DEFAULT_PORT]] if parts.hostname else []}
+
+        class _Seen:
+            seen_fingerprint, seen_spki, tunnel = whole, spki, None
+
+        return self._remember_server(invite, _Seen)
+
     def _join(self, data):
-        """Open the party in its own window, which accepts only the host's certificate: `data["pins"]` (what the join
-        checked) or, from a Nearby accept, the pins of `data["cert"]`."""
+        """Show a server's room in its place on the rail, in the one window. It accepts only the host's certificate:
+        `data["pins"]` (what the join checked) or, from a Nearby accept, the pins of `data["cert"]`. `data["key"]` is the
+        server's key on the list. A host too old to open inside the one window gets a note in its place, never a window
+        of its own (K, November 5th: "be sure that PPN never exists in more than one window")."""
         pins = tuple(data.get("pins") or ())
         if not pins and data.get("cert"):
             try:
                 pins = pins_of_pem(data["cert"])
             except ValueError:
                 pins = ()
+        parts = urlsplit(data["url"])
+        origin = f"{parts.scheme}://{parts.netloc}"
+        key = data.get("key") or f"join:{origin}"
+        if self._shell is None:
+            log.warning("No window to show %s in", data["name"])
+            return
+        # A host on 3.2.0 or older cannot sign in inside a frame; its room then says nothing, and the rail shows a card in
+        # its place after a while (appshell.js notReady). `embed` cannot tell those hosts apart: 3.3.0 hosts left it out of
+        # a returning member's answer, and their rooms open here fine.
         windowpins.pin(data["url"], pins)
         token = self._feed.issue()
         separator = "&" if "?" in data["url"] else "?"
@@ -1532,22 +1837,8 @@ class Controller:
         theme = self._settings.get("theme", "dark")
         if theme != "system":
             url += f"&theme={theme}"
-        parts = urlsplit(data["url"])
-        if self._shell is not None and data.get("embed"):
-            origin = f"{parts.scheme}://{parts.netloc}"
-            self._shell_room(f"join:{origin}", data["name"], url, origin, store=lambda: self._store)
-            log.info("Joined %s", data["name"])
-            return
-        api = WindowApi(f"{parts.scheme}://{parts.netloc}", store=lambda: self._store, appearance=self.appearance)
-        window = webview.create_window(f"PrivatePartyNet party: {data['name']}", url=url, width=1280, height=820, js_api=api)
-        api._attach(window)
-        self._party_windows.add(window)
-
-        def closed(*_):
-            self._party_windows.discard(window)
-            self.updater.busy_changed()
-
-        window.events.closed += closed
+        self._rail_note.pop(key, None)
+        self._shell_room(key, data["name"], url, origin, select=data.get("select", True), store=lambda: self._store)
         log.info("Joined %s", data["name"])
 
     # --- the Info menu ----------------------------------------------------------------------------------------
@@ -1581,9 +1872,9 @@ class Controller:
     def _update_busy(self):
         """What an update must wait for, in words for the control panel, or "" when nothing is going on."""
         if self._party is not None:
-            return "your party"
+            return "your server"
         if self._party_windows:
-            return "the party (and any call in it)"
+            return "a server you are in (and any call in it)"
         if self._game is not None:
             return "the game network"
         return ""
@@ -1628,18 +1919,11 @@ class Controller:
         return {"ok": True, "message": "", "update": self.updater.view()}
 
     def _open_info(self, page, title, width, height):
-        """One About window and one How window at a time. A second click says so instead of opening a copy."""
-        if self._shell is not None:
-            if page == "dm":
-                self._shell_queue({"type": "home", "page": "messages"})
-            else:
-                self._shell_queue({"type": "info", "page": page, "title": title})
-            return {"ok": True, "message": ""}
-        if page in self._info_open:
-            return {"ok": True, "message": f"{title} is already open."}
-        window = webview.create_window(title, url=str(web_dir() / f"{page}.html"), js_api=self, width=width, height=height)
-        self._info_open.add(page)
-        window.events.closed += lambda *_: self._info_open.discard(page)
+        """About and How open over the one window; direct messages are a page of Home."""
+        if page == "dm":
+            self._shell_queue({"type": "home", "page": "messages"})
+        else:
+            self._shell_queue({"type": "info", "page": page, "title": title})
         return {"ok": True, "message": ""}
 
     def shutdown(self, *_):
@@ -1657,6 +1941,9 @@ class Controller:
         self._tunnels = {}
         if self._joiner is not None:
             self._joiner.cancel()
+        for joiner in self._connecting.values():
+            joiner.cancel()
+        self._connecting = {}
         if self._dm is not None:
             self._dm.stop()
             self._dm = None
@@ -1701,8 +1988,8 @@ def plain_error(exc):
 
 def window_test(seconds=90):
     """The one window, in a hidden window of the real window stack (pywebview, pythonnet, WebView2), checked step by step:
-    the shell and its bridge; Home (the control panel) using that bridge from its frame; a party's own room signing in
-    inside a frame and asking the app for things through the shell; an HTTPS room pinned to the party's certificate
+    the shell and its bridge; Home (the control panel) using that bridge from its frame; your own server's room signing in
+    inside a frame and asking the app for things through the shell; an HTTPS room pinned to the server's certificate
     signing in inside a frame (the certificate check and the frame's cookie, which only real WebView2 can show); and an
     HTTPS room pinned to another certificate being stopped in its own place while the shell stays.
     Run as: PrivatePartyNet.exe --window-test. Returns 0 when every step passed, 1 otherwise; each step is in the log.
@@ -1754,7 +2041,7 @@ def window_test(seconds=90):
                 probe_port.bind(("127.0.0.1", 0))
                 port = probe_port.getsockname()[1]
             started = controller.start("Window test", port)
-            if not step("a party starts", started.get("ok")):
+            if not step("a server starts", started.get("ok")):
                 return
             own = wait(win, server(win, "own") + " && JSON.parse(" + server(win, "own") + ").ready && JSON.parse(" +
                        server(win, "own") + ").calls > 0")
@@ -1762,13 +2049,13 @@ def window_test(seconds=90):
             party = controller._party
             pins = pins_of_pem(controller._cert_pem)
             good = f"https://127.0.0.1:{party.port}/join?token={party.join_token('Pinned guest')}"
-            controller._join({"url": good, "name": "Pinned", "pins": pins, "embed": True})
-            key = f"join:https://127.0.0.1:{party.port}"
+            key = "joined-pinned"
+            controller._join({"url": good, "name": "Pinned", "pins": pins, "embed": True, "key": key})
             step("an HTTPS room with the right certificate signs in inside a frame",
                  wait(win, f"(function () {{ var s = {server(win, key)}; return !!s && JSON.parse(s).ready; }})()", 40))
             wrong = f"https://127.0.0.2:{party.port}/join?token={party.join_token('Wrong guest')}"
-            controller._join({"url": wrong, "name": "Wrong", "pins": ("0" * 64,), "embed": True})
-            bad = f"join:https://127.0.0.2:{party.port}"
+            bad = "joined-wrong"
+            controller._join({"url": wrong, "name": "Wrong", "pins": ("0" * 64,), "embed": True, "key": bad})
             step("an HTTPS room with another certificate is stopped in its own place",
                  wait(win, f"(function () {{ var s = {server(win, bad)}; return !!s && JSON.parse(s).stopped && "
                            f"!JSON.parse(s).ready; }})()", 40))
@@ -1828,7 +2115,8 @@ def main(argv=None):
         exit_now(window_test())
     sys.excepthook = report_crash
     if not acquire_single_instance():
-        log.info("A second copy was started and closed; the first copy is running")
+        log.info("A second copy was started; it asked the first copy to show its window and closed")
+        ask_first_copy_to_show()
         return 0
     log.info("PrivatePartyNet %s starting", __version__)
     controller = Controller()
@@ -1842,6 +2130,14 @@ def main(argv=None):
     )
     controller.bind_window(window)
     window.events.closed += controller.shutdown
-    webview.start(**webview_options())
+    stop_watching = threading.Event()
+    window.events.closed += lambda *_: stop_watching.set()
+
+    def started():
+        threading.Thread(target=watch_for_second_copy, args=(window, stop_watching), name="privatepartynet-show",
+                         daemon=True).start()
+        controller.start_saved()  # your server and your list of servers, as they were
+
+    webview.start(started, **webview_options())
     log.info("PrivatePartyNet closed")
     exit_now(0)

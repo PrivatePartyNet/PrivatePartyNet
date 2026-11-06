@@ -27,7 +27,7 @@ Who can read what:
   coturn beside it, still encrypted end to end.
 - A relay (a member who turned relaying on, or the group's relay server) passes on WireGuard and QUIC traffic that is
   encrypted end to end, and cannot read or change it: not the game network's addresses, not what games send, not the
-  party's pages. It sees the public addresses of the members using it, how much they send and when. A member's PC
+  server's pages. It sees the public addresses of the members using it, how much they send and when. A member's PC
   relays for others only if that person turned it on, and only up to the limit they set. Only members can use it: the owner's PC gives each one credentials that last six hours, and what a
   member sends to a relay proves they hold them without showing them. Anyone with the relay server's secret can use
   that server, so the owner keeps it to themselves and changes it if it may have got out (relay/README.md).
@@ -57,21 +57,31 @@ The one window (3.3.0 on):
 - The app's own pages (the rail, Home, direct messages, About, How) are served to its window by the app itself on
   http://127.0.0.1 at a port Windows picks. Only the web folder's own files of known types are served, by name, to
   requests addressed to that exact address, and they may not be put in a frame by any other page (frame-ancestors).
-- Each party's room is a frame of that window, from the party's own address. A room asks the app for things only
-  through the window's page, by postMessage: only the calls a party window could always make (open a pop-out of the
-  same party, close itself, fullscreen, keep the chat and its pictures in this PC's store, read this person's look),
-  only from that room's frame and origin, and only for that room. A room cannot reach another room, Home or the app's
-  other calls.
-- So that an HTTPS room can sign in inside the frame, its sign-in cookie is SameSite=None; Secure, and each party
-  names its cookies after its server, so two servers on one address cannot overwrite each other's. To keep pages from
-  elsewhere from using that cookie, the party refuses any POST whose Origin is not its own and any body that is not
+- Each server's room is a frame of that window, from the server's own address. A room asks the app for things only
+  through the window's page, by postMessage: only the calls a room may make (close itself, fullscreen, keep the chat
+  and its pictures in this PC's store, read this person's look, read this person's own picture to hand its server,
+  and say its server's name and icon for the rail), only from that room's frame and origin, and only for that room. A
+  room cannot reach another room, Home or the app's other calls. The name and icon a room says are checked (printable
+  text up to 40 characters; a PNG, JPEG, GIF or WebP up to 2 MB, recognised by its bytes) and kept, encrypted, with
+  that server's entry on this PC only.
+- So that an HTTPS room can sign in inside the frame, its sign-in cookie is SameSite=None; Secure, and each server
+  names its cookies after itself, so two servers on one address cannot overwrite each other's. To keep pages from
+  elsewhere from using that cookie, the server refuses any POST whose Origin is not its own and any body that is not
   declared as JSON (or as raw bytes for an upload).
-- A room is framed only when its host's join answer says it supports this; older hosts open in a window of their own.
-  A room whose certificate is not the one its join checked is stopped in its own place.
+- Nothing opens a second window (4.0 may add one for a dedicated server's console). A host too old to sign in inside a
+  frame shows a card in its place. A room whose certificate is not the one its join checked is stopped in its own
+  place.
+
+Pictures of people and server icons (3.4.0 on):
+
+- Each person's app hands every server they open their picture, which that server keeps by person and shows to its
+  members; the server's owner and admins set its icon. Both are PNG, JPEG, GIF or WebP up to 2 MB, recognised by
+  their bytes (never by what the sender claims), and are served like chat pictures: with nosniff and a sandbox policy,
+  to the server's members only.
 
 Files (3.3.0 on):
 
-- A file sent in a party is kept on the host's PC, encrypted with the rest of the store in sealed pieces of 1 MiB, each
+- A file sent on a server is kept on the host's PC, encrypted with the rest of the store in sealed pieces of 1 MiB, each
   bound to its file and place, so a changed, cut, swapped or moved piece is refused. Members' PCs keep only its name,
   size and type. The host can read every file sent in its server, as it can read the chat.
 - A file is always given back as a download (Content-Disposition: attachment, application/octet-stream, nosniff, and
@@ -94,8 +104,8 @@ How updates are checked:
 
 Known limits:
 
-- The party's HTTPS certificate is made on the host PC and signed by nobody. Every join checks it against a pin (the
-  certificate's or its public key's SHA-256), and each party window accepts only the certificate its join checked; any
+- A server's HTTPS certificate is made on the host PC and signed by nobody. Every join checks it against a pin (the
+  certificate's or its public key's SHA-256), and each server's room accepts only the certificate its join checked; any
   other is refused. The pin comes from the invite code, or the host's network beacon for a Nearby PC; a join by address
   alone trusts the first certificate it sees and remembers it. So a join by address, or a Nearby join on a network
   someone else controls, is only as safe as that first contact: use invite codes on networks you do not trust.

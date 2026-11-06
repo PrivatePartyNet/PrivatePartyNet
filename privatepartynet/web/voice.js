@@ -110,22 +110,28 @@
 
     // --- joining and leaving ---------------------------------------------------------------------------------
 
-    async function join(channelId, channelName) {
+    // `listenOnly`: a guest, who joins to watch the channel's screens and listen; their microphone never opens.
+    async function join(channelId, channelName, listenOnly) {
       if (state.channel === channelId) return;
       if (state.channel) stopLocal();
-      try {
-        state.stream = await openMic();
-      } catch (err) {
-        options.notice(micMessage(err));
-        return;
+      if (!listenOnly) {
+        try {
+          state.stream = await openMic();
+        } catch (err) {
+          options.notice(micMessage(err));
+          return;
+        }
+        state.track = state.stream.getAudioTracks()[0];
       }
-      state.track = state.stream.getAudioTracks()[0];
+      state.listenOnly = Boolean(listenOnly);
       state.channel = channelId;
       state.channelName = channelName || "";
-      var ctx = audioContext();
-      local = { source: ctx.createMediaStreamSource(state.stream), analyser: ctx.createAnalyser() };
-      local.analyser.fftSize = 512;
-      local.source.connect(local.analyser);
+      if (state.stream) {
+        var ctx = audioContext();
+        local = { source: ctx.createMediaStreamSource(state.stream), analyser: ctx.createAnalyser() };
+        local.analyser.fftSize = 512;
+        local.source.connect(local.analyser);
+      }
       applyEnabled();
       startTimer();
       refreshDevices();
@@ -166,6 +172,7 @@
       state.channel = null;
       state.channelName = "";
       state.confirmed = false;
+      state.listenOnly = false;
       options.peers().forEach(function (entry) { RTC.setMicTrack(entry.pc, null).catch(function () {}); });
       remotes.forEach(function (remote, id) { removeRemote(id); });
       speaking = new Set();
@@ -204,6 +211,12 @@
       peers.forEach(function (entry, id) {
         var person = members.get(id);
         var together = !!(state.channel && person && person.voice === state.channel && person.online);
+        // a guest is in the channel to watch and listen; nothing they send is played
+        if (together && person.role === "guest") {
+          RTC.setMicTrack(entry.pc, state.track || null).catch(function () {});
+          removeRemote(id);
+          return;
+        }
         RTC.setMicTrack(entry.pc, together && state.track ? state.track : null).catch(function () {});
         if (!together) {
           removeRemote(id);
@@ -390,7 +403,8 @@
       el.muteBtn.classList.toggle("on", state.muted);
       el.deafenBtn.textContent = state.deafened ? "Undeafen" : "Deafen";
       el.deafenBtn.classList.toggle("on", state.deafened);
-      el.state.textContent = state.deafened ? "Deafened" : state.muted ? "Muted" :
+      el.muteBtn.disabled = Boolean(state.listenOnly);
+      el.state.textContent = state.listenOnly ? (state.deafened ? "Deafened" : "Listening") : state.deafened ? "Deafened" : state.muted ? "Muted" :
         state.ptt ? (state.pttDown ? "Talking" : "Hold " + state.pttKey.replace("Key", "") + " to talk") : "Live";
       renderVolumes();
     }

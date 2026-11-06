@@ -472,7 +472,7 @@ def decode_invite(code):
     host_sign = data.get("k") if isinstance(data.get("k"), str) and re.fullmatch(r"[0-9a-f]{64}", data.get("k") or "") else ""
     spki = data.get("g") if isinstance(data.get("g"), str) and re.fullmatch(r"[0-9a-f]{64}", data.get("g") or "") else ""
     app = data.get("a") if isinstance(data.get("a"), str) and re.fullmatch(r"[0-9A-Za-z.+-]{1,20}", data["a"]) else ""
-    return {"name": str(data.get("n") or "Party")[:40], "password": str(data.get("p") or ""), "candidates": candidates,
+    return {"name": str(data.get("n") or "Server")[:40], "password": str(data.get("p") or ""), "candidates": candidates,
             "fingerprint": fingerprint, "spki": spki, "server_id": str(data.get("s") or "")[:40], "host_sign": host_sign,
             "secret": secret, "relays": _read_relays(data.get("y")), "app": app}
 
@@ -566,7 +566,7 @@ def _connect(address, port, fingerprint, timeout):
     pins.discard("")
     if pins and not pins & {seen, seen_spki}:
         connection.close()
-        raise ConnectError("The party at that address is not the one this invite is for (its certificate differs).")
+        raise ConnectError("The server at that address is not the one this invite is for (its certificate differs).")
     # With no pin to check against, the first certificate seen is what gets remembered.
     connection.seen_fingerprint, connection.seen_spki = seen, seen_spki
     return connection
@@ -591,13 +591,13 @@ def failure_text(invite, tried, punch_error=None, no_punch=""):
     `tried` is [(kind, address, what happened)], `punch_error` a punch.PunchError (with .facts) when the way through
     the routers was tried, and `no_punch` why it was not."""
     facts = getattr(punch_error, "facts", {}) or {}
-    parts = ["Could not reach the party."]
+    parts = ["Could not reach the server."]
     source = invite.get("source")  # "nearby", "address" or "remembered" when no invite code was pasted
     if tried:
         said = "; ".join(dict.fromkeys(what for _, _, what in tried))
         parts.append(f"Tried: {said}." if source else f"Tried the invite's addresses: {said}.")
         if source in ("nearby", "address"):
-            return " ".join(parts + ["Check that its party is still open and that PrivatePartyNet may use the network "
+            return " ".join(parts + ["Check that the server is running and that PrivatePartyNet may use the network "
                                      "through the firewall on both PCs."])
         private = [a for k, a, _ in tried if k == "lan"]
         if private and len(private) == len(tried):
@@ -693,7 +693,7 @@ class Joiner:
                 log.info("Trying %s address %s port %s: the party wants its password", kind, address, port)
                 self.needs_password = not self.invite["password"]
                 self._set("failed", "That password is not right." if self.invite["password"] else
-                          "This party needs its password. Type it below and ask again, or ask the host for an invite.")
+                          "This server needs its password. Type it below and ask again, or ask the host for an invite.")
                 return
             log.info("Trying %s address %s port %s: the party answered; waiting to be let in", kind, address, port)
             self._wait(address, port, ticket)
@@ -770,7 +770,7 @@ class Joiner:
             finally:
                 connection.close()
             if response.status != 200 or not isinstance(challenge.get("nonce"), str):
-                raise ConnectError("The party did not answer the sign-in step.")
+                raise ConnectError("The server did not answer the sign-in step.")
             if not any(pins):
                 # Joining by address: the first certificate seen is the one trusted from now on, for every later
                 # connection of this attempt and for the remembered server.
@@ -796,11 +796,11 @@ class Joiner:
             text = data.decode("utf-8", "replace")
             if "password" in text:
                 return None
-            raise ConnectError(text or "The party refused the request.")
+            raise ConnectError(text or "The server refused the request.")
         if response.status == 409:
-            raise ConnectError(data.decode("utf-8", "replace") or "The party has too many people waiting; try again in a minute.")
+            raise ConnectError(data.decode("utf-8", "replace") or "The server has too many people waiting; try again in a minute.")
         if response.status != 200:
-            raise ConnectError(f"The party answered {response.status}.")
+            raise ConnectError(f"The server answered {response.status}.")
         return json.loads(data)["ticket"]
 
     def _clean_name(self):

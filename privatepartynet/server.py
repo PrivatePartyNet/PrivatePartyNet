@@ -60,8 +60,6 @@ STATIC_TYPES = {
 # through its own tunnel on 127.0.0.1) would otherwise overwrite each other's sign-in.
 MEMBER_COOKIE = "privatepartynet_member"
 HOST_COOKIE = "privatepartynet_host"
-VIEWER_COOKIE = "privatepartynet_viewer"  # a pop-out window's own session; it must never replace its parent's cookie
-VIEWER_MARKER = "X-PrivatePartyNet-View"  # sent by pop-out pages, so a request says which of the two cookies is meant
 LOOPBACK = "127.0.0.1"
 MAX_MEMBERS = 16
 SHARE_SLOTS = 4  # screens one person can share at once; keep in step with SLOTS in web/rtc.js
@@ -73,9 +71,12 @@ PAGE = 50  # messages per page when a member scrolls back
 DEFAULT_CHANNEL = "general"
 MAX_CHANNELS = 30
 MAX_CHANNEL_NAME = 32
+MAX_SERVER_NAME = 40
 MAX_VOICE = 6  # people in one voice channel: a full mesh of audio and video connections stays practical at this size
 STAFF = ("host", "admin")  # the owner (internally "host") and the admins
-ROLE_CHOICES = ("admin", "member", "guest")  # what the owner can give; "host" is the owner and "viewer" a pop-out window
+ROLE_CHOICES = ("admin", "member", "guest")  # what the owner can give; "host" is the owner
+MAX_PICTURE = 2 * 1024 * 1024  # a server's icon or a person's picture (shown small, kept at its own size)
+MAX_PICTURE_TEXT = "2 MB"
 REQUEST_SECONDS = 300  # a join request waits this long for the owner or an admin
 MAX_IMAGE = 12 * 1024 * 1024  # an image on the wire: the sender's page saves the full-size picture to fit under this
 MAX_IMAGE_TEXT = f"{MAX_IMAGE // (1024 * 1024)} MB"
@@ -114,6 +115,7 @@ GO_LIVE_QUALITIES = ("source", "1080", "720", "480")
 GO_LIVE_FPS = (15, 30, 60)
 MIN_SIZE, MAX_SIZE = 64, 16384
 QUALITY_PERCENTS = (100, 75, 50, 25)
+HEX_DIGITS = frozenset("0123456789abcdef")
 TEXT = "text/plain; charset=utf-8"
 HTML = "text/html; charset=utf-8"
 JSON_TYPE = "application/json; charset=utf-8"
@@ -390,18 +392,25 @@ class Party:
         self._signer = owner.sign if owner is not None else None  # the host identity's sign(data); it signs the game network's list of members
         self.theme = theme  # "system", "light" or "dark"; every page the party serves uses it
         self.grabber = grabber  # frames for the host's own screen; None disables the host's frame route
-        self.party_name = clean_name(party_name)
         self.failed_login_delay = failed_login_delay
         self.heartbeat = heartbeat  # seconds between keep-alives; a failed keep-alive is how a dropped browser shows
         self.last_error = ""
         self._members = {}  # id -> record
         self._sessions = {}  # token -> member id
-        self._joins = {}  # join token -> (name, expires at, role, parent, user id)
+        self._joins = {}  # join token -> (name, expires at, role, user id)
         record = (store.server(self.server_id) if store is not None else None) or {}
+        # The server's own name and icon, which the owner and admins change (rename_server, set_icon). `party_name` only
+        # names a brand-new server; a saved one keeps its name.
+        self.party_name = clean_name(record.get("name") or party_name)
+        icon = record.get("icon")
+        self._icon = icon if isinstance(icon, str) and len(icon) == 64 and HEX_DIGITS.issuperset(icon) else None
         self._channels = [dict(c) for c in record.get("channels") or default_channels()]
         self._roles = dict(record.get("roles") or {})  # user id -> "admin", "member" or "guest"
         self._banned = set(record.get("banned") or [])
         self._known = dict(record.get("known") or {})  # user id -> {"name", "role", "seen"}: everyone who has joined
+        # user id -> the hash of the picture that person's app gave this server (set_avatar); the host's too
+        self._avatars = {u: h for u, h in (record.get("avatars") or {}).items()
+                         if isinstance(u, str) and isinstance(h, str) and len(h) == 64 and HEX_DIGITS.issuperset(h)}
         self._created = record.get("created") or time.time()
         # The password belongs to the server and is kept with it, so an invite and a remembered server keep working
         # after the host restarts. `passcode` is only the password a brand-new server starts with.
@@ -521,62 +530,38 @@ class Party:
 
     # --- members and sessions -------------------------------------------------------------------------------
 
-    def join_token(self, name, role="member", parent=None, user=None):
+    def join_token(self, name, role="member", user=None):
         """A single-use join token for one person, valid for JOIN_SECONDS. The host's approval hands it to the
-        joiner's app, which opens the party window with it. A browser cannot get one. A viewer token makes a
-        pop-out window, which receives one screen and never shares its own, and closes with the member that opened it.
+        joiner's app, which opens the server in its one window with it. A browser cannot get one.
         `user` is the joiner's permanent id; with it the person keeps their role and cannot join while banned."""
         token = secrets.token_urlsafe(24)
         with self._lock:
-            self._joins[token] = (clean_name(name or "Guest"), time.monotonic() + JOIN_SECONDS, role, parent, user)
+            self._joins[token] = (clean_name(name or "Guest"), time.monotonic() + JOIN_SECONDS, role, user)
         return token
 
-    def viewer_link(self, requester_id, target_id, slot):
-        """A join path for a pop-out window that shows target's screen in slot, or None. See viewer_link_checked."""
-        return self.viewer_link_checked(requester_id, target_id, slot)[0]
-
-    def viewer_link_checked(self, requester_id, target_id, slot):
-        """(path, reason). The path is None, with the reason, when the requester may not or the screen is not live.
-        Only members make viewers; a viewer cannot make another one."""
-        with self._lock:
-            requester = self._members.get(requester_id)
-            target = self._members.get(target_id)
-            if requester is None:
-                return None, "This window is not signed in to the party."
-            if requester["role"] == "viewer":
-                return None, "A pop-out window cannot open another one."
-            if target is None:
-                return None, "That person has left the party."
-            if not _is_slot(slot) or slot not in target["shares"]:
-                return None, "That screen is no longer being shared."
-            name = f"{target['name']} window"
-        token = self.join_token(name, role="viewer", parent=requester_id)
-        return f"/join?token={token}&view={target_id}:{slot}", ""
-
     def redeem(self, token):
-        """Turn a join token into a session token. None when the token is unknown, used or expired, or the party is full."""
+        """Turn a join token into a session token. None when the token is unknown, used or expired, or the server is full."""
         with self._lock:
             entry = self._joins.pop(token, None)
             if entry is None or time.monotonic() > entry[1]:
                 return None
-            name, _, role, parent, user = entry
+            name, _, role, user = entry
             if user is not None and user in self._banned:
                 return None
-            if role != "viewer" and user is not None:
-                role = self._roles.get(user, role)  # a returning person keeps the role they were given
             if user is not None:
+                role = self._roles.get(user, role)  # a returning person keeps the role they were given
                 # a person who comes back replaces their own old, offline entry instead of adding a second one
                 for old_id, old in list(self._members.items()):
-                    if old.get("user") == user and old["role"] != "host" and not old["online"] and old_id != parent:
+                    if old.get("user") == user and old["role"] != "host" and not old["online"]:
                         self._remove_locked(old_id, notice=None)
             if len(self._members) >= MAX_MEMBERS:
                 return None
             member_id = secrets.token_hex(8)
             self._members[member_id] = {
-                "id": member_id, "name": name, "role": role, "parent": parent, "user": user, "voice": None,
+                "id": member_id, "name": name, "role": role, "user": user, "voice": None,
                 "online": False, "shares": {}, "queue": None,
             }
-            if user is not None and role != "viewer":
+            if user is not None:
                 self._known[user] = {"name": name, "role": role, "seen": time.time()}
                 self._save_locked()
             session = secrets.token_urlsafe(32)
@@ -595,7 +580,7 @@ class Party:
         return True
 
     def role_for(self, token):
-        """The role of the member behind a session token ("host", "member" or "viewer"), or None."""
+        """The role of the member behind a session token ("host", "admin", "member" or "guest"), or None."""
         with self._lock:
             member = self._members.get(self._sessions.get(token))
             return member["role"] if member else None
@@ -613,8 +598,9 @@ class Party:
             listener = queue.Queue()
             member["queue"] = listener
             member["online"] = True
-            listener.put({"type": "hello", "you": self._public(member), "party": self.party_name, "host": self._host_id,
-                          "theme": self.theme, "server": self.server_id, "channels": self._channels_public(),
+            listener.put({"type": "hello", "you": self._public(member), "party": self.party_name, "icon": self._icon,
+                          "host": self._host_id, "theme": self.theme, "server": self.server_id,
+                          "channels": self._channels_public(),
                           "stun": self.remote, "turn": self._turn_locked(member), "storage": self.storage_info()})
             for channel in self._channels:
                 if channel["kind"] == "text":
@@ -635,10 +621,7 @@ class Party:
             member["online"] = False
             member["shares"] = {}
             member["voice"] = None
-            self._end_net_locked(member_id)  # closing the party window ends the game network link too
-            if member["role"] == "viewer":
-                self._remove_locked(member_id, notice=None)
-                return
+            self._end_net_locked(member_id)  # closing the server's page ends the game network link too
             self._broadcast_roster_locked()
 
     def leave(self, member_id):
@@ -702,12 +685,12 @@ class Party:
 
     def set_role(self, actor_id, target_id, role):
         """Give a member a role. The owner can make admins, members and guests; an admin can only switch members and
-        guests between those two. The owner's role and a pop-out window's role never change. Remembered by person."""
+        guests between those two. The owner's role never changes. Remembered by person."""
         with self._lock:
             actor, target = self._members.get(actor_id), self._members.get(target_id)
             if actor is None or target is None or role not in ROLE_CHOICES:
                 raise NotFound("no such member or role")
-            if target["role"] in ("host", "viewer") or target_id == actor_id:
+            if target["role"] == "host" or target_id == actor_id:
                 raise Forbidden("that member's role cannot be changed")
             if actor["role"] == "host":
                 pass
@@ -855,7 +838,10 @@ class Party:
             ticket = secrets.token_urlsafe(16)
             token = self.join_token(name, user=user)
             with self._lock:
-                self._answers[ticket] = {"state": "allowed", "token": token, "until": time.monotonic() + JOIN_SECONDS}
+                # `embed` here too: without it a returning person's app took this for a 3.2.0 host and opened the
+                # server in a second window (K, November 5th, on a member's PC)
+                self._answers[ticket] = {"state": "allowed", "token": token, "embed": EMBED,
+                                         "until": time.monotonic() + JOIN_SECONDS}
             return ticket
         local = self.trust_local and is_local_address(address) and address not in self.untrusted
         given = str(password or "").encode("utf-8")
@@ -931,11 +917,18 @@ class Party:
             return True
 
     def set_share(self, member_id, slot, sharing, label="", width=0, height=0):
-        """Start, update or stop one of a member's screens. Each member has SHARE_SLOTS slots, one per screen."""
+        """Start, update or stop one of a member's screens. Each member has SHARE_SLOTS slots, one per screen.
+
+        A screen belongs to the voice channel its sharer is in, and only the people in that channel see it (K, November
+        5th: "video sharing should only be possible when you are joined to a voice channel", "video streams and shares
+        should be tied specifically to a channel"). So starting one needs a voice channel (Forbidden without), and
+        leaving or changing voice channels ends them all (join_voice)."""
         with self._lock:
             member = self._members.get(member_id)
-            if member is None or member["role"] in ("viewer", "guest") or not _is_slot(slot):
+            if member is None or member["role"] == "guest" or not _is_slot(slot):
                 return False
+            if sharing and not member.get("voice"):
+                raise Forbidden("Join a voice channel to share your screen.")
             if sharing:
                 member["shares"][slot] = {
                     "label": clean_label(label),
@@ -946,6 +939,77 @@ class Party:
                 member["shares"].pop(slot, None)
             self._broadcast_roster_locked()
             return True
+
+    # --- the server's name and icon, and people's pictures ---------------------------------------------------
+
+    def rename_server(self, actor_id, name):
+        """The owner or an admin names the server. Everyone's rail and header show the new name at once."""
+        name = "".join(ch for ch in str(name or "") if ch.isprintable()).strip()[:MAX_SERVER_NAME]
+        if not name:
+            raise NotFound("a server needs a name")
+        with self._lock:
+            self._staff_locked(actor_id, "only the owner and admins can rename the server")
+            self.party_name = name
+            self._save_locked()
+            self._broadcast_server_locked()
+            return name
+
+    def set_icon(self, actor_id, data):
+        """The owner or an admin gives the server an icon (a picture up to MAX_PICTURE, kept at its own size), or takes it
+        away with empty data. Returns the icon's hash, or None."""
+        with self._lock:
+            self._staff_locked(actor_id, "only the owner and admins can change the server's icon")
+        digest = self._keep_picture(data) if data else None
+        with self._lock:
+            self._icon = digest
+            self._save_locked()
+            self._broadcast_server_locked()
+        return digest
+
+    def icon(self):
+        with self._lock:
+            return self._icon
+
+    def set_avatar(self, member_id, data):
+        """A person's app hands this server their picture (Settings, My profile), or takes it away with empty data. Kept by
+        person, so it is there the next time they come in, and shown beside their name everywhere on the server."""
+        with self._lock:
+            member = self._members.get(member_id)
+            if member is None:
+                raise NotFound("you are not on this server")
+            user = member.get("user") or member_id
+            now = time.monotonic()
+            recent = [t for t in self._image_times.get(member_id, []) if now - t < 60]
+            if len(recent) >= IMAGES_PER_MINUTE:
+                raise Forbidden("that is a lot of pictures; wait a moment")
+            self._image_times[member_id] = recent + [now]
+        digest = self._keep_picture(data) if data else None
+        with self._lock:
+            self._avatars.pop(user, None)
+            if digest:
+                self._avatars[user] = digest
+            self._save_locked()
+            self._broadcast_roster_locked()
+        return digest
+
+    def _keep_picture(self, data):
+        """Keep an icon or a person's picture; returns its hash. Raises BadImage for anything that is not a PNG, JPEG,
+        GIF or WebP up to MAX_PICTURE. These are small and do not count toward the server's file storage. A replaced one
+        is not deleted: the store keeps pictures by their hash, and the same bytes may be a chat picture, a direct
+        message's or this PC's own picture."""
+        if len(data) > MAX_PICTURE:
+            raise BadImage(f"pictures for icons can be up to {MAX_PICTURE_TEXT}")
+        if sniff_image(data) is None:
+            raise BadImage("only PNG, JPEG, GIF and WebP pictures can be used")
+        digest = hashlib.sha256(data).hexdigest()
+        if self.store is not None:
+            self.store.put_blob(data)
+        else:
+            self._blobs[digest] = data
+        return digest
+
+    def _broadcast_server_locked(self):
+        self._broadcast_locked({"type": "server", "name": self.party_name, "icon": self._icon})
 
     # --- the relay server ------------------------------------------------------------------------------------
 
@@ -1133,7 +1197,7 @@ class Party:
             member = next((m for m in self._members.values() if m.get("user") == user and m["online"]
                            and m["role"] in ("host", "admin", "member")), None)
             if member is None:
-                raise Forbidden("Join the party first. Guests are not on the game network.")
+                raise Forbidden("Join the server first. Guests are not on the game network.")
             self._end_net_locked(member["id"])
             address = directory.join(user, key, candidates)
             stop = threading.Event()
@@ -1193,10 +1257,10 @@ class Party:
     def _first_text_locked(self):
         return next((c["id"] for c in self._channels if c["kind"] == "text"), None)
 
-    def _staff_locked(self, member_id):
+    def _staff_locked(self, member_id, refusal="only the owner and admins can change channels"):
         member = self._members.get(member_id)
         if member is None or member["role"] not in STAFF:
-            raise Forbidden("only the owner and admins can change channels")
+            raise Forbidden(refusal)
         return member
 
     def add_channel(self, actor_id, name, kind="text"):
@@ -1243,6 +1307,7 @@ class Party:
             for member in self._members.values():
                 if member.get("voice") == channel_id:
                     member["voice"] = None
+                    member["shares"] = {}  # their screens belonged to that channel
             self._save_locked()
             self._broadcast_channels_locked()
             self._broadcast_roster_locked()
@@ -1253,23 +1318,27 @@ class Party:
     # --- voice -----------------------------------------------------------------------------------------------
 
     def join_voice(self, member_id, channel_id):
-        """Be in a voice channel (or, with None, in none). Guests listen to the text and watch streams but do not talk."""
+        """Be in a voice channel (or, with None, in none). Guests may be in one to watch its screens and listen; their
+        pages never open a microphone, and other pages do not play a guest's sound. Leaving a voice channel, or moving to
+        another, ends the person's screens: a screen belongs to the channel it was started in (set_share)."""
         with self._lock:
             member = self._members.get(member_id)
             if member is None:
-                raise NotFound("you are not in the party")
+                raise NotFound("you are not on this server")
             if channel_id is None:
                 member["voice"] = None
             else:
                 channel = self._channel_locked(channel_id)
                 if channel is None or channel["kind"] != "voice":
                     raise NotFound("no such voice channel")
-                if member["role"] in ("guest", "viewer"):
-                    raise Forbidden("guests cannot join voice")
                 others = sum(1 for m in self._members.values() if m.get("voice") == channel_id and m["id"] != member_id)
-                if others >= MAX_VOICE:
+                if others >= MAX_VOICE and member.get("voice") != channel_id:
                     raise Full("that voice channel is full")
+                if member.get("voice") != channel_id:
+                    member["shares"] = {}
                 member["voice"] = channel_id
+            if channel_id is None:
+                member["shares"] = {}
             self._broadcast_roster_locked()
 
     # --- messages --------------------------------------------------------------------------------------------
@@ -1313,7 +1382,8 @@ class Party:
         if self.store is None:
             return
         self.store.save_server(self.server_id, {
-            "name": self.party_name, "channels": self._channels, "roles": self._roles, "banned": sorted(self._banned),
+            "name": self.party_name, "icon": self._icon, "avatars": self._avatars,
+            "channels": self._channels, "roles": self._roles, "banned": sorted(self._banned),
             "known": self._known, "created": self._created, "password": self.passcode,
             "net": self._net_subnet, "vips": self._net.assignments() if self._net else self._net_vips,
             "invites": self._invite_secrets, "relay": self._relay,
@@ -1326,7 +1396,7 @@ class Party:
             member = self._members.get(member_id)
             if member is None:
                 return None
-            if member["role"] in ("guest", "viewer"):
+            if member["role"] == "guest":
                 raise Forbidden("guests can read the chat but not post")
             if image is not None:
                 image = self._clean_image_locked(image)
@@ -1365,8 +1435,8 @@ class Party:
         with self._lock:
             member = self._members.get(member_id)
             if member is None:
-                raise NotFound("you are not in the party")
-            if member["role"] in ("guest", "viewer"):
+                raise NotFound("you are not on this server")
+            if member["role"] == "guest":
                 raise Forbidden("guests can read the chat but not post")
             now = time.monotonic()
             recent = [t for t in self._image_times.get(member_id, []) if now - t < 60]
@@ -1395,7 +1465,7 @@ class Party:
         """(mime, bytes) of a stored image for a member, or None when there is no such image."""
         with self._lock:
             if member_id not in self._members:
-                raise NotFound("you are not in the party")
+                raise NotFound("you are not on this server")
         if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             return None
         data = self.store.get_blob(digest) if self.store is not None else self._blobs.get(digest)
@@ -1475,11 +1545,11 @@ class Party:
         with self._lock:
             member = self._members.get(member_id)
             if member is None:
-                raise NotFound("you are not in the party")
-            if member["role"] in ("guest", "viewer"):
+                raise NotFound("you are not on this server")
+            if member["role"] == "guest":
                 raise Forbidden("guests can read the chat but not post")
             if self.store is None:
-                raise Full("this party keeps no files")
+                raise Full("this server keeps no files")
             target = self._channel_locked(channel_id or self._first_text_locked())
             if target is None or target["kind"] != "text":
                 raise NotFound("no such text channel")
@@ -1510,7 +1580,7 @@ class Party:
         if message is None:  # the sender left while it was arriving
             self.store.release(self.server_id, "file", file_id)
             self.store.delete_file(file_id)
-            raise NotFound("you are not in the party")
+            raise NotFound("you are not on this server")
         self._broadcast_storage()
         return message
 
@@ -1527,7 +1597,7 @@ class Party:
         """The file of a message, for a member to save: {"id", "name", "size", "type"}. Raises NotFound."""
         with self._lock:
             if member_id not in self._members:
-                raise NotFound("you are not in the party")
+                raise NotFound("you are not on this server")
             channel = self._channel_locked(channel_id)
             if channel is None or channel["kind"] != "text":
                 raise NotFound("no such text channel")
@@ -1544,7 +1614,7 @@ class Party:
         with self._lock:
             member = self._members.get(member_id)
             if member is None:
-                raise NotFound("you are not in the party")
+                raise NotFound("you are not on this server")
             channel = self._channel_locked(channel_id)
             if channel is None or channel["kind"] != "text":
                 raise NotFound("no such text channel")
@@ -1573,7 +1643,7 @@ class Party:
         limit = max(1, min(int(limit), 200))
         with self._lock:
             if member_id not in self._members:
-                raise NotFound("you are not in the party")
+                raise NotFound("you are not on this server")
             channel = self._channel_locked(channel_id)
             if channel is None or channel["kind"] != "text":
                 raise NotFound("no such text channel")
@@ -1592,7 +1662,7 @@ class Party:
             return True
 
     def cookie_name(self, base):
-        """This party's own name for one of its cookies (MEMBER_COOKIE, HOST_COOKIE or VIEWER_COOKIE)."""
+        """This party's own name for one of its cookies (MEMBER_COOKIE or HOST_COOKIE)."""
         return f"{base}_{self._cookie_suffix}"
 
     def set_theme(self, theme):
@@ -1608,6 +1678,7 @@ class Party:
     def _public(self, member):
         return {"id": member["id"], "name": member["name"], "role": member["role"],
                 "user": member.get("user"), "voice": member.get("voice"),
+                "avatar": self._avatars.get(member.get("user") or member["id"]),
                 "online": member["online"], "sharing": bool(member["shares"]),
                 "shares": [{"slot": slot, **info} for slot, info in sorted(member["shares"].items())]}
 
@@ -1623,8 +1694,6 @@ class Party:
     def _remove_locked(self, member_id, notice):
         self._end_net_locked(member_id)
         member = self._members.pop(member_id)
-        for child_id in [mid for mid, m in self._members.items() if m.get("parent") == member_id]:
-            self._remove_locked(child_id, notice={"type": "left"})  # pop-out windows close with the member that opened them
         for token, owner in list(self._sessions.items()):
             if owner == member_id:
                 del self._sessions[token]
@@ -1682,7 +1751,7 @@ class _Server(ThreadingHTTPServer):
             return
         _Handler.hangup_log.error("The %s server could not answer a request from %s", where, client_address[0],
                                   exc_info=True)
-        self.party.last_error = ("The party server could not answer one request; the party keeps running. The details "
+        self.party.last_error = ("Your server could not answer one request; it keeps running. The details "
                                  "are in the log (Options, Open data folder).")
 
 
@@ -1697,7 +1766,7 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == "/":
-            if self._identity() or self._identity(viewer=True):  # a pop-out page is the same page, under its own cookie
+            if self._identity():
                 self._send(200, HTML, self._render("room.html", capture="display"))
             else:
                 self._send(200, HTML, self._render("login.html"))
@@ -1735,10 +1804,11 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlsplit(self.path).path
         routes = {"/leave": self._leave, "/chat": self._chat, "/share": self._share,
-                  "/signal": self._signal, "/name": self._name, "/kick": self._kick, "/popout": self._popout,
+                  "/signal": self._signal, "/name": self._name, "/kick": self._kick,
                   "/channel": self._channel, "/role": self._role, "/ban": self._ban, "/voice": self._voice,
                   "/decide": self._decide, "/ask": self._ask, "/blob": self._blob_put, "/net": self._net_link,
-                  "/file": self._file_put, "/delete": self._delete, "/storage": self._storage_set}
+                  "/file": self._file_put, "/delete": self._delete, "/storage": self._storage_set,
+                  "/server": self._server_set, "/server/icon": self._icon_put, "/avatar": self._avatar_put}
         refused = self._post_refused(path)
         if refused:
             self._send(403, TEXT, refused.encode("utf-8"))
@@ -1753,19 +1823,6 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
         handler()
 
     # --- handlers ---------------------------------------------------------------------------------------------
-
-    def _popout(self):
-        """A member asks for a window that shows one screen of another member. The window joins as a viewer."""
-        member = self._identity()
-        body = self._json()
-        path, reason = None, "That request was not understood."
-        if isinstance(body, dict):
-            path, reason = self.server.party.viewer_link_checked(member, body.get("target"), body.get("slot"))
-        if path is None:
-            logging.getLogger("privatepartynet.page").info("Pop-out refused: %s", reason)
-            self._send(400, TEXT, reason.encode("utf-8"))
-            return
-        self._send(200, JSON_TYPE, json.dumps({"path": path}).encode("utf-8"))
 
     def _cpu(self):
         """This PC's CPU use by the app, for the readout on the party page. Answers only on this PC."""
@@ -1783,9 +1840,8 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
             return
         self.server.party.note_join_address(self.client_address[0])
         rest = {key: values for key, values in query.items() if key != "token"}
-        # A pop-out window shares the app's cookie jar with the window that opened it, so it gets a cookie of its own.
-        cookie = self.server.party.cookie_name(VIEWER_COOKIE if self.server.party.role_for(session) == "viewer" else MEMBER_COOKIE)
-        self._redirect("/" + (("?" + urlencode(rest, doseq=True)) if rest else ""), cookie, session)
+        self._redirect("/" + (("?" + urlencode(rest, doseq=True)) if rest else ""),
+                       self.server.party.cookie_name(MEMBER_COOKIE), session)
 
     def _leave(self):
         member = self._identity()
@@ -1936,7 +1992,7 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
         self._send(200, JSON_TYPE, json.dumps(info).encode("utf-8"))
 
     def _blob_get(self):
-        member = self._identity() or self._identity(viewer=True)
+        member = self._identity()
         if member is None:
             self._send(401, TEXT, b"Sign in first.")
             return
@@ -2210,11 +2266,56 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
         if member is None or not isinstance(body, dict) or not isinstance(body.get("sharing"), bool) or not _is_slot(body.get("slot")):
             self._send(400, TEXT, b"Sharing needs a member, a screen slot and a yes or no.")
             return
-        if not self.server.party.set_share(member, body["slot"], body["sharing"], body.get("label", ""),
-                                           body.get("width", 0), body.get("height", 0)):
-            self._send(400, TEXT, b"Sharing needs a member, a screen slot and a yes or no.")
+        if self._attempt(lambda: self.server.party.set_share(member, body["slot"], body["sharing"], body.get("label", ""),
+                                                             body.get("width", 0), body.get("height", 0)),
+                         400, b"Sharing needs a member, a screen slot and a yes or no."):
+            self._send(202, TEXT, b"")
+
+    def _server_set(self):
+        """{"name": ...}: the owner or an admin renames the server."""
+        member, body = self._identity(), self._json()
+        if member is None or not isinstance(body, dict) or not isinstance(body.get("name"), str):
+            self._send(400, TEXT, b"Renaming the server needs a name.")
             return
-        self._send(202, TEXT, b"")
+        if self._attempt(lambda: self.server.party.rename_server(member, body["name"])):
+            self._send(200, JSON_TYPE, json.dumps({"name": self._result}).encode("utf-8"))
+
+    def _picture_body(self):
+        """The raw bytes of an icon or a person's picture, or None when the request was already answered. An empty body
+        takes the picture away."""
+        member = self._identity()
+        length = self._length()
+        if member is None:
+            self._refuse_body(length, 401, b"Sign in first.")
+            return None, None
+        if length > MAX_PICTURE:
+            self._refuse_body(length, 413, f"Pictures for icons can be up to {MAX_PICTURE_TEXT}.".encode())
+            return None, None
+        return member, (self.rfile.read(length) if length else b"")
+
+    def _icon_put(self):
+        member, data = self._picture_body()
+        if member is None:
+            return
+        try:
+            done = self._attempt(lambda: self.server.party.set_icon(member, data) or "")
+        except BadImage as error:
+            self._send(415, TEXT, str(error).encode("utf-8"))
+            return
+        if done:
+            self._send(200, JSON_TYPE, json.dumps({"icon": self._result or None}).encode("utf-8"))
+
+    def _avatar_put(self):
+        member, data = self._picture_body()
+        if member is None:
+            return
+        try:
+            done = self._attempt(lambda: self.server.party.set_avatar(member, data) or "")
+        except BadImage as error:
+            self._send(415, TEXT, str(error).encode("utf-8"))
+            return
+        if done:
+            self._send(200, JSON_TYPE, json.dumps({"avatar": self._result or None}).encode("utf-8"))
 
     def _signal(self):
         member = self._identity()
@@ -2337,16 +2438,11 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
             logging.getLogger("privatepartynet.page").warning("%s", message[:2000])
         self._send(202, TEXT, b"")
 
-    def _identity(self, viewer=None):
-        """The member id behind this request's cookies, or None. A pop-out page says so (a header, or ?as=viewer on the
-        event stream) and is known by its viewer cookie. Every other request is known by the member cookie, which wins
-        over the host cookie, and never by a viewer cookie. Pass viewer to choose instead of reading the request."""
+    def _identity(self):
+        """The member id behind this request's cookies, or None. The member cookie wins over the host cookie."""
         party = self.server.party
         jar = self._cookies()
-        from_viewer = viewer
-        if from_viewer is None:
-            from_viewer = self.headers.get(VIEWER_MARKER) == "1" or parse_qs(urlsplit(self.path).query).get("as") == ["viewer"]
-        for base in ((VIEWER_COOKIE,) if from_viewer else (MEMBER_COOKIE, HOST_COOKIE)):
+        for base in (MEMBER_COOKIE, HOST_COOKIE):
             morsel = jar.get(party.cookie_name(base))
             if morsel is not None:
                 member = party.member_for(morsel.value)
@@ -2406,7 +2502,7 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
             if not host or origin != own:
                 return "That request came from another page."
         declared = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        wanted = "application/octet-stream" if path in ("/blob", "/file") else "application/json"
+        wanted = "application/octet-stream" if path in ("/blob", "/file", "/server/icon", "/avatar") else "application/json"
         if declared != wanted:
             return "That request was not understood."
         return ""

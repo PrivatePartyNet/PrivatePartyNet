@@ -53,6 +53,12 @@ button.icon { width: 34px; padding: 0; background: transparent; color: var(--mut
 button.icon:hover:not(:disabled), button.icon[aria-expanded="true"], button.icon[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
 button.icon.on { color: var(--danger); }
 button.link { min-height: 0; padding: 0; background: none; color: var(--accent-ink); font-weight: 500; text-decoration: underline; }
+/* a label that opens a file picker, made to look like the button beside it */
+label.button { font: inherit; font-size: var(--fs-md); font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
+  min-height: 34px; padding: 0 var(--sp-4); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-2); color: var(--text); cursor: pointer; }
+label.button:hover { background: var(--surface-3); }
+label.button:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+label.button.small { min-height: 26px; padding: 0 var(--sp-3); font-size: var(--fs-xs); border-radius: var(--r-sm); }
 
 /* --- fields ------------------------------------------------------------------------------------------------- */
 
@@ -131,6 +137,10 @@ details > .details-body { padding: 0 var(--sp-4) var(--sp-4); display: grid; gap
 .tag { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 0 6px; font-size: 11px; color: var(--muted); }
 
 .avatar { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; color: #ffffff; font-weight: 700; font-size: var(--fs-md); flex: none; }
+.avatar.big { width: 56px; height: 56px; font-size: 22px; background: var(--surface-3); color: var(--text); }
+/* a person's picture fills the round badge at any size; the picture itself is never changed */
+.avatar.has-picture { background: var(--surface-2) !important; overflow: hidden; }
+.avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
 .avwrap { position: relative; flex: none; display: inline-flex; }
 .presence { position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--surface); background: var(--muted); }
 

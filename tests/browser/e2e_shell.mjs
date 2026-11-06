@@ -47,15 +47,21 @@ const STATE = {
   game: { networks: [], active: null, chosen: null, state: "off", message: "", address: "", network: "", members: [] },
   relay: null, friend_relay: { on: false, mbps: 8, through: [], problems: [], ways: [] },
   update: { automatic: true, include_test: true, state: "idle", message: "" },
+  server: { made: true, name: "End-to-end server", autostart: true }, picture: "",
 };
 const BRIDGE = `(function () {
   if (window.top !== window) return;
   var ok = function () { return Promise.resolve({ ok: true, message: "" }); };
-  window.__events = []; window.__calls = []; window.__dm = 2; window.__theme = "dark";
+  window.__events = []; window.__calls = []; window.__dm = 2; window.__theme = "dark"; window.__servers = [];
+  var called = function (name) { return function () { window.__calls.push(["app", name, Array.prototype.slice.call(arguments)]); return ok(); }; };
   window.__look = { accent: null, text_scale: 100, density: "default" };
   window.pywebview = { api: {
     shell_state: function () { return Promise.resolve({ dm_unread: window.__dm, theme: window.__theme, appearance: window.__look,
-      running: true, events: window.__events.splice(0) }); },
+      running: true, servers: window.__servers, picture: "", events: window.__events.splice(0) }); },
+    server_icon: function () { return Promise.resolve({ ok: true, src: "" }); },
+    connect_server: called("connect_server"), start_own: called("start_own"),
+    forget_joined: function (key) { window.__calls.push(["app", "forget_joined", [key]]);
+      window.__servers = window.__servers.filter(function (s) { return s.key !== key; }); return ok(); },
     appearance: function () { return Promise.resolve(window.__look); },
     room_call: function (key, method, args) {
       window.__calls.push([key, method, args]);
@@ -178,12 +184,33 @@ async function main() {
     "!document.getElementById('messagesFrame').hidden && document.getElementById('messagesFrame').src.includes('dm.html')")));
   await host.shot("shell-home");
 
-  await host.top(`__events.push({ type: "open", key: "own", name: "End-to-end party", url: "http://127.0.0.1:${local}/host", own: true, select: true }); true`);
+  // The rail lists your own server and every server joined, for good, whether or not their rooms are open (K, November
+  // 5th). A server whose room is not open shows a card in its place with what can be done.
+  await host.top(`__servers = [{ key: "own", name: "End-to-end server", own: true, state: "stopped", message: "", icon: "" },
+    { key: "joined-far", name: "Friday games", own: false, state: "offline", message: "Nobody answered in time.", icon: "" }]; true`);
+  check("your own server and a joined one are on the rail before any room opens", await waitFor(() => host.top(
+    "[...document.querySelectorAll('#serverList .srv-item')].map(function (i) { return i.dataset.key; }).join() === 'own,joined-far'")));
+  await host.top("document.querySelector('#serverList .srv-item[data-key=\"own\"] .srv').click(); true");
+  check("your stopped server shows a card with Start it", await waitFor(() => host.top(
+    "!!document.querySelector('.view-note.current') && document.querySelector('.view-note.current').textContent.includes('End-to-end server is off')")));
+  await host.top("[...document.querySelectorAll('.view-note.current button')].find(function (b) { return b.textContent === 'Start it'; }).click(); true");
+  check("Start it starts it", await waitFor(() => host.top("__calls.some(function (c) { return c[1] === 'start_own'; })")));
+  await host.top("document.querySelector('#serverList .srv-item[data-key=\"joined-far\"] .srv').click(); true");
+  check("a server out of reach says so in its place, with why", await waitFor(() => host.top(
+    "document.querySelector('.view-note.current').textContent.includes(\"Can't reach Friday games\") && document.querySelector('.view-note.current').textContent.includes('Nobody answered in time')")));
+  check("and is dimmed on the rail", await host.top("document.querySelector('#serverList .srv-item[data-key=\"joined-far\"]').classList.contains('away')"));
+  await host.top("[...document.querySelectorAll('.view-note.current button')].find(function (b) { return b.textContent === 'Try again'; }).click(); true");
+  check("Try again asks the app to reach it", await waitFor(() => host.top("__calls.some(function (c) { return c[1] === 'connect_server' && c[2][0] === 'joined-far'; })")));
+  await host.shot("shell-away");
+
+  await host.top(`__servers[0].state = "open"; __events.push({ type: "open", key: "own", name: "End-to-end server", url: "http://127.0.0.1:${local}/host", own: true, select: true }); true`);
   const hostRoom = `127.0.0.1:${local}/host`;
-  check("the party's room is put on the rail and shown", await waitFor(() => host.top(
-    "document.querySelectorAll('#serverList .srv-item').length === 1 && document.querySelector('#views iframe.view.current') !== document.getElementById('view-home')")));
+  check("your server's room opens in its place on the rail and is shown", await waitFor(() => host.top(
+    "document.querySelectorAll('#serverList .srv-item').length === 2 && document.querySelector('#views iframe.view.current') !== document.getElementById('view-home') && !document.querySelector('.view-note.current')")));
   check("the room signs in inside the frame and knows it is embedded", await waitFor(() => host.frame(hostRoom,
     "document.documentElement.classList.contains('embedded') && document.getElementById('partyName').textContent === 'End-to-end party'")));
+  check("the room tells the app its server's name, for the rail", await waitFor(() => host.top(
+    "__calls.some(function (c) { return c[0] === 'own' && c[1] === 'server_look' && c[2][0] === 'End-to-end party'; })")));
   check("the room's calls reach the app through the shell, for that room only", await waitFor(() => host.top(
     "__calls.some(function (c) { return c[0] === 'own' && c[1] === 'appearance'; })")));
   await host.top(`__look = { accent: "#16a34a", text_scale: 110, density: "compact" }; true`);
@@ -200,7 +227,8 @@ async function main() {
   const sam = new Person(browser);
   await sam.open(shellUrl);
   await waitFor(() => sam.top("!!window.PPNShell"));
-  await sam.top(`__events.push({ type: "open", key: "join:a", name: "End-to-end party", url: "https://127.0.0.1:${PORT}/join?token=${tokens.Sam}", own: false, select: true }); true`);
+  await sam.top(`__servers = [{ key: "joined-a", name: "End-to-end party", own: false, state: "open", message: "", icon: "" }];
+    __events.push({ type: "open", key: "joined-a", name: "End-to-end party", url: "https://127.0.0.1:${PORT}/join?token=${tokens.Sam}", own: false, select: true }); true`);
   const samRoom = `127.0.0.1:${PORT}`;
   check("a member's HTTPS room signs in inside the frame", await waitFor(() => sam.frame(samRoom,
     "document.documentElement.classList.contains('embedded') && document.getElementById('count').textContent.startsWith('2 people')"), 30_000));
@@ -208,7 +236,7 @@ async function main() {
   await sam.top("PPNShell.show('home'); true");
   await host.frame(hostRoom, "document.getElementById('chatText').value = 'hello from the host'; document.getElementById('chatForm').requestSubmit(); true");
   check("a message while another view is shown marks the server unread", await waitFor(() => sam.top(
-    "document.querySelector('#serverList .srv-item').classList.contains('unread')")));
+    "document.querySelector('#serverList .srv-item').classList.contains('has-unread')")));
   check("and plays the message sound", await waitFor(() => sam.top("PPNShell.played().indexOf('message') >= 0")));
   // each sound file is there and Edge can decode it (the browser is muted, so nothing is heard)
   const undecoded = await sam.top(`Promise.all([...new Set(Object.values(PPNShellParts.SOUND_FILES))].map(function (file) {
@@ -223,7 +251,7 @@ async function main() {
   check("every sound file decodes, and each is short", undecoded === "", undecoded);
   await sam.shot("shell-unread");
   await sam.top("document.querySelector('#serverList .srv').click(); true");
-  check("showing it again reads it", await waitFor(() => sam.top("!document.querySelector('#serverList .srv-item').classList.contains('unread')")));
+  check("showing it again reads it", await waitFor(() => sam.top("!document.querySelector('#serverList .srv-item').classList.contains('has-unread')")));
 
   // voice continues while Home is shown, and the rail has its controls
   await sam.frame(samRoom, "[...document.querySelectorAll('#channelList .channel.voice .channel-row button')].find(function (b) { return b.textContent === 'Join'; }).click(); true");
@@ -249,11 +277,14 @@ async function main() {
   await sam.frame(samRoom, "document.getElementById('fullBtn').click(); true");
   check("and back", await waitFor(() => sam.top("!document.getElementById('shell').classList.contains('focus')")));
 
-  // leaving from the rail: the room says goodbye to the party, and the app takes it off the rail
+  // leaving from the rail: asked once more, then the room says goodbye to the server and the app takes it off the list
   await sam.top("document.querySelector('#serverList .srv').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 120 })); true");
-  await sam.top("[...document.querySelectorAll('#railMenu button')].find(function (b) { return b.textContent === 'Leave this party'; }).click(); true");
-  check("Leave this party leaves and takes the server off the rail", await waitFor(() => sam.top(
-    "document.querySelectorAll('#serverList .srv-item').length === 0 && document.getElementById('view-home').classList.contains('current')")));
+  await sam.top("[...document.querySelectorAll('#railMenu button')].find(function (b) { return b.textContent === 'Leave server'; }).click(); true");
+  check("Leave server asks first", await waitFor(() => sam.top(
+    "[...document.querySelectorAll('#railMenu button')].some(function (b) { return b.textContent === 'Leave End-to-end party for good'; })")));
+  await sam.top("[...document.querySelectorAll('#railMenu button')].find(function (b) { return b.textContent === 'Leave End-to-end party for good'; }).click(); true");
+  check("then leaves, and the server goes from the list and the rail", await waitFor(() => sam.top(
+    "document.querySelectorAll('#serverList .srv-item').length === 0 && document.getElementById('view-home').classList.contains('current') && __calls.some(function (c) { return c[1] === 'forget_joined' && c[2][0] === 'joined-a'; })")));
   check("the host sees Sam go", await waitFor(() => host.frame(hostRoom, "document.getElementById('count').textContent.startsWith('1 person')")));
 
   // About and How over the window; a refused certificate shown in the server's place
@@ -265,7 +296,7 @@ async function main() {
   check("Escape closes it", await waitFor(() => host.top("document.getElementById('overlay').hidden")));
   await host.top(`__events.push({ type: "refused", origin: "http://127.0.0.1:${local}" }); true`);
   check("a refused certificate is shown in that server's place, not over the window", await waitFor(() => host.top(
-    "!!document.querySelector('.view-note.current') && document.querySelector('.view-note.current').textContent.includes('This party was stopped') && !!document.getElementById('serverList').children.length")));
+    "!!document.querySelector('.view-note.current') && document.querySelector('.view-note.current').textContent.includes('This server was stopped here') && !!document.getElementById('serverList').children.length")));
   await host.shot("shell-refused");
 
   console.log(failed ? `RESULT FAIL ${failed}` : "RESULT PASS");
