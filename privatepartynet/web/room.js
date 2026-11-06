@@ -70,7 +70,6 @@
     upscaleNote: document.getElementById("upscaleNote"),
     resetLayout: document.getElementById("resetLayout"),
     showHidden: document.getElementById("showHidden"),
-    pip: document.getElementById("pipBtn"),
     full: document.getElementById("fullBtn"),
     stage: document.getElementById("stage"),
     tiles: document.getElementById("tiles"),
@@ -960,6 +959,10 @@
     video.autoplay = true;
     video.playsInline = true;
     video.muted = true; // screens carry no sound
+    // no floating picture-in-picture window either: PrivatePartyNet is one window (K, November 5th: "We don't want any
+    // second window")
+    video.disablePictureInPicture = true;
+    video.setAttribute("disablepictureinpicture", "");
     var note = document.createElement("div");
     note.className = "hidden-note";
     var message = document.createElement("span");
@@ -2006,19 +2009,6 @@
       closeWindow();
     });
   }
-
-  // --- picture in picture and fullscreen -------------------------------------------------------------------
-
-  el.pip.addEventListener("click", function () {
-    var tile = (focusKey && tiles.get(focusKey)) ||
-      Array.from(tiles.values()).find(function (t) { return !t.classList.contains("stream-hidden"); });
-    var video = tile && tile.querySelector("video");
-    if (video && document.pictureInPictureEnabled) {
-      video.requestPictureInPicture().catch(function () {
-        notice("Picture in picture is not available for that picture.");
-      });
-    }
-  });
 
   // --- the connection bar ----------------------------------------------------------------------------------
 

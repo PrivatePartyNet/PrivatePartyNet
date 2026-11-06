@@ -404,6 +404,8 @@ async function main() {
   check("the upscale readout shows a live share", await waitFor(() => sam.evaluate(
     "!document.getElementById('upscaleNote').hidden && document.getElementById('upscaleNote').textContent.includes('CPU now')")));
   check("no screen offers a window of its own: PrivatePartyNet is one window", await sam.evaluate("!document.querySelector('.tile .popout')"));
+  check("nor a floating picture-in-picture window", await sam.evaluate(
+    "!document.getElementById('pipBtn') && [...document.querySelectorAll('.tile video')].every(function (v) { return v.disablePictureInPicture === true; })"));
 
   // The two views. Clicking a screen makes it big and puts the others in a strip of previews along the bottom.
   const tileSel = (key) => `.tile[data-key="${key}"]`;

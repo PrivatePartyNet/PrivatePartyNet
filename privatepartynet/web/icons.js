@@ -50,7 +50,6 @@
     pin: '<path d="M12 17v5M9 3h6l-1 6 3 3H7l3-3z"/>',
     fullscreen: '<path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/>',
     "pop-out": '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/>',
-    pip: '<rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="12" width="6" height="4" rx="1" fill="currentColor" stroke="none"/>',
     "chevron-down": '<path d="M6 9l6 6 6-6"/>',
     "chevron-right": '<path d="M9 6l6 6-6 6"/>',
     "panel-right": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
