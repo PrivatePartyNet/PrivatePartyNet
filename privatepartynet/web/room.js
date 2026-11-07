@@ -22,7 +22,9 @@
   var RTC = window.PartyRTC;
   var Layout = window.PrivatePartyNetLayout;
   var Stats = window.PrivatePartyNetNetStats;
+  var Ping = window.PrivatePartyNetPingView;
   var CaptureSize = window.PrivatePartyNetCaptureSize;
+  var Link = window.PrivatePartyNetLink;
 
   var PREFS = {
     receive: "privatepartynet.receive",
@@ -153,6 +155,16 @@
   var streamPanel = null; // the open per-stream settings panel: { key, node }
   var statSamples = new Map(); // peer id -> the previous normalized stats report
   var summaries = new Map(); // peer id -> the latest connection summary
+  // This page's own link to the host, timed by the page from the host's heartbeat (window.ppnMyLink and its "ppn-mylink"
+  // event, same shape as a member's "link"); null until then, and always on the host's own page.
+  var myLink = window.ppnMyLink || null;
+  window.addEventListener("ppn-mylink", function (event) {
+    myLink = event.detail || null;
+    updatePings();
+  });
+  // Between rosters the host sends every member's link each 2 seconds ("links"); the page puts them on the members and
+  // says so with this event, and the pings follow in place.
+  window.addEventListener("ppn-links", function () { updatePings(); });
   var hoverId = null; // the peer whose chip the pointer is over
   var statsBusy = false;
   var lastCpu = null;
@@ -164,15 +176,169 @@
 
   restorePrefs();
 
-  var events = new EventSource("/events");
-  events.onmessage = function (event) {
-    handle(JSON.parse(event.data));
-  };
-  events.onerror = function () {
-    if (events.readyState === EventSource.CLOSED) {
-      notice("The connection to the server ended. Choose the server on the left to connect again.");
+  // --- staying in the party through bad internet (link.js) ---------------------------------------------------
+  // The host pings this page every 2 s and the page answers; how long the answers take is "my link", for the ping
+  // display (window.ppnMyLink and the "ppn-mylink" event). When the host goes quiet for 10 s, or the event stream
+  // breaks, the page reconnects by itself with growing pauses, asks the app to resume its place when the host wants
+  // that (GET /link answers 409), and picks up the chat it missed. Peer connections and audio stay as they are; their
+  // own ways through are restarted (ICE restart) once the party connection is back.
+  var linkMeter = new Link.Meter(Date.now(), Date.now());
+  window.ppnMyLink = null;
+  var lastSeq = {};  // channel id -> the newest message seq this page has
+  var graceMs = Link.GRACE_MS;
+  var events = null;
+  var away = { state: "ok", since: 0, attempt: 0, timer: null, ended: false };
+
+  function openEvents() {
+    var since = Link.sinceParam(lastSeq);
+    var stream = new EventSource("/events" + (since ? "?since=" + encodeURIComponent(since) : ""));
+    events = stream;
+    stream.onmessage = function (event) {
+      linkMeter.heardFrom(Date.now());
+      if (away.state === "reconnecting") linkBack();
+      handle(JSON.parse(event.data));
+    };
+    stream.onerror = function () {
+      if (away.ended || stream !== events) return;
+      // The browser would retry by itself, but without the chat missed meanwhile or the resume the host may want.
+      stream.close();
+      events = null;
+      linkLost();
+    };
+  }
+  openEvents();
+
+  function publishMyLink() {
+    window.ppnMyLink = linkMeter.view();
+    window.dispatchEvent(new CustomEvent("ppn-mylink", { detail: window.ppnMyLink }));
+  }
+
+  function answerPing(id) {
+    linkMeter.seen = true;
+    var started = performance.now();
+    var timer = null;
+    var timeout = new Promise(function (_, reject) { timer = setTimeout(function () { reject(new Error("late")); }, Link.UNSTABLE_MS); });
+    Promise.race([post("/pong", { id: id }), timeout]).then(function (response) {
+      clearTimeout(timer);
+      linkMeter.answered(performance.now() - started, Date.now());
+      return response.json().then(function (seen) { if (seen && seen.path) linkMeter.path = seen.path; }, function () {});
+    }, function () {
+      clearTimeout(timer);
+      linkMeter.missed(Date.now());
+    }).then(function () {
+      linkMeter.update(Date.now(), Date.now());
+      publishMyLink();
+    });
+  }
+
+  function linkLost() {
+    if (away.ended || away.state === "reconnecting") return;
+    away.state = "reconnecting";
+    away.since = Date.now();
+    away.attempt = 0;
+    if (events) { events.close(); events = null; }
+    report("party connection lost; reconnecting");
+    showAway();
+    away.timer = setTimeout(tryBack, Link.backoff(0));
+  }
+
+  async function tryBack() {
+    if (away.ended || away.state !== "reconnecting") return;
+    if (Date.now() - away.since > graceMs) { linkEnded(); return; }
+    if (!events) {
+      var status = 0;
+      try {
+        var response = await fetch("/link", { cache: "no-store" });
+        status = response.status;
+      } catch (err) {
+        status = 0; // still no way to the host: the app's link is finding one
+      }
+      if (status === 200) {
+        openEvents(); // back once its first message arrives
+      } else if (status === 409) {
+        // away long enough that the host wants this PC's identity first: the app signs the resume
+        var api = window.pywebview && window.pywebview.api;
+        if (!api || !api.resume_party) { linkEnded(); return; } // an app that cannot resume: ask to join again
+        var result = await api.resume_party().catch(function () { return null; });
+        if (result && result.ok) openEvents();
+        else if (result && result.gone) { linkEnded(); return; }
+      } else if (status === 401) {
+        linkEnded();
+        return;
+      }
     }
-  };
+    away.attempt += 1;
+    away.timer = setTimeout(tryBack, Link.backoff(away.attempt));
+  }
+
+  function linkBack() {
+    clearTimeout(away.timer);
+    away.state = "back";
+    report("party connection back after " + Math.round((Date.now() - away.since) / 1000) + " s");
+    showAway();
+    setTimeout(function () { if (away.state === "back") { away.state = "ok"; showAway(); } }, 3000);
+    peers.forEach(function (entry, id) { if (entry.troubleSince) scheduleRestart(id, 0); });
+  }
+
+  function linkEnded() {
+    clearTimeout(away.timer);
+    away.ended = true;
+    away.state = "lost";
+    if (events) { events.close(); events = null; }
+    teardownAll();
+    showAway();
+  }
+
+  function showAway() {
+    var text = Link.banner(away.state, Date.now() - away.since, graceMs);
+    var box = document.getElementById("awayBanner");
+    box.hidden = !text;
+    box.textContent = text || "";
+    box.dataset.state = away.state;
+    if (away.state === "lost") {
+      var api = window.pywebview && window.pywebview.api;
+      if (api && api.rejoin_party) {
+        var button = document.createElement("button");
+        button.className = "primary";
+        button.textContent = "Rejoin";
+        button.addEventListener("click", function () {
+          button.disabled = true;
+          api.rejoin_party().then(function (result) {
+            if (!result || !result.ok) { button.disabled = false; notice((result && result.message) || "That did not work."); }
+          });
+        });
+        box.append(" ", button);
+      }
+    }
+  }
+
+  // Once a second: move "my link" on from how long the host has been quiet, and reconnect when it has been too long.
+  setInterval(function () {
+    if (away.ended) return;
+    if (away.state === "reconnecting") { showAway(); return; }
+    if (!linkMeter.seen) return; // the host's own page is never pinged
+    if (linkMeter.update(Date.now(), Date.now())) publishMyLink();
+    if (linkMeter.state === "reconnecting") linkLost();
+  }, 1000);
+
+  window.addEventListener("pagehide", function () {
+    // Closing the window is leaving for now, not a dropout: the host takes this person offline at once.
+    // (as JSON: the server takes no other kind of POST, _post_refused)
+    if (!away.ended && navigator.sendBeacon) navigator.sendBeacon("/bye", new Blob(["{}"], { type: "application/json" }));
+  });
+
+  // A member whose connection dropped keeps their screens through the grace; their tiles say they are reconnecting
+  // rather than looking live and frozen.
+  function markStalled() {
+    tiles.forEach(function (tile, key) {
+      var member = members.get(String(key).split(":")[0]);
+      tile.classList.toggle("stalled", !!(member && member.link && member.link.state === "reconnecting"));
+    });
+  }
+
+  function noteSeq(message) {
+    if (message && message.channel && message.seq > (lastSeq[message.channel] || 0)) lastSeq[message.channel] = message.seq;
+  }
 
   // The theme comes from the server; a room opened with its own ?theme= keeps that choice.
   // The app opens a joined server's room with ?feed= (this PC's own screen feed) and ?token=; its ?theme= wins.
@@ -246,6 +412,7 @@
       el.myName.value = me.name;
       syncPicture();
       RTC.setStun(!!msg.stun, msg.turn);
+      if (msg.grace) graceMs = msg.grace * 1000;
       chat.hello(msg);
       setStorage(msg.storage);
       if (window.PPNEmbedded) window.PPNEmbedded.send({ ppn: "ready" }); // the one window: this room is signed in
@@ -264,14 +431,36 @@
       peers.forEach(function (entry, id) { attachAll(id); }); // who is in my voice channel may have changed
       sendQualityToEveryone();
       picturesChanged();
+      markStalled();
     } else if (msg.type === "history") {
-      chat.history(msg);
+      if (msg.since !== undefined) {
+        // back after a dropout: only what was missed, added to what the page has
+        msg.messages.forEach(function (m) { chat.message(Object.assign({ type: "chat" }, m)); });
+      } else {
+        chat.history(msg);
+      }
+      msg.messages.forEach(noteSeq);
     } else if (msg.type === "chat") {
       chat.message(msg);
+      noteSeq(msg);
     } else if (msg.type === "deleted") {
       chat.deleted(msg);
     } else if (msg.type === "storage") {
       setStorage(msg);
+    } else if (msg.type === "ping") {
+      answerPing(msg.id);
+    } else if (msg.type === "links") {
+      // every member's link, every 2 s, for the ping display ("ppn-links"); the roster comes on a change of state
+      Object.keys(msg.links || {}).forEach(function (id) {
+        var member = members.get(id);
+        if (member) member.link = msg.links[id];
+        var entry = peers.get(id);
+        if (entry && entry.troubleSince && msg.links[id].state === "ok") scheduleRestart(id, 0);
+      });
+      window.dispatchEvent(new CustomEvent("ppn-links", { detail: msg.links }));
+      markStalled();
+    } else if (msg.type === "dropped") {
+      linkEnded(); // away past the grace: the place in the party has ended
     } else if (msg.type === "ice") {
       RTC.setStun(!!msg.stun, msg.turn); // connections made from now on can cross routers; the ones already up are fine
     } else if (msg.type === "channels") {
@@ -293,11 +482,13 @@
     } else if (msg.type === "signal") {
       signal(msg);
     } else if (msg.type === "kicked" || msg.type === "left") {
-      events.close();
+      away.ended = true;
+      if (events) events.close();
       teardownAll();
       notice(msg.type === "kicked" ? "The owner or an admin removed you from this server." : "You left the server.");
     } else if (msg.type === "stop") {
-      events.close();
+      away.ended = true;
+      if (events) events.close();
       teardownAll();
       notice("The host stopped the server. It stays on your list; it opens again when the host starts it.");
     } else if (msg.type === "server") {
@@ -324,9 +515,52 @@
   }
 
   function makePeer(id) {
-    var entry = { pc: RTC.newPeer(), wants: {} };
+    var entry = { pc: RTC.newPeer(), wants: {}, troubleSince: null, restartTimer: null, restarts: 0 };
     peers.set(id, entry);
+    entry.pc.addEventListener("iceconnectionstatechange", function () {
+      if (peers.get(id) !== entry) return;
+      var state = entry.pc.iceConnectionState;
+      if (state === "failed") scheduleRestart(id, 0);
+      else if (state === "disconnected") scheduleRestart(id, 3000); // it often comes back by itself
+      else if (state === "connected" || state === "completed") {
+        if (entry.troubleSince) report("connection to a member back after " + Math.round((Date.now() - entry.troubleSince) / 1000) + " s");
+        entry.troubleSince = null;
+        entry.restarts = 0;
+        clearTimeout(entry.restartTimer);
+      }
+    });
     return entry;
+  }
+
+  // A peer connection lost its way through (a dropout, a new address): find a new one with an ICE restart, keeping the
+  // connection, its audio element and its screens. The member who made the first offer restarts, so the two never
+  // offer at once; the signal goes through the party server once this page's connection to it is back.
+  function scheduleRestart(id, delay) {
+    var entry = peers.get(id);
+    if (!entry) return;
+    if (!entry.troubleSince) entry.troubleSince = Date.now();
+    clearTimeout(entry.restartTimer);
+    entry.restartTimer = setTimeout(function () { restartIce(id); }, delay);
+  }
+
+  async function restartIce(id) {
+    var entry = peers.get(id);
+    if (!entry || entry.pc.signalingState === "closed" || !entry.troubleSince) return;
+    var state = entry.pc.iceConnectionState;
+    if (state === "connected" || state === "completed") { entry.troubleSince = null; return; }
+    if (Date.now() - entry.troubleSince > graceMs) return; // the member is out by now; the roster closes it
+    var again = function () {
+      entry.restarts += 1;
+      entry.restartTimer = setTimeout(function () { restartIce(id); }, Math.max(3000, Link.backoff(entry.restarts)));
+    };
+    if (!me || me.id >= id || away.state === "reconnecting" || away.ended) { again(); return; }
+    try {
+      await RTC.restartIce(entry.pc, function (sdp) { return send(id, { kind: "offer", sdp: sdp }); });
+      report("ICE restart offered to a member (" + state + ")");
+    } catch (err) {
+      // the party connection or the other member is still away: try again shortly
+    }
+    again();
   }
 
   function closePeer(id) {
@@ -355,6 +589,16 @@
   }
 
   async function answerFrom(id, sdp) {
+    var current = peers.get(id);
+    if (current) {
+      // The same member's connection asking for a new way through (an ICE restart): answer on it, keeping its
+      // tracks, audio element and screens. Anything else (the other page was reloaded) makes it over.
+      try {
+        if (await RTC.answerInPlace(current.pc, sdp, function (answer) { return send(id, { kind: "answer", sdp: answer }); })) return;
+      } catch (err) {
+        // not something this connection can take: start it over below
+      }
+    }
     closePeer(id);
     var entry = makePeer(id);
     try {
@@ -410,10 +654,21 @@
       return;
     }
     RTC.setScreenTrack(entry.pc, share.slot, share.track)
-      .then(function () { return RTC.limitSending(entry.pc, share.slot, share.track, entry.wants[share.slot], ceilingOf(share), share.source); })
+      .then(function () { return RTC.limitSending(entry.pc, share.slot, share.track, wantOf(id, entry.wants[share.slot]), ceilingOf(share), share.source); })
       .catch(function () {
         // the connection may still be settling; the next quality message or share change tries again
       });
+  }
+
+  // What a viewer asked for, but no more than BAD_LINK_HEIGHT while their link (or this page's) is having a hard
+  // time: a smaller picture gets through a lossy link, and it comes back up once the link is ok again.
+  function wantOf(id, want) {
+    var member = members.get(id);
+    if (!Link.linkIsBad(member && member.link) && !Link.linkIsBad(window.ppnMyLink)) return want;
+    var cap = { mode: "fit", width: Math.round(Link.BAD_LINK_HEIGHT * 16 / 9), height: Link.BAD_LINK_HEIGHT };
+    if (want && want.mode === "off") return want;
+    if (want && want.mode === "fit" && want.height <= cap.height) return want;
+    return cap;
   }
 
   // The limit on what a share sends: its own settings, or the Go Live panel's when it has none.
@@ -789,12 +1044,13 @@
       var qualities = [];
       peers.forEach(function (entry, id) {
         var member = members.get(id);
-        if (member && member.online) qualities.push(entry.wants[share.slot]);
+        if (member && member.online) qualities.push(wantOf(id, entry.wants[share.slot]));
       });
       var own = tileKey(me.id, share.slot);
       var tile = tiles.get(own);
       if (tile && !hiddenKeys.has(own)) qualities.push(RTC.fitTo(tile.querySelector("video")));
       var ceilingHeight = ceilingHeightOf(share.opts || currentOptions());
+      if (Link.linkIsBad(window.ppnMyLink)) ceilingHeight = Math.min(ceilingHeight || Infinity, Link.BAD_LINK_HEIGHT);
       var need = CaptureSize.neededHeight(share.source, qualities, ceilingHeight);
       var decision = share.governor.decide(CaptureSize.stepFor(need, share.source.height), now);
       if (decision.changed) {
@@ -1784,6 +2040,7 @@
       name.className = "name";
       name.textContent = member.name + (member.id === me.id ? " (you)" : "");
       row.append(wrap, name);
+      if (member.online) row.append(pingCell(member));
       var roleLabel = member.id === hostId ? "Owner" : member.role === "admin" ? "Admin" : member.role === "guest" ? "Guest" : "";
       if (roleLabel) {
         var badge = document.createElement("span");
@@ -1821,6 +2078,50 @@
       el.roster.append(row);
     }
   }
+
+  // --- each member's ping ----------------------------------------------------------------------------------
+
+  // The best ping there is for a member (pingview.js): this page's own connection to them, else the host's heartbeat.
+  function pingOf(member) {
+    return Ping.pick({
+      member: member, summary: summaries.get(member.id), myLink: myLink, self: !!me && member.id === me.id,
+      selfIsHost: !!me && me.id === hostId, isHost: member.id === hostId,
+    });
+  }
+
+  function fillPing(cell, member) {
+    var choice = pingOf(member);
+    var shown = Ping.text(choice);
+    var quality = choice.state === "ok" ? Ping.quality(choice.rtt, choice.loss) : "shaky";
+    var label = cell.lastChild;
+    if (label.textContent !== shown) label.textContent = shown;
+    cell.dataset.quality = quality;
+    cell.dataset.source = choice.source;
+    cell.dataset.pingMs = typeof choice.rtt === "number" && choice.state === "ok" ? String(Math.round(choice.rtt)) : "";
+    cell.hidden = choice.state === "self";
+    cell.title = Ping.detail(choice, member.id === (me && me.id) ? "you" : member.name).join("\n");
+  }
+
+  function pingCell(member) {
+    var cell = document.createElement("span");
+    cell.className = "ping";
+    var dot = document.createElement("span");
+    dot.className = "pdot";
+    cell.append(dot, document.createElement("span"));
+    fillPing(cell, member);
+    return cell;
+  }
+
+  // Every 2 seconds, in place: the rows stay where they are and only the numbers change.
+  function updatePings() {
+    document.querySelectorAll("#roster li[data-id]").forEach(function (row) {
+      var cell = row.querySelector(".ping");
+      var member = members.get(row.dataset.id);
+      if (cell && member) fillPing(cell, member);
+    });
+  }
+
+  setInterval(updatePings, 2000);
 
   function updateCount() {
     var online = Array.from(members.values()).filter(function (m) { return m.online; }).length;
@@ -2002,7 +2303,8 @@
   // Leaving the server for good (the server menu, or the rail's): the server forgets this session, and the app takes
   // the server off the list.
   function leaveServer() {
-    events.close();
+    away.ended = true;
+    if (events) events.close();
     teardownAll();
     post("/leave", {}).catch(function () {}).finally(function () {
       notice("You left the server.");
@@ -2051,6 +2353,7 @@
       chip.dataset.upRes = Stats.formatSize(up.w, up.h);
       chip.dataset.upKbps = String(Math.round(up.kbps));
     }
+    chip.dataset.quality = Ping.summaryQuality(summary); // the members list's colours
     var dot = document.createElement("span");
     dot.className = "dot";
     var name = document.createElement("span");
@@ -2188,8 +2491,8 @@
     el.tip.append(net);
     var line = document.createElement("div");
     line.className = "line";
-    line.textContent = (summary.rtt == null ? "Round trip n/a" : "Round trip " + Math.round(summary.rtt) + " ms") +
-      "  ·  Packet loss " + summary.loss.toFixed(1) + "%";
+    line.textContent = Ping.summaryLine(summary) +
+      (typeof summary.jitter === "number" ? "  ·  jitter " + Math.round(summary.jitter) + " ms" : "");
     el.tip.append(line);
     if (summary.way) {
       var wayLine = document.createElement("div");
@@ -2302,7 +2605,7 @@
         var peer = entry[1];
         var state = peer.pc.connectionState;
         if (state === "connected") connected += 1;
-        var summary = { state: state, rtt: null, way: null, loss: 0, down: [], up: [] };
+        var summary = { state: state, rtt: null, jitter: null, way: null, loss: 0, down: [], up: [] };
         try {
           var sample = await collect(peer);
           var previous = statSamples.get(id);
@@ -2310,6 +2613,7 @@
           var activeIn = new Set(sharesOf(id).map(function (s) { return s.slot; }));
           var result = Stats.diff(previous, sample, { cores: cores, activeIn: activeIn, activeOut: activeOut });
           summary.rtt = result.rtt;
+          summary.jitter = result.jitter;
           summary.way = result.way;
           summary.loss = result.loss;
           summary.down = result.down;
@@ -2476,6 +2780,7 @@
       var reason = await response.text().catch(function () { return ""; });
       throw new Error(reason || path + " returned " + response.status); // the server's own words when it gives them
     }
+    return response;
   }
 
   // A member's room hands the chat it receives to the app, which keeps an encrypted copy on this PC. The host's own room

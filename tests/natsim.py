@@ -53,6 +53,8 @@ Use:
     home.forward(sock)                    # a forwarded port: a public (address, port) anyone may send to
     home.public_address(sock, to)         # the public address `sock` uses towards `to`, or None if it has none yet
     home.dropped                          # what the router refused, as (why, from, to), for assertions and debugging
+    home.loss = 0.3                       # bad internet: drops that share of the datagrams through it, both ways
+    home.down = True                      # an outage: nothing through it at all until it is False again
     pc = internet.pc(v4=natsim.SYMMETRIC, v6=natsim.V6_STATEFUL)   # transport= for PathManager
     pc.addresses                          # [("ipv6", its global address)], for PathManager's addresses=
     pc.v4_router, pc.v6_router            # their dropped lists say what each refused
@@ -73,6 +75,7 @@ import contextlib
 import collections
 import ipaddress
 import itertools
+import random
 import select
 import socket
 import sys
@@ -172,6 +175,8 @@ class Router:
         self.mapping_seconds = mapping_seconds
         self.mtu = mtu
         self.dropped = collections.deque(maxlen=1000)
+        self.loss = 0.0  # the share of datagrams through this router that are lost on the way (bad internet)
+        self.down = False  # an outage: nothing gets through, either way
         self._mappings = {}  # (inside, destination, or None when the mapping is the same for every destination)
         self._forwards = {}  # inside -> its forwarded mapping
         self._pending = []  # weak references to sockets bound in an adopting() block, not yet seen sending
@@ -482,6 +487,12 @@ class Internet:
                 receiver._drop(f"from a socket on no IPv{receiver.family} router (attach it, or make it a server)",
                                source, mapping.public)
                 return
+            if sender.down or receiver.down:
+                (sender if sender.down else receiver)._drop("the link is down", source, mapping.public)
+                return
+            loss = max(sender.loss, receiver.loss)
+            if loss and random.random() < loss:
+                return  # lost on the way
             mtu = min((m for m in (sender.mtu, receiver.mtu) if m), default=None)
             if mtu is not None and len(data) + HEADER[receiver.family] > mtu:
                 sender._drop(f"a {len(data)}-byte datagram is bigger than the path's MTU of {mtu}", source,

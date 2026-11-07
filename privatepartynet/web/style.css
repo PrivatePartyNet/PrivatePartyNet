@@ -141,6 +141,8 @@ body[data-view="text"] #voiceTools { display: none; }
 .tile.dragging { cursor: grabbing; box-shadow: var(--shadow-3); outline: 2px solid var(--accent); }
 .tile.animate { transition: left 0.18s ease, top 0.18s ease, width 0.18s ease, height 0.18s ease; }
 .tile .frame { position: absolute; inset: 0; border-radius: var(--r-md); overflow: hidden; background: #000000; }
+.tile.stalled .frame { opacity: 0.45; }
+.tile.stalled::after { content: "Reconnecting\2026"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 6px 12px; border-radius: var(--r-sm, 6px); background: rgba(0, 0, 0, 0.7); color: #ffffff; font-size: 14px; pointer-events: none; }
 .tile video { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
 .tile video.behind { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .tile canvas.upscaled { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
@@ -284,6 +286,12 @@ body.tile-fullscreen #app { grid-template-columns: 1fr; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+/* The party connection dropped: "Reconnecting... (n s)", then "Reconnected", or that the place has ended (link.js). */
+.away { position: fixed; left: 50%; top: 12px; transform: translateX(-50%); z-index: 160; padding: 8px 16px; border-radius: 8px; background: #b45309; color: #ffffff; font-size: 14px; max-width: 80vw; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3); }
+.away[hidden] { display: none; }
+.away[data-state="back"] { background: #15803d; }
+.away[data-state="lost"] { background: var(--danger); }
+.away button { margin-left: 10px; }
 
 /* Files: the storage meter under the server's name, the limits for the owner and admins, and file cards in the chat. */
 /* The text wraps inside the sidebar however narrow it is dragged, and File limits goes to its own line (K, November 5th:

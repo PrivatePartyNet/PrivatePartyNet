@@ -54,7 +54,7 @@ class WindowApiTests(unittest.TestCase):
     def test_what_the_page_may_call_is_only_what_is_meant(self):
         public = {name for name in dir(WindowApi) if not name.startswith("_")}
         self.assertEqual(public, {"close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture",
-                                  "server_look"})
+                                  "server_look", "resume_party", "rejoin_party", "link_state"})
         self.assertNotIn("open_viewer", public, "no pop-out windows: PrivatePartyNet is one window")
 
     def test_a_party_page_reads_this_persons_look_and_nothing_else(self):
@@ -200,6 +200,37 @@ class ControllerTests(unittest.TestCase):
             self.assertFalse(unguarded in source, unguarded)
         html = (Path(app.__file__).parent / "web" / "control.html").read_text(encoding="utf-8")
         self.assertLess(html.index("safetext.js"), html.index("control.js"))
+
+    def test_the_game_network_line_says_each_members_way_and_latency(self):
+        class Paths:
+            names = {"u-alex": "Alex", "u-bea": "Bea", "u-cy": "Cy"}
+
+            def state(self):
+                return {"through": [], "peers": {"u-alex": {"kind": "ipv6", "rtt": 23, "ways": ["ipv6"]},
+                                                 "u-bea": {"kind": "friend", "rtt": 160, "ways": ["friend"]},
+                                                 "u-cy": {"kind": "", "rtt": None, "ways": []}}}
+
+            def problems(self):
+                return []
+
+        self.controller.path_manager = Paths()
+        view = self.controller.state()["friend_relay"]
+        self.assertEqual(view["members"], [
+            {"name": "Alex", "way": "direct over IPv6", "rtt": 23},
+            {"name": "Bea", "way": "through a member's PC", "rtt": 160},
+            {"name": "Cy", "way": "not connected yet", "rtt": None},
+        ])
+        self.assertEqual(view["ways"], ["Alex, direct over IPv6, 23 ms", "Bea, through a member's PC, 160 ms",
+                                        "Cy, not connected yet"])
+
+    def test_the_in_memory_paths_report_a_latency_too(self):
+        from privatepartynet.pathway import LoopbackHub, LoopbackPathManager
+
+        hub = LoopbackHub()
+        a, b = LoopbackPathManager("a", hub=hub, kind="ipv6"), LoopbackPathManager("b", hub=hub)
+        a.path_to("b", b.local_candidates())
+        self.assertEqual(a.state()["peers"]["b"]["kind"], "ipv6")
+        self.assertIsInstance(a.state()["peers"]["b"]["rtt"], int)
 
     def test_state_carries_everything_the_panel_shows(self):
         state = self.controller.state()
@@ -510,11 +541,18 @@ class JoinFromOutsideThroughTheControllerTests(unittest.TestCase):
         self.addCleanup(guest.shutdown)
         guest.use_shell(mock.MagicMock())
         guest._join({"url": url, "name": "Host", "pins": (whole, spki), "embed": True, "key": "joined-a"})
-        self.assertTrue(windowpins.allowed(url, self.host._cert_pem))
+        # The room loads from its own address on this PC (its party link, 3.5), and that is the origin pinned.
+        room = guest._links["joined-a"]["link"].base + "/join?token=x"
+        self.assertTrue(windowpins.allowed(room, self.host._cert_pem))
+        self.assertFalse(windowpins.allowed(room, "not the host's certificate"))
         windowpins.forget_all()
         guest._join({"url": url.replace("token=x", "token=y"), "name": "Host", "embed": True, "key": "joined-a",
                      "cert": self.host._cert_pem})  # a Nearby accept carries the certificate itself
-        self.assertTrue(windowpins.allowed(url, self.host._cert_pem))
+        room = guest._links["joined-a"]["link"].base + "/join?token=y"
+        self.assertTrue(windowpins.allowed(room, self.host._cert_pem))
+        opened = [e for e in guest._shell_events if e.get("type") == "open"][-1]
+        self.assertTrue(opened["url"].startswith(guest._links["joined-a"]["link"].base + "/join?token=y"),
+                        "the frame is given the room's own address, which is the one pinned")
 
     def test_there_is_no_invite_when_no_party_is_open(self):
         self.assertFalse(self.guest.invite()["ok"])
@@ -693,7 +731,7 @@ class ReviewControllerTests(unittest.TestCase):
 
     def test_relaying_for_others_is_off_until_turned_on_and_can_be_limited(self):
         self.assertEqual(self.one.state()["friend_relay"], {"on": False, "mbps": 8, "through": [], "problems": [],
-                                                            "ways": []})
+                                                            "ways": [], "members": []})
         self.assertFalse(self.one.set_friend_relay(True, "lots")["ok"])
         self.assertTrue(self.one.set_friend_relay(True, 20)["ok"])
         self.assertEqual(self.one.state()["friend_relay"]["on"], True)

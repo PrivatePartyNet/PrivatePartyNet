@@ -38,6 +38,7 @@ from privatepartynet.frames import ScreenGrabber
 from privatepartynet.identity import Identity, safety_number
 from privatepartynet.netinfo import LOOPBACK, address_for, lan_addresses
 from privatepartynet.paths import data_dir, web_dir
+from privatepartynet.partylink import PartyLink
 from privatepartynet.server import Forbidden, NotFound, Party, generate_password
 from privatepartynet.shellserver import ShellServer
 from privatepartynet.settings import (DENSITIES, SOUND_GROUPS, THEMES, load_settings, save_settings, valid_accent,
@@ -207,8 +208,10 @@ class WindowApi:
     backup. The page is served by the host, so everything it hands over is checked and bounded, and a room is held to
     the one server it first named."""
 
-    def __init__(self, origin, store=None, appearance=None, on_close=None, fullscreen=None, picture=None, look=None):
+    def __init__(self, origin, store=None, appearance=None, on_close=None, fullscreen=None, picture=None, look=None,
+                 link=None):
         self._origin = origin
+        self._link = link  # a joined server's link (Controller._open_link), None for your own server's room
         self._appearance = appearance  # a callable giving this person's accent, text size and spacing (Settings)
         self._on_close = on_close  # takes the room off the rail
         self._fullscreen_hook = fullscreen  # the whole window's fullscreen, shared by every room
@@ -343,6 +346,27 @@ class WindowApi:
         store.put_blob(data)
         return {"ok": True}
 
+    def resume_party(self):
+        """The page lost its party connection for long enough that the host wants this PC's identity before it may come
+        back (GET /link said 409): sign the resume (POST /resume) over the window's link. {ok, message}."""
+        if self._link is None:
+            return {"ok": False, "message": "This window has nothing to resume."}
+        return self._link["resume"]()
+
+    def rejoin_party(self):
+        """The room's place in the server has ended (the grace ran out): reach the server again, as Try again on the
+        rail does. This room goes, and a new one opens in its place once the host lets this person in."""
+        if self._link is None:
+            return {"ok": False, "message": "This room cannot rejoin by itself."}
+        return self._link["rejoin"]()
+
+    def link_state(self):
+        """This room's link to its host: {"state": "ok" | "reconnecting" | "lost", "message", "path"}."""
+        if self._link is None:
+            return {"state": "ok", "message": "", "path": None}
+        link = self._link["link"]
+        return {"state": link.state, "message": link.message, "path": self._link.get("path")}
+
     def close_window(self):
         """Take the room off the rail. A room calls this when its member leaves the server."""
         if self._on_close is None:
@@ -352,7 +376,8 @@ class WindowApi:
 
 
 # What a server's room inside the one window may ask of the app: WindowApi's own calls (test_app checks they match).
-ROOM_CALLS = ("close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture", "server_look")
+ROOM_CALLS = ("close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture", "server_look",
+              "resume_party", "rejoin_party", "link_state")
 
 
 class Controller:
@@ -422,6 +447,12 @@ class Controller:
         self._tunnels = {}  # joined server key -> the punch-through tunnel it is reached by
         self._connecting = {}  # joined server key -> the Joiner reaching it again (connect_server)
         self._rail_note = {}  # joined server key -> {"state", "message"} when it could not be opened
+        self._links = {}  # joined server key -> its room's link (partylink.PartyLink and what resumes and rejoins it)
+        self._network = None  # this PC's addresses as last seen; a change makes every link reconnect at once
+        self._watching = threading.Event()  # set at shutdown: ends the network watch
+        if self._probe_network:
+            threading.Thread(target=self._watch_network, args=(self._watching,), name="privatepartynet-network-watch",
+                             daemon=True).start()
 
     # --- the key, the identity and the chat store ----------------------------------------------------------
 
@@ -799,7 +830,9 @@ class Controller:
                 key = self._remember_server(invite, joiner)
                 # The room accepts the certificate this join checked, and no other.
                 self._join({"url": status["url"], "name": invite["name"], "key": key,
-                            "pins": (joiner.seen_fingerprint, joiner.seen_spki), "embed": getattr(joiner, "embed", False)})
+                            "pins": (joiner.seen_fingerprint, joiner.seen_spki), "embed": getattr(joiner, "embed", False),
+                            "link": {"way": joiner.way, "tunnel": joiner.tunnel, "invite": dict(invite),
+                                     "resume_token": joiner.resume_token}})
             status["state"], status["message"] = "joined", "You are in. The server is on your list at the left."
         status.pop("url", None)
         return status
@@ -891,7 +924,9 @@ class Controller:
                 # they are looking at (its card, Try again) opens right there
                 self._join({"url": status["url"], "name": (record or {}).get("name") or joiner.invite["name"],
                             "key": key, "pins": (joiner.seen_fingerprint, joiner.seen_spki),
-                            "embed": getattr(joiner, "embed", False), "select": False})
+                            "embed": getattr(joiner, "embed", False), "select": False,
+                            "link": {"way": joiner.way, "tunnel": joiner.tunnel, "invite": dict(joiner.invite),
+                                     "resume_token": joiner.resume_token}})
             else:
                 self._rail_note[key] = {"state": "offline", "message": status.get("message") or "The server did not answer."}
 
@@ -1009,7 +1044,14 @@ class Controller:
             if not record or not (record.get("fingerprint") or record.get("spki")):
                 return {"ok": False, "message": "That server is not in your list."}
             tunnel = self._tunnels.get(key)
-            ordered = [["punch", "127.0.0.1", tunnel.port]] if tunnel is not None else connect._order(record.get("candidates") or [])
+            linked = (self._links.get(key) or {}).get("link")
+            if linked is not None:
+                # through the party window's link, which finds the host again after a dropout or a new address
+                ordered = [["link", linked.address, linked.port]]
+            elif tunnel is not None:
+                ordered = [["punch", "127.0.0.1", tunnel.port]]
+            else:
+                ordered = connect._order(record.get("candidates") or [])
             if not ordered:
                 return {"ok": False, "message": "No address is known for that server."}
             server_key = key
@@ -1262,6 +1304,9 @@ class Controller:
             key = server["key"]
             if key in self._room_apis:
                 state, message = "open", ""
+                down = self._link_of(key)
+                if down is not None:  # the room stays where it is, saying so; its place on the rail says it too
+                    state, message = "reconnecting" if down[0] == "reconnecting" else "lost", down[1]
             elif key in self._connecting:
                 state, message = "connecting", self._connecting[key].status.get("message") or ""
             else:
@@ -1377,12 +1422,16 @@ class Controller:
         except TypeError:
             return {"ok": False, "message": "That request was not understood."}
 
-    def _shell_room(self, key, name, url, origin, own=False, select=True, store=None):
-        """Put a server's room in its place on the rail (or show it when it is there already)."""
-        if key not in self._room_apis:
+    def _shell_room(self, key, name, url, origin, own=False, select=True, store=None, link=None):
+        """Put a server's room in its place on the rail (or show it when it is there already). `link` is a joined
+        server's party link (_open_link), through which the room reaches its host."""
+        if key in self._room_apis:
+            self._room_apis[key]._link = link
+        else:
             api = WindowApi(origin, store=store, appearance=self.appearance,
                             on_close=lambda: self._shell_room_closed(key), fullscreen=self._set_fullscreen,
-                            picture=self._my_picture, look=lambda name, data: self._server_look(key, name, data))
+                            picture=self._my_picture, look=lambda name, data: self._server_look(key, name, data),
+                            link=link)
             self._room_apis[key] = api
             if not own:
                 self._party_windows.add(key)
@@ -1391,6 +1440,9 @@ class Controller:
 
     def _shell_room_closed(self, key):
         self._room_apis.pop(key, None)
+        entry = self._links.pop(key, None)
+        if entry is not None:
+            self._close_link(entry)
         if key in self._party_windows:
             self._party_windows.discard(key)
             self.updater.busy_changed()
@@ -1565,7 +1617,7 @@ class Controller:
                           host_name=name, grabber=self._grabber,
                           theme=self._settings.get("theme", "dark"), store=self._store,
                           server_id=self._settings["server_id"], host_user_id=self._identity.user_id,
-                          owner=self._identity)
+                          owner=self._identity, reconnect_grace=self._grace())
         except OSError as exc:
             log.exception("Could not listen on port %s", port)
             return {"ok": False, "message": f"Could not listen on port {port}: {plain_error(exc)}"}
@@ -1679,16 +1731,21 @@ class Controller:
 
         manager = self.path_manager
         if manager is None:
-            return {"through": [], "problems": [], "ways": []}
+            return {"through": [], "problems": [], "ways": [], "members": []}
         try:
             state, problems = manager.state(), manager.problems()
         except Exception:
             log.exception("Reading the paths failed")
-            return {"through": [], "problems": [], "ways": []}
-        ways = sorted(f"{self._name_of(peer)}, {WAY_TEXT.get(info.get('kind') or '', 'not connected yet')}"
-                      for peer, info in (state.get("peers") or {}).items())
+            return {"through": [], "problems": [], "ways": [], "members": []}
+        # Each member's way and the game network's own latency to them: the round trip of the probes the paths send
+        # anyway (pathway.py), so showing it costs nothing.
+        members = sorted(({"name": self._name_of(peer), "way": WAY_TEXT.get(info.get("kind") or "", "not connected yet"),
+                           "rtt": info.get("rtt") if info.get("kind") and isinstance(info.get("rtt"), int) else None}
+                          for peer, info in (state.get("peers") or {}).items()), key=lambda m: (m["name"].lower(), m["way"]))
+        ways = [f"{m['name']}, {m['way']}" + (f", {m['rtt']} ms" if m["rtt"] is not None else "") for m in members]
         return {"through": [self._name_of(u) for u in state.get("through") or []],
-                "problems": [f"{self._name_of(p['peer'])}: {p['why']}" for p in problems], "ways": ways}
+                "problems": [f"{self._name_of(p['peer'])}: {p['why']}" for p in problems], "ways": ways,
+                "members": members}
 
     def rename(self, name):
         name = clean_name(name)
@@ -1809,6 +1866,141 @@ class Controller:
 
         return self._remember_server(invite, _Seen)
 
+    # --- staying in a party through bad internet (3.3) --------------------------------------------------------
+
+    def _grace(self):
+        return float(self._settings.get("reconnect_grace_s") or 120)
+
+    def _open_link(self, data, pins):
+        """A party link for a joined window (partylink.py): the window loads the party from it, and it finds the host
+        again when the way breaks. None when the join's address cannot be read (the window then goes straight there)."""
+        spec = dict(data.get("link") or {})
+        parts = urlsplit(data["url"])
+        if not spec.get("way"):
+            try:
+                spec["way"] = (parts.hostname, parts.port or 443)
+            except ValueError:
+                return None
+        if not spec["way"][0]:
+            return None
+        invite = spec.get("invite") or {"name": data.get("name", "Party"), "candidates": [], "fingerprint": ""}
+        entry = {"way": tuple(spec["way"]), "tunnel": spec.get("tunnel"), "invite": invite,
+                 "pins": [p for p in pins if p], "token": spec.get("resume_token") or "",
+                 "key": data.get("key") or spec.get("key"), "name": data.get("name") or invite.get("name") or "the party"}
+        link = PartyLink(lambda force: self._find_way(entry, force), name=entry["name"], grace=self._grace(),
+                         on_change=lambda state, message: self._link_changed(entry, state, message))
+        entry["link"] = link
+        entry["path"] = self._path_name(entry)
+        entry["resume"] = lambda: self._resume_link(entry)
+        entry["rejoin"] = lambda: self._rejoin_link(entry)
+        log.info("The window for %s reaches its host through its own address on this PC, %s", entry["name"], link.base)
+        return entry
+
+    @staticmethod
+    def _path_name(entry):
+        if entry.get("tunnel") is not None:
+            return {"ipv6": "punched", "punch": "punched", "relay": "relay"}.get(getattr(entry["tunnel"], "kind", ""),
+                                                                                  "punched")
+        from privatepartynet.linkstate import path_of
+
+        return path_of(entry["way"][0])
+
+    def _find_way(self, entry, force):
+        """The way to a joined party's host: the current one, checked, or with `force` a new one from the ladder: the
+        host's addresses (and its address in the Nearby list), then through both routers or a relay (punch.py)."""
+        if not force:
+            tunnel = entry.get("tunnel")
+            if tunnel is not None and not tunnel.alive():
+                raise OSError("the tunnel to the host stopped answering")
+            return entry["way"]
+        invite = entry["invite"]
+        candidates = [list(c) for c in invite.get("candidates") or []]
+        way = entry["way"]
+        if entry.get("tunnel") is None and way and [way[0], way[1]] not in [[c[1], c[2]] for c in candidates]:
+            candidates.append(["lan", way[0], way[1]])  # the way that just failed, last: it may come back
+        if self._discovery is not None and invite.get("fingerprint"):
+            for peer in self._discovery.peer_list():
+                if peer.get("sharing") and peer.get("fp") in entry["pins"] and peer.get("port"):
+                    candidates.insert(0, ["lan", peer["address"], int(peer["port"])])
+        for kind, address, port in connect._order(candidates):
+            try:
+                connect._connect(address, port, entry["pins"], 3.0).close()
+            except (OSError, connect.ConnectError) as exc:
+                log.info("Finding %s again: %s address %s port %s: %s", entry["name"], kind, address, port, exc)
+                continue
+            self._switch_way(entry, (address, int(port)), None)
+            return entry["way"]
+        if invite.get("secret") and ((invite.get("host_sign") and invite.get("server_id")) or invite.get("relays")):
+            from privatepartynet import punch
+
+            tunnel = punch.join_through(invite.get("host_sign", ""), invite.get("server_id", ""),
+                                        bytes.fromhex(invite["secret"]), entry["pins"] or invite.get("fingerprint"),
+                                        relays=invite.get("relays") or [], ipv6=connect.global_ipv6_addresses)
+            self._switch_way(entry, ("127.0.0.1", tunnel.port), tunnel)
+            return entry["way"]
+        raise OSError("none of the host's addresses answered, and the invite has no way across the internet")
+
+    def _switch_way(self, entry, way, tunnel):
+        old = entry.get("tunnel")
+        entry["way"], entry["tunnel"] = way, tunnel
+        entry["path"] = self._path_name(entry)
+        if old is not None and old is not tunnel:
+            old.close()
+        log.info("%s: now reached %s", entry["name"], "through a tunnel on this PC" if tunnel else f"at {way[0]}")
+
+    def _link_changed(self, entry, state, message):
+        log.info("Party link to %s: %s%s", entry["name"], state, f" ({message})" if message else "")
+
+    def _resume_link(self, entry):
+        """Bring this PC back into its place in a party after a dropout: sign the resume token from the join with this
+        PC's identity, over the window's link (POST /resume). {ok, message}."""
+        if not entry.get("token") or self._identity is None:
+            return {"ok": False, "message": "This party cannot be resumed; ask to join again."}
+        link = entry["link"]
+        ok, gone, why = connect.resume(link.address, link.port, entry["pins"], entry["token"], self._identity, self._name)
+        if not ok:
+            log.info("Resuming %s %s: %s", entry["name"], "was refused" if gone else "did not work yet", why)
+            return {"ok": False, "gone": gone, "message": why[:1].upper() + why[1:] + "."}
+        log.info("Back in %s after a dropout", entry["name"])
+        return {"ok": True, "message": "Reconnected."}
+
+    def _rejoin_link(self, entry):
+        """The room's place has ended: take the room off the rail and reach the server again (Try again's way), so a new
+        room opens in its place once the host lets this person in."""
+        key = entry.get("key")
+        if not key or self._store is None or not self._store.server(key):
+            return {"ok": False, "message": "Ask the host for a new invite."}
+        if key in self._room_apis:
+            self._shell_room_closed(key)
+        return self.rejoin(key)
+
+    def _close_link(self, entry):
+        entry["link"].close()
+        tunnel = entry.get("tunnel")
+        if tunnel is not None and tunnel is not self._tunnels.get(entry.get("key")):
+            tunnel.close()
+
+    def _link_of(self, key):
+        """(state, message) of an open joined room's link, for its place on the rail; None when all is well."""
+        entry = self._links.get(key)
+        if entry is None or entry["link"].state == "ok":
+            return None
+        return entry["link"].state, entry["link"].message
+
+    def _watch_network(self, stop, seconds=2.0):
+        """Notice when this PC's network changes (another Wi-Fi, a new address, a VPN up or down) and make every party
+        link reconnect at once, rather than wait for its connections to time out."""
+        while not stop.wait(seconds):
+            try:
+                seen = (tuple(sorted(lan_addresses())), tuple(connect.global_ipv6_addresses()))
+            except Exception:
+                continue
+            if self._network is not None and seen != self._network:
+                log.info("This PC's network changed; every joined room reconnects")
+                for entry in list(self._links.values()):
+                    entry["link"].network_changed()
+            self._network = seen
+
     def _join(self, data):
         """Show a server's room in its place on the rail, in the one window. It accepts only the host's certificate:
         `data["pins"]` (what the join checked) or, from a Nearby accept, the pins of `data["cert"]`. `data["key"]` is the
@@ -1820,15 +2012,23 @@ class Controller:
                 pins = pins_of_pem(data["cert"])
             except ValueError:
                 pins = ()
-        parts = urlsplit(data["url"])
-        origin = f"{parts.scheme}://{parts.netloc}"
-        key = data.get("key") or f"join:{origin}"
+        key = data.get("key") or f"join:{urlsplit(data['url']).scheme}://{urlsplit(data['url']).netloc}"
         if self._shell is None:
             log.warning("No window to show %s in", data["name"])
             return
         # A host on 3.2.0 or older cannot sign in inside a frame; its room then says nothing, and the rail shows a card in
         # its place after a while (appshell.js notReady). `embed` cannot tell those hosts apart: 3.3.0 hosts left it out of
         # a returning member's answer, and their rooms open here fine.
+        entry = self._open_link({**data, "key": key}, pins)
+        if entry is not None:
+            parts = urlsplit(data["url"])
+            data = {**data, "url": entry["link"].base + parts.path + (f"?{parts.query}" if parts.query else "")}
+            old = self._links.pop(key, None)
+            if old is not None:
+                self._close_link(old)
+            self._links[key] = entry
+        parts = urlsplit(data["url"])
+        origin = f"{parts.scheme}://{parts.netloc}"
         windowpins.pin(data["url"], pins)
         token = self._feed.issue()
         separator = "&" if "?" in data["url"] else "?"
@@ -1838,7 +2038,8 @@ class Controller:
         if theme != "system":
             url += f"&theme={theme}"
         self._rail_note.pop(key, None)
-        self._shell_room(key, data["name"], url, origin, select=data.get("select", True), store=lambda: self._store)
+        self._shell_room(key, data["name"], url, origin, select=data.get("select", True), store=lambda: self._store,
+                         link=entry)
         log.info("Joined %s", data["name"])
 
     # --- the Info menu ----------------------------------------------------------------------------------------
@@ -1928,6 +2129,10 @@ class Controller:
 
     def shutdown(self, *_):
         """Called when the control window closes. Ends the party and says goodbye to the network."""
+        self._watching.set()
+        for entry in list(self._links.values()):
+            self._close_link(entry)
+        self._links.clear()
         self.stop()
         self._feed.stop()
         if self._discovery is not None:

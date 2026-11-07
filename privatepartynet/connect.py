@@ -627,6 +627,36 @@ def failure_text(invite, tried, punch_error=None, no_punch=""):
     return " ".join(parts)
 
 
+def resume(address, port, pins, token, identity, name, timeout=10.0):
+    """Come back into a party after a dropout (server.Party.resume): a fresh challenge from the host, signed with the
+    identity this PC joined with, over the party link at (address, port). Returns (ok, gone, message): gone is True when
+    the host refused for good (the place ended, a ban), False when it could not be reached yet."""
+    from privatepartynet.server import resume_message
+
+    try:
+        connection = _connect(address, port, pins, timeout)
+        try:
+            connection.request("GET", "/ask?challenge=1")
+            nonce = json.loads(connection.getresponse().read())["nonce"]
+            seen = connection.seen_fingerprint
+        finally:
+            connection.close()
+        body = {"token": token, "card": identity.card(name), "nonce": nonce,
+                "sig": identity.sign(resume_message(seen, nonce, token)).hex()}
+        connection = _connect(address, port, pins, timeout)
+        try:
+            connection.request("POST", "/resume", body=json.dumps(body), headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            text = response.read().decode("utf-8", "replace")
+        finally:
+            connection.close()
+    except (OSError, ValueError, KeyError, TypeError, ConnectError, http.client.HTTPException) as exc:
+        return False, False, f"the host could not be reached yet ({type(exc).__name__}: {exc})"
+    if response.status != 200:
+        return False, True, text or "your place in the party has ended"
+    return True, False, ""
+
+
 def _base(address, port):
     return f"https://[{address}]:{port}" if ":" in address else f"https://{address}:{port}"
 
@@ -653,6 +683,8 @@ class Joiner:
         self.embed = False  # set when the host's answer says its room opens inside the one window
         self.tunnel = None  # the punch-through tunnel, when that is how the party was reached (kept open by the app)
         self.needs_password = False  # the party wants a password and none was given: the page offers a box for it
+        self.way = None  # (address, port) that let us in: where the party window's link starts
+        self.resume_token = ""  # from the host's answer: comes back after a dropout without a new approval
         self.status = {"state": "trying", "message": "Looking for the party...", "url": ""}
 
     def cancel(self):
@@ -759,7 +791,9 @@ class Joiner:
 
     def _ask(self, address, port):
         pins = self._pins()
-        body = {"name": self.name, "password": self.invite["password"]}
+        # "caps": what this app can do (server.CAPS); a 3.3 host then gives it the heartbeat and a resume token, and
+        # an older host ignores it.
+        body = {"name": self.name, "password": self.invite["password"], "caps": ["link"]}
         if self.identity is not None:
             connection = _connect(address, port, pins, self._timeout)
             try:
@@ -825,6 +859,8 @@ class Joiner:
             state = answer.get("state")
             if state == "allowed":
                 self.embed = answer.get("embed") == 1  # the room can open inside the one window
+                self.way = (address, int(port))
+                self.resume_token = answer.get("resume") or ""
                 self._set("allowed", "You are in.", f"{_base(address, port)}/join?token={answer['token']}")
                 return
             if state == "denied":

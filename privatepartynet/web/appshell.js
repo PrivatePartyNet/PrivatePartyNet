@@ -24,7 +24,8 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var ROOM_CALLS = ["close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture", "server_look"];
+  var ROOM_CALLS = ["close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture", "server_look",
+                    "resume_party", "rejoin_party", "link_state"];
   var POLL_MS = 1000;
   var READY_MS = 25000;
   var FRAME_ALLOW = "microphone; fullscreen; clipboard-write; autoplay; display-capture";
@@ -202,7 +203,7 @@
         openMenu(server, event.clientX, event.clientY);
       });
       tip(button, function () {
-        return server.name + (server.own ? " (your server)" : "") + (server.frame ? "" : railWords(server) ? ": " + railWords(server) : "");
+        return server.name + (server.own ? " (your server)" : "") + (railWords(server) ? ": " + railWords(server) : "");
       });
       setName(server, name);
       return server;
@@ -347,7 +348,8 @@
 
     // What the rail says about a server whose room is not open.
     function railWords(server) {
-      if (server.frame) return "";
+      // an open room whose connection dropped says so itself; its place on the rail says it too (partylink.py)
+      if (server.frame) return { reconnecting: "reconnecting", lost: "connection lost" }[server.rail] || "";
       return { stopped: "off", starting: "starting", connecting: "connecting", offline: "out of reach" }[server.rail] || "";
     }
 
@@ -425,9 +427,10 @@
       var off = !server.frame && server.rail && server.rail !== "open";
       server.item.classList.toggle("away", Boolean(off));
       server.offMark.hidden = !off || server.rail === "connecting" || server.rail === "starting";
-      server.item.classList.toggle("connecting", !server.frame && (server.rail === "connecting" || server.rail === "starting"));
+      server.item.classList.toggle("connecting", (!server.frame && (server.rail === "connecting" || server.rail === "starting")) ||
+        (Boolean(server.frame) && server.rail === "reconnecting"));
       var label = server.name + (server.own ? ", your server" : "");
-      if (off && railWords(server)) label += ", " + railWords(server);
+      if ((off || server.frame) && railWords(server)) label += ", " + railWords(server);
       if (s.unread) label += ", " + s.unread + " unread";
       if (s.requests) label += ", " + s.requests + " waiting to join";
       if (s.voice) label += ", you are in its voice channel";
