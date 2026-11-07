@@ -207,6 +207,23 @@ body.tile-fullscreen #app { grid-template-columns: 1fr; }
 #roster li.online .presence { background: var(--success); }
 #roster li.speaking .avatar { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--success); }
 #roster li .more { min-height: 24px; }
+/* Each member's ping (pingview.js): a dot in the quality's colour and a number that keeps its width. The members list
+   and the voice channel's cards show both; the voice channel's list in the sidebar the dot only (its hover has the rest). */
+.ping { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
+  white-space: nowrap; flex: none; }
+.ping[hidden] { display: none; }
+#roster .ping { order: 1; min-width: 58px; justify-content: flex-end; }
+#roster li > button { order: 2; } /* after the ping, so the pings line up in a column whatever badges a row has */
+.voice-people .ping { margin-left: auto; }
+.voice-people .live + .ping { margin-left: 0; }
+.voice-people .ping > span:last-child { display: none; }
+.ping .pdot, .chip .dot { transition: background-color 0.3s; }
+.ping .pdot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.ping[data-quality="good"] .pdot, .chip[data-state="connected"][data-quality="good"] .dot { background: var(--success); }
+.ping[data-quality="fair"] .pdot, .chip[data-state="connected"][data-quality="fair"] .dot { background: #d4b106; }
+.ping[data-quality="poor"] .pdot, .chip[data-state="connected"][data-quality="poor"] .dot { background: var(--danger); }
+.ping[data-quality="shaky"] { color: var(--warn); }
+.ping[data-quality="shaky"] .pdot { background: var(--warn); }
 
 /* a text channel's chat, in the middle of the room */
 #chat { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0 var(--sp-4) var(--sp-3); background: var(--surface); }

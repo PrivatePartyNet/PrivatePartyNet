@@ -155,5 +155,29 @@ class ComposerTests(unittest.TestCase):
         self.assertRegex(chat, r'if \(!isVoice\) \{\s*row\.addEventListener\("click"')
 
 
+class PingLookTests(unittest.TestCase):
+    """Each member's ping (pingview.js) is coloured the same wherever it shows: the members list, the voice channel's
+    cards and its list in the sidebar, the connection bar, Home's game network and the rail."""
+
+    def test_every_ping_quality_has_its_colour_in_each_place(self):
+        style, control = read("style.css"), read("control.css")
+        for quality in ("good", "fair", "poor"):
+            with self.subTest(quality=quality):
+                self.assertIn(f'.ping[data-quality="{quality}"] .pdot', style)  # members list, voice cards, voice list
+                self.assertIn(f'.chip[data-state="connected"][data-quality="{quality}"] .dot', style)
+                self.assertIn(f'.gameping[data-quality="{quality}"] .pdot', control)
+        self.assertIn('.ping[data-quality="shaky"]', style)
+
+    def test_the_room_puts_a_ping_wherever_a_member_is_listed(self):
+        room = read("room.js")
+        for where in ("#roster li[data-id]", "#channelList .voice-people li[data-id]", "#voiceRoom li[data-id]"):
+            self.assertIn(where, room)
+        self.assertIn(".voice-people .ping", read("style.css"), "the voice list in the sidebar shows the dot only")
+
+    def test_the_rail_marks_a_server_whose_own_link_is_shaky(self):
+        self.assertIn(".linkdot", read("shell.css"))
+        self.assertIn("linkdot", read("appshell.js"))
+
+
 if __name__ == "__main__":
     unittest.main()

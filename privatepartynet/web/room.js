@@ -432,6 +432,7 @@
       sendQualityToEveryone();
       picturesChanged();
       markStalled();
+      updatePings(); // the voice channel's lists were drawn again without them
     } else if (msg.type === "history") {
       if (msg.since !== undefined) {
         // back after a dropout: only what was missed, added to what the page has
@@ -2112,12 +2113,23 @@
     return cell;
   }
 
-  // Every 2 seconds, in place: the rows stay where they are and only the numbers change.
+  // Every 2 seconds, in place: the rows stay where they are and only the numbers change. Everywhere a member is
+  // listed has their ping: the members list, the voice channel's cards, and its list in the sidebar (where the style
+  // shows the dot only). Not while another server is shown in the one window, since a hidden room keeps running: it
+  // catches up the moment it is shown.
+  var PING_PLACES = "#roster li[data-id], #channelList .voice-people li[data-id], #voiceRoom li[data-id]";
   function updatePings() {
-    document.querySelectorAll("#roster li[data-id]").forEach(function (row) {
+    if (!shellShown || document.hidden) return;
+    document.querySelectorAll(PING_PLACES).forEach(function (row) {
       var cell = row.querySelector(".ping");
       var member = members.get(row.dataset.id);
-      if (cell && member) fillPing(cell, member);
+      if (!member || !member.online) {
+        if (cell) cell.remove();
+      } else if (cell) {
+        fillPing(cell, member);
+      } else {
+        row.append(pingCell(member));
+      }
     });
   }
 
@@ -2220,6 +2232,7 @@
         live.textContent = "LIVE";
         li.append(live);
       }
+      if (person.online) li.append(pingCell(person));
       el.voiceRoom.append(li);
     });
   }
@@ -2669,6 +2682,8 @@
       unread: chat.unreadTotal(),
       requests: requests.size,
       voice: inCall ? { channel: chat.channelName(inCall), muted: voice.state.muted, deafened: voice.state.deafened } : null,
+      // this page's own link to the host (link.js), for the rail's amber dot: only its state, so the report stays put
+      link: away.state === "reconnecting" ? "reconnecting" : myLink && myLink.state !== "ok" ? myLink.state : "ok",
     };
     var key = JSON.stringify(report);
     if (key === lastReport) return;
@@ -2683,6 +2698,7 @@
       if (msg.ppn === "visible") {
         shellShown = Boolean(msg.on);
         if (shellShown && shownView.kind === "text") chat.seen();
+        updatePings(); // skipped while hidden
         sendQualityToEveryone(); // screens are received only while this server is shown
         shellReport();
       } else if (msg.ppn === "appearance" && window.PPNAppearance && msg.look) {
