@@ -756,7 +756,22 @@
       var way = document.createElement("span");
       way.className = "muted";
       way.textContent = WAY_WORDS[member.way || ""] || member.way;
+      if (member.name) {
+        var who = document.createElement("span");
+        who.textContent = member.name;
+        li.append(who);
+      }
       li.append(where, way);
+      // the game network's own ping to them, with the party room's colours (pingview.js)
+      var shown = typeof member.rtt === "number";
+      var ping = document.createElement("span");
+      ping.className = "gameping";
+      ping.dataset.quality = shown ? window.PrivatePartyNetPingView.quality(member.rtt, null) : "unknown";
+      var dot = document.createElement("span");
+      dot.className = "pdot";
+      ping.append(dot, document.createTextNode(shown ? Math.round(member.rtt) + " ms" : "—"));
+      ping.title = shown ? "The game network's ping to " + (member.name || "this member") : "No ping yet: no way to them works";
+      li.append(ping);
       el.gameMembers.append(li);
     });
     updateMembersCard();

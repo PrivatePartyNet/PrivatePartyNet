@@ -995,7 +995,17 @@ class Controller:
             elif link is not None:
                 view.update(state="connecting", message=link.status["message"] or "Connecting to the host...")
             if mesh is not None:
-                view["members"] = [{"address": m["address"], "way": m["kind"]} for m in mesh.members()]
+                # each member's name, and the game network's own ping to them (pathway.py's probes) once a way works
+                try:
+                    peers = (self.path_manager.state().get("peers") or {}) if self.path_manager is not None else {}
+                except Exception:
+                    log.exception("Reading the paths failed")
+                    peers = {}
+                view["members"] = []
+                for m in mesh.members():
+                    rtt = (peers.get(m["user"]) or {}).get("rtt")
+                    view["members"].append({"address": m["address"], "way": m["kind"], "name": self._name_of(m["user"]),
+                                            "rtt": rtt if m["kind"] and isinstance(rtt, int) else None})
         return view
 
     def _make_paths(self):

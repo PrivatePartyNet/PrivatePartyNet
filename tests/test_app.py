@@ -223,6 +223,30 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(view["ways"], ["Alex, direct over IPv6, 23 ms", "Bea, through a member's PC, 160 ms",
                                         "Cy, not connected yet"])
 
+    def test_the_game_network_page_lists_each_member_with_their_name_and_ping(self):
+        class Paths:
+            names = {"u-alex": "Alex", "u-cy": "Cy"}
+
+            def state(self):
+                return {"through": [], "peers": {"u-alex": {"kind": "ipv6", "rtt": 23, "ways": ["ipv6"]},
+                                                 "u-cy": {"kind": "", "rtt": None, "ways": []}}}
+
+        class Mesh:
+            def members(self):
+                return [{"user": "u-alex", "address": "10.77.0.2", "key": "k1", "kind": "ipv6"},
+                        {"user": "u-cy", "address": "10.77.0.3", "key": "k2", "kind": ""}]
+
+        self.controller.path_manager = Paths()
+        self.controller._game = {"key": "own", "session": None, "link": None, "mesh": Mesh()}
+        try:
+            members = self.controller.game_state()["members"]
+        finally:
+            self.controller._game = None
+        self.assertEqual(members, [
+            {"address": "10.77.0.2", "way": "ipv6", "name": "Alex", "rtt": 23},
+            {"address": "10.77.0.3", "way": "", "name": "Cy", "rtt": None},  # no way yet: no ping either
+        ])
+
     def test_the_in_memory_paths_report_a_latency_too(self):
         from privatepartynet.pathway import LoopbackHub, LoopbackPathManager
 

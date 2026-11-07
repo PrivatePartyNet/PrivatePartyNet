@@ -114,3 +114,10 @@ html.rail-compact .navbadge { min-width: 16px; padding: 0 4px; font-size: 10px; 
 /* Your server card on Home: room between the name, the port and the start-with-the-app box */
 #ownBox > .row + .row, #ownBox > .check { margin-top: var(--sp-3); }
 #myPicture { flex: none; }
+
+/* The game network's ping to each member, coloured as the party room colours a ping (pingview.js). */
+.gameping { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
+.gameping .pdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.gameping[data-quality="good"] .pdot { background: var(--success); }
+.gameping[data-quality="fair"] .pdot { background: #d4b106; }
+.gameping[data-quality="poor"] .pdot { background: var(--danger); }
