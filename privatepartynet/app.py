@@ -1898,7 +1898,7 @@ class Controller:
                  "pins": [p for p in pins if p], "token": spec.get("resume_token") or "",
                  "key": data.get("key") or spec.get("key"), "name": data.get("name") or invite.get("name") or "the party"}
         link = PartyLink(lambda force: self._find_way(entry, force), name=entry["name"], grace=self._grace(),
-                         on_change=lambda state, message: self._link_changed(entry, state, message))
+                         on_change=lambda state, message: self._link_changed(entry, state, message), key=entry["key"])
         entry["link"] = link
         entry["path"] = self._path_name(entry)
         entry["resume"] = lambda: self._resume_link(entry)
@@ -2029,13 +2029,13 @@ class Controller:
         # A host on 3.2.0 or older cannot sign in inside a frame; its room then says nothing, and the rail shows a card in
         # its place after a while (appshell.js notReady). `embed` cannot tell those hosts apart: 3.3.0 hosts left it out of
         # a returning member's answer, and their rooms open here fine.
+        old = self._links.pop(key, None)
+        if old is not None:
+            self._close_link(old)  # first, so the new link can take the same address (the room's origin)
         entry = self._open_link({**data, "key": key}, pins)
         if entry is not None:
             parts = urlsplit(data["url"])
             data = {**data, "url": entry["link"].base + parts.path + (f"?{parts.query}" if parts.query else "")}
-            old = self._links.pop(key, None)
-            if old is not None:
-                self._close_link(old)
             self._links[key] = entry
         parts = urlsplit(data["url"])
         origin = f"{parts.scheme}://{parts.netloc}"

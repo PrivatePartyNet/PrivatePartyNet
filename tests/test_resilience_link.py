@@ -420,14 +420,38 @@ class ControllerLinkTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def entry(self, way, token=""):
+    def entry(self, way, token="", key=""):
         port = self.party.port
         invite = {"name": "Host", "candidates": [["lan", "127.0.0.1", port]], "fingerprint": self.party.fingerprint}
-        data = {"url": f"https://127.0.0.1:{port}/join?token=x", "name": "Host",
+        data = {"url": f"https://127.0.0.1:{port}/join?token=x", "name": "Host", "key": key,
                 "link": {"way": way, "invite": invite, "resume_token": token, "key": ""}}
         entry = self.guest._open_link(data, self.pins)
         self.addCleanup(entry["link"].close)
         return entry
+
+    def test_a_servers_room_keeps_its_address_on_this_pc_from_one_start_to_the_next(self):
+        # A room keeps its settings on this PC per origin (voice devices, volumes, muted channels, Go Live), and the game
+        # network reaches the host through the same address: a new address each start lost all of that.
+        way = ("127.0.0.1", self.party.port)
+        first = self.entry(way, key="joined-heroes")
+        base = first["link"].base
+        first["link"].close()
+        self.assertEqual(self.entry(way, key="joined-heroes")["link"].base, base)
+        self.assertNotEqual(self.entry(way, key="joined-other")["link"].base, base, "each server has its own")
+
+    def test_joining_again_while_the_room_is_open_keeps_its_address(self):
+        opened = []
+        self.guest._shell = type("Shell", (), {"stop": lambda self: None})()  # the one window, as far as _join needs
+        self.guest._shell_room = lambda key, name, url, origin, **options: opened.append(origin)
+        port = self.party.port
+        data = {"url": f"https://127.0.0.1:{port}/join?token=x", "name": "Host", "key": "joined-heroes",
+                "pins": tuple(self.pins), "link": {"way": ("127.0.0.1", port), "invite": {
+                    "name": "Host", "candidates": [["lan", "127.0.0.1", port]], "fingerprint": self.party.fingerprint}}}
+        self.guest._join(dict(data))
+        self.guest._join(dict(data))  # Try again, or a rejoin after the grace
+        self.assertEqual(len(opened), 2)
+        self.assertEqual(opened[0], opened[1])
+        self.assertEqual(self.get(self.guest._links["joined-heroes"]["link"], "/static/rtc.js")[0], 200)
 
     def test_a_joined_window_loads_the_party_through_its_own_address_on_this_pc(self):
         entry = self.entry(("127.0.0.1", self.party.port))

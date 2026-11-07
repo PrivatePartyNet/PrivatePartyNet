@@ -10,13 +10,16 @@ IPv6, punching through both routers, a relay), with growing pauses (BACKOFF, wit
 grace lasts. The page's own cookie, origin and peer connections stay as they were.
 
 Each link listens on its own loopback address (127.84.a.b), so two parties' cookies never mix (cookies do not look at
-the port).
+the port). A server on the list always gets the same address and port (place_for), because the room keeps its settings
+on this PC per origin (voice devices and volumes, muted channels, Go Live's choices) and the game network reaches the host
+through the same address: a new one each time the app started, or the room rejoined, lost them.
 
 A way is a function that returns (host, port): a TCP address that reaches the party now (the host itself, or the local
 port of a punched or relayed tunnel). The app gives the link a `find(force)` that returns the current way, or with
 force a fresh one.
 """
 
+import hashlib
 import itertools
 import logging
 import random
@@ -42,15 +45,29 @@ def next_address():
     return f"127.84.{(n // 250) % 250}.{n % 250 + 1}"
 
 
+PLACE_PORTS = (20000, 40000)  # below Windows' own range for outgoing connections (49152 up)
+
+
+def place_for(key, attempt=0):
+    """The (address, port) a server's link always takes, from its key on the list; `attempt` gives the next choice
+    when that one is taken."""
+    digest = hashlib.sha256(f"{key}|{attempt}".encode("utf-8")).digest()
+    n = int.from_bytes(digest[:4], "big") % (250 * 250)
+    port = PLACE_PORTS[0] + int.from_bytes(digest[4:8], "big") % (PLACE_PORTS[1] - PLACE_PORTS[0])
+    return f"127.84.{n // 250}.{n % 250 + 1}", port
+
+
 class LinkLost(Exception):
     """No way to the host within the grace."""
 
 
 class PartyLink:
-    def __init__(self, find, name="the party", grace=120.0, address=None, on_change=None, connect_seconds=CONNECT_SECONDS):
+    def __init__(self, find, name="the party", grace=120.0, address=None, on_change=None, connect_seconds=CONNECT_SECONDS,
+                 key=None):
         """`find(force)` gives (host, port) for the host now: the last way that worked, or with force=True a freshly
         found one (it may take a while: a punch through two routers takes up to two minutes). It raises when it finds
-        none. `on_change(state, message)` hears "ok", "reconnecting" and "lost"."""
+        none. `on_change(state, message)` hears "ok", "reconnecting" and "lost". `key` is the server's key on the list:
+        its link then takes the same address and port every time (place_for), unless something else has them."""
         self._find = find
         self.name = name
         self.grace = grace
@@ -65,11 +82,12 @@ class PartyLink:
         self.lost_since = None
         self._ok_at = 0.0  # when the link was last found working again
         self._sock = None
-        for _ in range(20):
-            candidate = address or next_address()
+        places = [place_for(key, attempt) for attempt in range(4)] if key and not address else []
+        for attempt in range(20 + len(places)):
+            candidate, port = places[attempt] if attempt < len(places) else (address or next_address(), 0)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                sock.bind((candidate, 0))
+                sock.bind((candidate, port))
             except OSError:
                 sock.close()
                 if address:
