@@ -87,7 +87,8 @@
     return n > 99 ? "99+" : String(n);
   }
 
-  // A room's report, cleaned: counts are whole numbers from 0, the call is a channel name and two flags, or null.
+  // A room's report, cleaned: counts are whole numbers from 0, the call is a channel name and two flags, or null, and
+  // the room's own link to its host is "ok", "unstable" or "reconnecting" (link.js; the rail's amber dot).
   function cleanState(msg) {
     function count(v) { return typeof v === "number" && isFinite(v) && v > 0 ? Math.min(Math.floor(v), 9999) : 0; }
     var voice = null;
@@ -95,7 +96,8 @@
       voice = { channel: String(msg.voice.channel || "").slice(0, 64), muted: Boolean(msg.voice.muted),
                 deafened: Boolean(msg.voice.deafened) };
     }
-    return { unread: count(msg && msg.unread), requests: count(msg && msg.requests), voice: voice };
+    var link = msg && (msg.link === "unstable" || msg.link === "reconnecting") ? msg.link : "ok";
+    return { unread: count(msg && msg.unread), requests: count(msg && msg.requests), voice: voice, link: link };
   }
 
   function start(win) {
@@ -182,7 +184,10 @@
       var offMark = doc.createElement("span");
       offMark.className = "srv-mark off";
       offMark.hidden = true;
-      button.append(text, badge, voiceMark, offMark);
+      var linkDot = doc.createElement("span");
+      linkDot.className = "linkdot"; // amber while this PC's own link to the server is unstable or reconnecting
+      linkDot.hidden = true;
+      button.append(text, badge, voiceMark, offMark, linkDot);
       if (info.own) {
         var own = doc.createElement("span");
         own.className = "srv-mark own";
@@ -192,7 +197,8 @@
       }
       item.append(button);
       server = { key: info.key, name: name, url: "", origin: "", own: Boolean(info.own), frame: null, item: item,
-                 button: button, initials: text, badge: badge, voiceMark: voiceMark, offMark: offMark, note: null,
+                 button: button, initials: text, badge: badge, voiceMark: voiceMark, offMark: offMark, linkDot: linkDot,
+                 note: null,
                  state: cleanState(null), ready: false, timer: null, calls: 0, listed: false, rail: "", message: "",
                  icon: "", iconWanted: "" };
       servers.set(info.key, server);
@@ -424,6 +430,9 @@
       server.badge.title = s.requests ? s.requests + (s.requests === 1 ? " person waiting" : " people waiting") + " to join" : "";
       server.item.classList.toggle("has-unread", s.unread > 0); // not "unread": that is the yellow count badge (ui.css)
       server.voiceMark.hidden = !s.voice;
+      var shaky = Boolean(server.frame) && s.link !== "ok";
+      server.linkDot.hidden = !shaky;
+      server.linkDot.title = shaky ? "Your connection to this server is " + s.link : "";
       var off = !server.frame && server.rail && server.rail !== "open";
       server.item.classList.toggle("away", Boolean(off));
       server.offMark.hidden = !off || server.rail === "connecting" || server.rail === "starting";
@@ -434,6 +443,7 @@
       if (s.unread) label += ", " + s.unread + " unread";
       if (s.requests) label += ", " + s.requests + " waiting to join";
       if (s.voice) label += ", you are in its voice channel";
+      if (shaky && !railWords(server)) label += ", your connection to it is " + s.link;
       server.button.setAttribute("aria-label", label);
       updateDock();
     }
