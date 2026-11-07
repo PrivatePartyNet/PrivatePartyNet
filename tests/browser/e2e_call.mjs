@@ -531,6 +531,16 @@ async function main() {
   })()`));
   check("the host's own row has no ping of its own", await host.evaluate(
     "[...document.querySelectorAll('#roster li.online')].filter(li => li.querySelector('.name').textContent.endsWith('(you)')).every(li => !li.querySelector('.ping') || li.querySelector('.ping').hidden)"));
+  const ownPing = "(function () { const row = [...document.querySelectorAll('#roster li.online')].find(li => li.querySelector('.name').textContent.endsWith('(you)')); return row && row.querySelector('.ping'); })()";
+  check("Alex's own row shows Alex's ping to the host, from the heartbeat", await waitFor(() => alex.evaluate(
+    `(function () { const p = ${ownPing}; return !!p && !p.hidden && p.dataset.source === 'mylink' && /^\\d+$/.test(p.dataset.pingMs) && / ms$/.test(p.textContent); })()`)));
+  check("Sam, an older app with no heartbeat, has no number on their own row", await sam.evaluate(
+    `(function () { const p = ${ownPing}; return !!p && p.dataset.pingMs === '' && p.textContent === '—'; })()`));
+  check("the voice channel's list in the sidebar has a coloured dot for each other person, and no number", await waitFor(() => sam.evaluate(`(function () {
+    const rows = [...document.querySelectorAll('#channelList .voice-people li')].filter(li => !li.querySelector('.who').textContent.endsWith('(you)'));
+    return rows.length === 2 && rows.every(li => { const p = li.querySelector('.ping');
+      return !!p && /^(good|fair|poor)$/.test(p.dataset.quality) && getComputedStyle(p.lastChild).display === 'none' && /Ping \\d+ ms/.test(p.title); });
+  })()`)));
   check("the bar shows icons for the numbers that apply", await sam.evaluate("document.querySelectorAll('#peerChips .chip svg.ic').length > 0"));
   check("the bar has a chip for each person and not for pop-out windows", await sam.evaluate("document.querySelectorAll('#peerChips .chip').length === Number(document.getElementById('statsbar').dataset.peers)"));
   await sam.evaluate("(function () { document.getElementById('statsbar').style.maxWidth = '210px'; })()");
@@ -633,6 +643,8 @@ async function main() {
   await sam.evaluate(`[...document.querySelectorAll('#channelList .channel.voice .channel-name')].find(function (n) { return n.textContent === 'Voice 2'; }).click()`);
   check("looking at Voice 2 from Voice 1 shows who is there and a way in, not its screens", await waitFor(() => sam.evaluate(
     "document.getElementById('titleText').textContent === 'Voice 2' && document.getElementById('stage').classList.contains('elsewhere') && !document.getElementById('voiceJoin').hidden && document.getElementById('voiceJoin').textContent === 'Move to Voice 2' && document.getElementById('voiceRoom').textContent.includes('Alex')")));
+  check("the voice channel's card for Alex shows Alex's ping", await waitFor(() => sam.evaluate(
+    "(function () { const p = document.querySelector('#voiceRoom li .ping'); return !!p && /^\\d+$/.test(p.dataset.pingMs) && / ms$/.test(p.textContent) && p.offsetWidth > 0; })()")));
   await sam.evaluate(`[...document.querySelectorAll('#channelList .channel.voice .channel-name')].find(function (n) { return n.textContent === 'Voice 1'; }).click()`);
   check("and back in Voice 1 the host's screen is there", await waitFor(() => sam.evaluate(
     "!document.getElementById('stage').classList.contains('elsewhere') && [...document.querySelectorAll('.tile .label')].some(function (l) { return l.textContent.indexOf('Host - ') === 0; })")));
