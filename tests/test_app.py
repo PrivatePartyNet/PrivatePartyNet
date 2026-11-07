@@ -446,6 +446,11 @@ class DirectMessagesThroughTheControllerTests(unittest.TestCase):
         png = b"\x89PNG\r\n\x1a\n" + bytes(range(40))
         self.assertTrue(self.ann.dm_send(self.ben._identity.user_id, "look", base64.b64encode(png).decode())["ok"])
         self.ann._dm.flush()
+        # A busy PC can miss the first delivery; the service tries again by itself, so wait for it to arrive.
+        deadline = time.monotonic() + 20
+        while not self.ben.dm_history(self.ann._identity.user_id)["messages"] and time.monotonic() < deadline:
+            time.sleep(0.2)
+            self.ann._dm.flush()
         (m,) = self.ben.dm_history(self.ann._identity.user_id)["messages"]
         shown = self.ben.dm_image(m["image"])
         self.assertTrue(shown["ok"])

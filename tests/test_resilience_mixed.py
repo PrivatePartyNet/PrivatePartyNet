@@ -72,8 +72,10 @@ class NewHostOldAppTests(Base):
         self.time.tick(15)
         party.pulse()
         self.assertEqual(self.get(party, "/link", session)[0], 200, "never suspended: no 409 to get stuck on")
-        read_until(self.stream(party, session), "hello")  # the page's own reconnect, with its cookie
+        back = self.stream(party, session)  # the page's own reconnect, with its cookie (kept open: closing it is leaving)
+        read_until(back, "hello")
         self.assertTrue(self.entry(party, old)["online"])
+        back.close()
         # The app was restarted instead: it asks again the normal way and, known, comes straight in.
         nonce = party.challenge()
         ticket = party.ask("Old", "", "203.0.113.5", identity.card("Old"), nonce,
