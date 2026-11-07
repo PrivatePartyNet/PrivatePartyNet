@@ -779,6 +779,9 @@
 
   // The members card shows when there is a member to list or a path to explain; the relay summary fills the lines in it.
   function updateMembersCard() {
+    // the rows say each member's way and ping; the line from the paths says it only when there are no rows
+    if (el.gameMembers.children.length) el.pathWays.hidden = true;
+    else el.pathWays.hidden = !el.pathWays.textContent;
     el.gameMembersCard.hidden = !el.gameMembers.children.length && el.pathWays.hidden && el.pathProblems.hidden;
   }
 
