@@ -41,7 +41,7 @@ class NewHostOldAppTests(Base):
         party = self.party()
         old, session, _ = self.old_member(party)
         stream = self.stream(party, session)
-        read_until(stream, "hello")
+        self.assertIs(read_until(stream, "hello")["link"], False, "the page then reconnects for as long as it takes")
         party.pulse()
         links = read_until(stream, "links")
         self.assertEqual(links["links"][old], {"state": "ok", "rtt": None, "loss": None, "since": int(party._started)})

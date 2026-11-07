@@ -671,7 +671,9 @@ class Party:
                           "host": self._host_id, "theme": self.theme, "server": self.server_id,
                           "channels": self._channels_public(),
                           "stun": self.remote, "turn": self._turn_locked(member), "storage": self.storage_info(),
-                          "grace": self.reconnect_grace})
+                          # "link": this member's place is kept through a dropout, for "grace" seconds (their app said
+                          # it can keep its link); without it the page reconnects for as long as it takes, as before 3.5
+                          "grace": self.reconnect_grace, "link": member.get("meter") is not None})
             for channel in self._channels:
                 if channel["kind"] == "text":
                     listener.put(self._history_since_locked(channel["id"], (since or {}).get(channel["id"])))

@@ -46,6 +46,14 @@ test("the banner says what is happening, and what to do once the place has ended
   assert.equal(L.banner("ok", 0), null);
 });
 
+test("a page whose app keeps its link gives up after the grace; one whose app cannot keeps trying, as before 3.5", () => {
+  assert.equal(L.givesUp(121000, 120000, true), true);
+  assert.equal(L.givesUp(119000, 120000, true), false);
+  // a member on an app older than 3.5 has no place kept for them, so there is nothing to run out: their page keeps
+  // reconnecting as the browser did by itself, however long the host is away
+  assert.equal(L.givesUp(3600000, 120000, false), false);
+});
+
 test("a screen goes smaller only while a link is having a hard time", () => {
   assert.equal(L.linkIsBad({ state: "ok", loss: 0.05 }), false);
   assert.equal(L.linkIsBad({ state: "ok", loss: 0.3 }), true);

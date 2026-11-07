@@ -208,6 +208,13 @@ class ResumeTests(Base):
         self.drop(party2, session2, seconds=61)
         self.assertEqual(self.resume(party2, resume2, identity2)[0], 403, "the grace is over")
 
+    def test_the_page_is_told_its_place_is_kept_through_a_dropout(self):
+        party = self.party()
+        _, session, _, _ = self.joined(party)
+        hello = read_until(self.stream(party, session), "hello")
+        self.assertIs(hello["link"], True)
+        self.assertEqual(hello["grace"], party.reconnect_grace)
+
     def test_the_join_answer_hands_the_app_its_resume_token(self):
         party = self.party()
         identity = Identity.create()

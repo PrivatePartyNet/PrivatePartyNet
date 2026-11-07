@@ -186,6 +186,7 @@
   window.ppnMyLink = null;
   var lastSeq = {};  // channel id -> the newest message seq this page has
   var graceMs = Link.GRACE_MS;
+  var placeKept = false; // the host keeps this member's place through a dropout (the hello's "link")
   var events = null;
   var away = { state: "ok", since: 0, attempt: 0, timer: null, ended: false };
 
@@ -244,7 +245,7 @@
 
   async function tryBack() {
     if (away.ended || away.state !== "reconnecting") return;
-    if (Date.now() - away.since > graceMs) { linkEnded(); return; }
+    if (Link.givesUp(Date.now() - away.since, graceMs, placeKept)) { linkEnded(); return; }
     if (!events) {
       var status = 0;
       try {
@@ -413,6 +414,7 @@
       syncPicture();
       RTC.setStun(!!msg.stun, msg.turn);
       if (msg.grace) graceMs = msg.grace * 1000;
+      placeKept = msg.link === true;
       chat.hello(msg);
       setStorage(msg.storage);
       if (window.PPNEmbedded) window.PPNEmbedded.send({ ppn: "ready" }); // the one window: this room is signed in

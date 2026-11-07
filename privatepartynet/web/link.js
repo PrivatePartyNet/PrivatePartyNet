@@ -114,6 +114,13 @@
     return null;
   }
 
+  // Whether a page that has been away `awayMs` stops reconnecting: only when the host keeps its place for the grace
+  // (`kept`, the hello's "link"). A member whose app is older than 3.5 has no place to run out; their page keeps
+  // trying, as the browser's own reconnect did.
+  function givesUp(awayMs, graceMs, kept) {
+    return Boolean(kept) && awayMs > graceMs;
+  }
+
   // Whether a screen should be sent smaller now: while this page's link, or the viewer's, is having a hard time.
   function linkIsBad(link) {
     return !!link && (link.state === "unstable" || link.state === "reconnecting" || (link.loss || 0) >= 0.2);
@@ -123,6 +130,6 @@
   return {
     UNSTABLE_MS: UNSTABLE_MS, RECONNECTING_MS: RECONNECTING_MS, GOOD_BEATS: GOOD_BEATS, GRACE_MS: GRACE_MS,
     BAD_LINK_HEIGHT: BAD_LINK_HEIGHT, backoff: backoff, Meter: Meter, sinceParam: sinceParam, banner: banner,
-    linkIsBad: linkIsBad
+    linkIsBad: linkIsBad, givesUp: givesUp
   };
 });
