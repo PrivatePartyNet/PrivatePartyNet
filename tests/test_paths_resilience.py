@@ -56,6 +56,17 @@ class ResilienceTests(Base):
         self.assertFalse(route.alive(100.0 + pathway.DEAD_SECONDS + 5))
         self.assertEqual(route.streak, 0)
 
+    def test_a_lost_probe_of_the_way_in_use_is_followed_by_another_soon(self):
+        route = pathway._Route("ipv6", address=("2001:db8::1", 1))
+        route.last_reply, route.missed, route.rtt = 100.0, 0, 0.05  # a measured round trip: a probe is lost after 1 s
+        route.nonces = {b"a": 102.0}  # the probe at 102 was lost, and the next is due PROBE_ACTIVE later
+        route.next_probe = 102.0 + pathway.PROBE_ACTIVE
+        pathway.ask_again_soon(route, 102.5)
+        self.assertEqual(route.next_probe, 102.0 + pathway.PROBE_ACTIVE, "not late yet: it may still be answered")
+        pathway.ask_again_soon(route, 103.2)
+        self.assertEqual(route.missed, 1)
+        self.assertLessEqual(route.next_probe, 103.2 + pathway.PROBE_FAST)
+
 
 if __name__ == "__main__":
     unittest.main()

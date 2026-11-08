@@ -320,6 +320,15 @@ class _Route:
         return self.alive(now) and self.full is not None and now - self.full < FULL_SECONDS
 
 
+def ask_again_soon(route, now):
+    """A probe of the way in use that went unanswered is followed by the next within PROBE_FAST, not PROBE_ACTIVE later.
+    Otherwise the way got only about five probes in DEAD_SECONDS, and under heavy loss (30% each way loses about half
+    the round trips) five lost in a row came often enough to drop a way that still worked."""
+    route.note_lost(now)
+    if route.missed:
+        route.next_probe = min(route.next_probe, now + PROBE_FAST)
+
+
 class PeerPath:
     """The way to one member. Made by PathManager.path_to; the same object for as long as the member is known.
 
@@ -974,6 +983,8 @@ class PathManager:
             with self._lock:
                 routes = list(peer.routes.values())
             for route in routes:
+                if route is peer.active:
+                    ask_again_soon(route, now)
                 if route.next_probe > now:
                     continue
                 if route.relay is not None and not route.relay.is_bound(peer.channel):
