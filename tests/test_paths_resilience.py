@@ -65,7 +65,7 @@ class ResilienceTests(Base):
         self.assertEqual(route.next_probe, 102.0 + pathway.PROBE_ACTIVE, "not late yet: it may still be answered")
         pathway.ask_again_soon(route, 103.2)
         self.assertEqual(route.missed, 1)
-        self.assertLessEqual(route.next_probe, 103.2 + pathway.PROBE_FAST)
+        self.assertLessEqual(route.next_probe, 103.2 + pathway.PROBE_LOSSY)
 
 
 if __name__ == "__main__":

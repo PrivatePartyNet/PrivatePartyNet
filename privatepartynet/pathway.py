@@ -69,6 +69,7 @@ PROBE_FAST = 0.5  # seconds between probes of a way not proven yet, for FAST_SEC
 FAST_SECONDS = 15.0
 PROBE_SLOW = 5.0  # then this; ways that work but are not in use are checked as often
 PROBE_ACTIVE = 2.0  # the way in use
+PROBE_LOSSY = 0.25  # the way in use, while a probe of it goes unanswered: four small probes a second
 DEAD_SECONDS = 7.0  # no answer for this long and a way is not used...
 LOST_PROBES = 4  # ...once this many probes in a row went unanswered too: a short burst of loss does not drop a way
 BACK_REPLIES = 3  # a better way that came back answers this many probes in a row before the path moves back to it
@@ -321,12 +322,13 @@ class _Route:
 
 
 def ask_again_soon(route, now):
-    """A probe of the way in use that went unanswered is followed by the next within PROBE_FAST, not PROBE_ACTIVE later.
-    Otherwise the way got only about five probes in DEAD_SECONDS, and under heavy loss (30% each way loses about half
-    the round trips) five lost in a row came often enough to drop a way that still worked."""
+    """A probe of the way in use that went unanswered is followed by the next within PROBE_LOSSY, not PROBE_ACTIVE later.
+    The way is only dropped when no probe in DEAD_SECONDS is answered. At 30% loss each way about half the round trips
+    fail: with a probe every 2 s, or even every 0.5 s, all of them failing came often enough (1 in 10, then 1 in 60 runs
+    of 20 s) to drop a way that still worked. Four a second makes it about 1 in 7,000."""
     route.note_lost(now)
     if route.missed:
-        route.next_probe = min(route.next_probe, now + PROBE_FAST)
+        route.next_probe = min(route.next_probe, now + PROBE_LOSSY)
 
 
 class PeerPath:
@@ -994,7 +996,7 @@ class PathManager:
                 if route is active:
                     # A way in use that missed an answer is asked again soon, so a lossy way that still works shows
                     # it at once, and one that really went away is known within DEAD_SECONDS.
-                    interval = PROBE_FAST if route.missed else PROBE_ACTIVE
+                    interval = PROBE_LOSSY if route.missed else PROBE_ACTIVE
                 elif active is not None and route.alive(now) and route.streak < BACK_REPLIES and                         RANK[route.kind] < RANK[active.kind]:
                     interval = PROBE_FAST  # a better way came back: prove it quickly, then move back to it
                 elif route.alive(now) or now - peer.updated > FAST_SECONDS:
