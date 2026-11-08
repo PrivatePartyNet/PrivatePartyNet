@@ -193,6 +193,10 @@ class RendezvousTests(DhtBase):
         self.addCleanup(client.close)
         status, body = self.through(client.port, "GET", "/ask?challenge=1")
         self.assertEqual(status, 200)
+        # with no NAT the joiner can get in before the host's next read of the mailbox, which is a DHT lookup away
+        ends = time.monotonic() + 10
+        while not host.seen and time.monotonic() < ends:
+            time.sleep(0.1)
         self.assertTrue(host.seen, "the host saw the joiner's mailbox and opened the way for them")
 
     def test_no_host_record_says_so(self):
