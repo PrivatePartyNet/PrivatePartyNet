@@ -31,10 +31,19 @@ test("a reload goes to the room itself, since a join link works once", () => {
 
 test("what a room reports is cleaned before the rail shows it", () => {
   assert.deepEqual(Shell.cleanState({ unread: 3.7, requests: -2, voice: { channel: "Voice 1", muted: 1 } }),
-                   { unread: 3, requests: 0, voice: { channel: "Voice 1", muted: true, deafened: false } });
-  assert.deepEqual(Shell.cleanState({ unread: "9", requests: Infinity, voice: "yes" }), { unread: 0, requests: 0, voice: null });
+                   { unread: 3, requests: 0, voice: { channel: "Voice 1", muted: true, deafened: false }, link: "ok" });
+  assert.deepEqual(Shell.cleanState({ unread: "9", requests: Infinity, voice: "yes" }), { unread: 0, requests: 0, voice: null, link: "ok" });
   assert.equal(Shell.cleanState({ unread: 1e9 }).unread, 9999);
   assert.equal(Shell.badgeText(150), "99+");
+});
+
+test("a room's own link to its host reaches the rail as one of three words", () => {
+  assert.equal(Shell.cleanState({ link: "unstable" }).link, "unstable");
+  assert.equal(Shell.cleanState({ link: "reconnecting" }).link, "reconnecting");
+  for (const odd of [undefined, "ok", "lost", "<b>", 3, { state: "unstable" }]) {
+    assert.equal(Shell.cleanState({ link: odd }).link, "ok", String(odd));
+  }
+  assert.equal(Shell.cleanState(null).link, "ok");
 });
 
 test("the shell passes on exactly the calls the room's bridge offers", () => {

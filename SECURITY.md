@@ -39,6 +39,14 @@ Who can join:
 - From outside the network, a person needs an invite code and the server's password, and the owner or an admin still has to
   approve the request. The invite carries the host's certificate fingerprint, and the joiner checks it.
 - Roles are Owner, Admin, Member and Guest. A removed person can be banned, and a banned person cannot ask again.
+- Coming back after a dropout: a member whose connection drops keeps their place for the reconnect grace (two minutes
+  by default). For the first 10 seconds their room's session cookie still works. After that the host only lets
+  them back with a resume token, which the host gave their app (never the page) with the answer to their join, together
+  with a fresh signature by the identity they joined with, bound to the host's certificate. The token is useless to
+  anyone else, ends when the member is removed (the grace runs out, they leave, are kicked or banned), and the host can
+  revoke it. A joined server's room reaches its host through its own address on the member's PC (127.84.x.y), which
+  carries the room's own TLS connection to the host unread and still checked against the host's certificate (the room's
+  frame accepts only the pinned certificate, as before).
 
 What leaves your PC:
 

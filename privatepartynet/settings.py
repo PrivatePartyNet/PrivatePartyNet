@@ -22,6 +22,10 @@ MAX_FRIEND_MBPS = 1000
 # Updates (updater.py): checked for and downloaded by themselves, test versions included, unless the person says not.
 # update_skip is a version the person chose to skip.
 DEFAULTS.update({"auto_update": True, "update_prerelease": True, "update_skip": ""})
+# How long a member whose connection dropped keeps their place (as host), and how long a party window keeps trying to
+# get back to its host (as member), in seconds.
+DEFAULTS.update({"reconnect_grace_s": 120})
+MIN_GRACE, MAX_GRACE = 15, 3600
 SETTINGS_FILE = "settings.json"
 MAX_SAVED_NAME = 200  # the window trims names properly; this only stops a damaged file from growing huge
 
@@ -92,6 +96,9 @@ def load_settings(folder=None):
         skip = saved.get("update_skip")
         if isinstance(skip, str) and len(skip) <= 40 and all(c.isalnum() or c in ".-+" for c in skip):
             settings["update_skip"] = skip
+        grace = saved.get("reconnect_grace_s")
+        if isinstance(grace, (int, float)) and not isinstance(grace, bool) and MIN_GRACE <= grace <= MAX_GRACE:
+            settings["reconnect_grace_s"] = grace
     return settings
 
 

@@ -9,6 +9,8 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body data-capture="{{capture}}" data-view="text">
+<!-- The connection to this server dropped: "Reconnecting... (n s)", then "Reconnected", or that the place has ended (link.js). -->
+<div id="awayBanner" class="away" role="status" hidden></div>
 <div id="app">
 
   <!-- the left sidebar: the server, its channels, the voice controls, and you -->
@@ -253,7 +255,9 @@
 <script src="/static/rtc.js"></script>
 <script src="/static/layout.js"></script>
 <script src="/static/netstats.js"></script>
+<script src="/static/pingview.js"></script>
 <script src="/static/capturesize.js"></script>
+<script src="/static/link.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/voice.js"></script>
 <script src="/static/room.js"></script>

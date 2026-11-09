@@ -96,3 +96,7 @@ html, body { height: 100%; overflow: hidden; }
 @keyframes srv-pulse { 50% { opacity: 0.35; } }
 .view-note .card p { margin: var(--sp-2) 0 var(--sp-4); }
 .view-note .card .row { justify-content: center; flex-wrap: wrap; }
+/* this PC's own link to an open server is unstable or reconnecting (the room's report, link.js): an amber dot */
+.linkdot { position: absolute; left: -2px; bottom: -2px; width: 12px; height: 12px; border-radius: 50%; background: var(--warn);
+  border: 2px solid var(--bg); pointer-events: none; }
+.linkdot[hidden] { display: none; }

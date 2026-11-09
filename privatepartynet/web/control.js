@@ -756,7 +756,22 @@
       var way = document.createElement("span");
       way.className = "muted";
       way.textContent = WAY_WORDS[member.way || ""] || member.way;
+      if (member.name) {
+        var who = document.createElement("span");
+        who.textContent = member.name;
+        li.append(who);
+      }
       li.append(where, way);
+      // the game network's own ping to them, with the party room's colours (pingview.js)
+      var shown = typeof member.rtt === "number";
+      var ping = document.createElement("span");
+      ping.className = "gameping";
+      ping.dataset.quality = shown ? window.PrivatePartyNetPingView.quality(member.rtt, null) : "unknown";
+      var dot = document.createElement("span");
+      dot.className = "pdot";
+      ping.append(dot, document.createTextNode(shown ? Math.round(member.rtt) + " ms" : "—"));
+      ping.title = shown ? "The game network's ping to " + (member.name || "this member") : "No ping yet: no way to them works";
+      li.append(ping);
       el.gameMembers.append(li);
     });
     updateMembersCard();
@@ -764,6 +779,9 @@
 
   // The members card shows when there is a member to list or a path to explain; the relay summary fills the lines in it.
   function updateMembersCard() {
+    // the rows say each member's way and ping; the line from the paths says it only when there are no rows
+    if (el.gameMembers.children.length) el.pathWays.hidden = true;
+    else el.pathWays.hidden = !el.pathWays.textContent;
     el.gameMembersCard.hidden = !el.gameMembers.children.length && el.pathWays.hidden && el.pathProblems.hidden;
   }
 
@@ -788,9 +806,21 @@
     var through = friend.through || [];
     el.friendRelayNow.textContent = through.length ? "Going through this PC now: " + through.join(", ") + "." : "";
     el.friendRelayNow.hidden = !through.length;
-    var ways = friend.ways || [];
-    el.pathWays.textContent = ways.length ? "Game network: " + ways.join("; ") + "." : "";
-    el.pathWays.hidden = !ways.length;
+    // Each member's way and latency on the game network, with the party room's colours (pingview.js).
+    var gameMembers = friend.members || [];
+    el.pathWays.textContent = "";
+    if (gameMembers.length) el.pathWays.append("Game network: ");
+    gameMembers.forEach(function (member, index) {
+      var line = window.PrivatePartyNetPingView.gameLine(member);
+      var item = document.createElement("span");
+      item.className = "gameping";
+      item.dataset.quality = line.quality;
+      var dot = document.createElement("span");
+      dot.className = "pdot";
+      item.append(dot, document.createTextNode(line.text));
+      el.pathWays.append(item, index < gameMembers.length - 1 ? "; " : ".");
+    });
+    el.pathWays.hidden = !gameMembers.length;
     var problems = friend.problems || [];
     put(el.pathProblems, problems.length ? "Cannot reach " + problems.join(" ") : "", "game network paths");
     el.pathProblems.hidden = !problems.length;

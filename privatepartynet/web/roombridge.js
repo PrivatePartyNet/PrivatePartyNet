@@ -13,7 +13,8 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var METHODS = ["close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture", "server_look"];
+  var METHODS = ["close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture", "server_look",
+                 "resume_party", "rejoin_party", "link_state"];
   var TIMEOUT_MS = 20000;
 
   // The shell's origin from the room's address, or "" when the room is not inside the one window.

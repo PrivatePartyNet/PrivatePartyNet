@@ -31,7 +31,8 @@ def main():
                   grabber=ScreenGrabber(), store=store, server_id="e2e0server0id01")
     share.start()
     print(f"READY {share.local_port}", flush=True)
-    print("JOIN Alex " + share.join_token("Alex"), flush=True)
+    # Alex joins as a 3.3 app does (it can keep its link: heartbeat, grace, resume); Sam as an older app.
+    print("JOIN Alex " + share.join_token("Alex", user="e2e-alex", caps=["link"]), flush=True)
     print("JOIN Sam " + share.join_token("Sam"), flush=True)
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:

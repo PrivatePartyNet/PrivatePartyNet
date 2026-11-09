@@ -147,3 +147,17 @@ test("the hover card says which way a connection goes, IPv6 and the relay server
   const sample = N.normalize(pair({ candidateType: "host" }, { candidateType: "host", address: "2001:db8::7" }), [], 0);
   assert.equal(N.diff(null, sample).way, "ipv6");
 });
+
+test("jitter and the loss of the voice count too, so a call without screens has them", () => {
+  const at = (packets, lost, jitter, now) => N.normalize([
+    { type: "candidate-pair", nominated: true, state: "succeeded", currentRoundTripTime: 0.02 },
+    { type: "inbound-rtp", kind: "audio", mid: "a", isRemote: false, packetsReceived: packets, packetsLost: lost, jitter },
+    { type: "inbound-rtp", kind: "video", mid: "0", isRemote: false, packetsReceived: 0, packetsLost: 0, jitter: 0.001 },
+  ], mids, now);
+  const first = at(1000, 0, 0.004, 1000);
+  assert.equal(first.jitter, 4, "the larger jitter of what arrives, in ms");
+  const result = N.diff(first, at(1095, 5, 0.006, 2000), { cores: 1 });
+  assert.equal(result.jitter, 6);
+  assert.equal(result.loss, 5, "5 of 100 voice packets lost");
+  assert.deepEqual(result.down.map((s) => s.slot), [0], "the voice is no screen slot");
+});

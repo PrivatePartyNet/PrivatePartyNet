@@ -69,7 +69,10 @@ PROBE_FAST = 0.5  # seconds between probes of a way not proven yet, for FAST_SEC
 FAST_SECONDS = 15.0
 PROBE_SLOW = 5.0  # then this; ways that work but are not in use are checked as often
 PROBE_ACTIVE = 2.0  # the way in use
-DEAD_SECONDS = 7.0  # no answer for this long and a way is not used
+PROBE_LOSSY = 0.25  # the way in use, while a probe of it goes unanswered: four small probes a second
+DEAD_SECONDS = 7.0  # no answer for this long and a way is not used...
+LOST_PROBES = 4  # ...once this many probes in a row went unanswered too: a short burst of loss does not drop a way
+BACK_REPLIES = 3  # a better way that came back answers this many probes in a row before the path moves back to it
 STUN_SECONDS = 60.0
 ADDRESS_SECONDS = 30.0  # how often this PC's own addresses are read again, so paths follow a change of network
 TICK = 0.1
@@ -282,7 +285,7 @@ class _Route:
     """One way to a member: a direct address, or a channel on one relay."""
 
     __slots__ = ("kind", "address", "relay", "last_reply", "rtt", "next_probe", "nonces", "replies", "kind_hint", "full",
-                 "probes")
+                 "probes", "missed", "streak")
 
     def __init__(self, kind, address=None, relay=None, kind_hint=None):
         self.kind, self.address, self.relay = kind, address, relay
@@ -294,13 +297,38 @@ class _Route:
         self.next_probe = 0.0
         self.nonces = {}  # nonce -> when it was sent
         self.replies = 0
+        self.missed = 0  # probes in a row that went unanswered
+        self.streak = 0  # probes in a row that were answered
 
     def alive(self, now):
-        return self.last_reply is not None and now - self.last_reply < DEAD_SECONDS
+        """Answered lately. A way that went quiet is only dead after DEAD_SECONDS *and* LOST_PROBES unanswered probes
+        in a row, so a burst of loss (Starlink, a busy Wi-Fi) does not drop it (3.3)."""
+        if self.last_reply is None:
+            return False
+        return now - self.last_reply < DEAD_SECONDS or self.missed < LOST_PROBES
+
+    def note_lost(self, now):
+        """Count the probes that will not be answered now (older than a few round trips)."""
+        late = max(1.0, 3 * self.rtt)
+        for nonce, sent in list(self.nonces.items()):
+            if now - sent > late:
+                del self.nonces[nonce]
+                self.missed += 1
+                self.streak = 0
 
     def usable(self, now):
         """Alive, and lately shown to carry the largest datagram."""
         return self.alive(now) and self.full is not None and now - self.full < FULL_SECONDS
+
+
+def ask_again_soon(route, now):
+    """A probe of the way in use that went unanswered is followed by the next within PROBE_LOSSY, not PROBE_ACTIVE later.
+    The way is only dropped when no probe in DEAD_SECONDS is answered. At 30% loss each way about half the round trips
+    fail: with a probe every 2 s, or even every 0.5 s, all of them failing came often enough (1 in 10, then 1 in 60 runs
+    of 20 s) to drop a way that still worked. Four a second makes it about 1 in 7,000."""
+    route.note_lost(now)
+    if route.missed:
+        route.next_probe = min(route.next_probe, now + PROBE_LOSSY)
 
 
 class PeerPath:
@@ -881,6 +909,8 @@ class PathManager:
                 route.last_reply = now
                 route.rtt = (now - sent) if route.replies == 0 else route.rtt * 0.75 + (now - sent) * 0.25
                 route.replies += 1
+                route.missed = 0
+                route.streak += 1
                 if len(data) >= self._full_size:
                     route.full = now
                 elif route.full is None:
@@ -896,6 +926,7 @@ class PathManager:
         self._choose(peer, now)
 
     def _probe(self, peer, route, now):
+        route.note_lost(now)
         nonce = os.urandom(8)
         head = bytes([PROBE]) + bytes.fromhex(self.identity.user_id) + nonce
         route.nonces[nonce] = now
@@ -920,6 +951,8 @@ class PathManager:
                 return
             if best is active:
                 return
+            if active is not None and active.usable(now) and best.streak < BACK_REPLIES:
+                return  # a better way that came back proves itself first, so a flickering one does not flap the path
             peer.active = best
             changed = best.kind != peer.path.kind
         if changed:
@@ -952,13 +985,20 @@ class PathManager:
             with self._lock:
                 routes = list(peer.routes.values())
             for route in routes:
+                if route is peer.active:
+                    ask_again_soon(route, now)
                 if route.next_probe > now:
                     continue
                 if route.relay is not None and not route.relay.is_bound(peer.channel):
                     route.next_probe = now + PROBE_FAST
                     continue
-                if route is peer.active:
-                    interval = PROBE_ACTIVE
+                active = peer.active
+                if route is active:
+                    # A way in use that missed an answer is asked again soon, so a lossy way that still works shows
+                    # it at once, and one that really went away is known within DEAD_SECONDS.
+                    interval = PROBE_LOSSY if route.missed else PROBE_ACTIVE
+                elif active is not None and route.alive(now) and route.streak < BACK_REPLIES and                         RANK[route.kind] < RANK[active.kind]:
+                    interval = PROBE_FAST  # a better way came back: prove it quickly, then move back to it
                 elif route.alive(now) or now - peer.updated > FAST_SECONDS:
                     interval = PROBE_SLOW
                 else:

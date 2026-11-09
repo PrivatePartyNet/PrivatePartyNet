@@ -21,7 +21,7 @@ class SettingsTests(unittest.TestCase):
                                                       "game_open": [], "accent": None, "text_scale": 100,
                                                       "density": "default", "auto_update": True,
                                                       "update_prerelease": True, "update_skip": "", "sound_volume": 60,
-                                                      "sounds_off": []})
+                                                      "sounds_off": [], "reconnect_grace_s": 120})
 
     def test_sounds_come_back_and_bad_values_fall_back(self):
         save_settings({"sound_volume": 35, "sounds_off": ["messages", "voice", "messages"]}, self.folder)
@@ -41,6 +41,13 @@ class SettingsTests(unittest.TestCase):
             save_settings({"accent": accent, "text_scale": scale, "density": density}, self.folder)
             loaded = load_settings(self.folder)
             self.assertEqual((loaded["accent"], loaded["text_scale"], loaded["density"]), (None, 100, "default"))
+
+    def test_the_reconnect_grace_is_kept_within_sense(self):
+        save_settings({"reconnect_grace_s": 300}, self.folder)
+        self.assertEqual(load_settings(self.folder)["reconnect_grace_s"], 300)
+        for bad in (5, 100000, "120", True):
+            save_settings({"reconnect_grace_s": bad}, self.folder)
+            self.assertEqual(load_settings(self.folder)["reconnect_grace_s"], 120, bad)
 
     def test_updates_are_automatic_and_include_test_versions_unless_turned_off(self):
         loaded = load_settings(self.folder)

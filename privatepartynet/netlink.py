@@ -22,7 +22,7 @@ log = logging.getLogger("privatepartynet.netlink")
 
 class NetLink:
     def __init__(self, address, port, fingerprint, identity, key, on_roster, candidates=(), host_sign="", server_id="",
-                 timeout=5.0, max_backoff=30.0):
+                 timeout=5.0, max_backoff=10.0):
         self.address, self.port, self.fingerprint = address, port, fingerprint
         self.identity = identity
         self.key = key  # this PC's WireGuard public key for the server
@@ -71,12 +71,17 @@ class NetLink:
         self.status = {**self.status, "state": state, "message": message, **extra}
 
     def _run(self):
-        pause = 1.0
+        """Keep the link up. After a drop it tries again at once-ish and then less often (partylink.backoff: 0.5 s,
+        1, 2, 4, 8, then 10 s, with jitter); the game network adapter and its tunnels stay as they are meanwhile,
+        and the host keeps this PC on the list through its reconnect grace."""
+        from privatepartynet.partylink import backoff
+
+        attempt = 0
         while not self._stop.is_set():
             self._set("connecting", "Connecting to the host...")
             try:
                 self._session()
-                pause = 1.0
+                attempt = 0
             except PermissionError as exc:
                 self._set("refused", str(exc))
                 return
@@ -84,9 +89,10 @@ class NetLink:
                 if self._stop.is_set():
                     break
                 self._set("retrying", f"Lost the host ({exc}); trying again.")
-            if self._stop.wait(pause):
+                log.info("The game network link to the host dropped (%s); trying again", exc)
+            if self._stop.wait(min(self._max_backoff, backoff(attempt))):
                 break
-            pause = min(self._max_backoff, pause * 2)
+            attempt += 1
         self._set("stopped", "")
 
     def _session(self):

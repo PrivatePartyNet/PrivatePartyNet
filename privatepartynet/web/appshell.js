@@ -24,7 +24,8 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  var ROOM_CALLS = ["close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture", "server_look"];
+  var ROOM_CALLS = ["close_window", "set_fullscreen", "keep_chat", "keep_blob", "appearance", "my_picture", "server_look",
+                    "resume_party", "rejoin_party", "link_state"];
   var POLL_MS = 1000;
   var READY_MS = 25000;
   var FRAME_ALLOW = "microphone; fullscreen; clipboard-write; autoplay; display-capture";
@@ -86,7 +87,8 @@
     return n > 99 ? "99+" : String(n);
   }
 
-  // A room's report, cleaned: counts are whole numbers from 0, the call is a channel name and two flags, or null.
+  // A room's report, cleaned: counts are whole numbers from 0, the call is a channel name and two flags, or null, and
+  // the room's own link to its host is "ok", "unstable" or "reconnecting" (link.js; the rail's amber dot).
   function cleanState(msg) {
     function count(v) { return typeof v === "number" && isFinite(v) && v > 0 ? Math.min(Math.floor(v), 9999) : 0; }
     var voice = null;
@@ -94,7 +96,8 @@
       voice = { channel: String(msg.voice.channel || "").slice(0, 64), muted: Boolean(msg.voice.muted),
                 deafened: Boolean(msg.voice.deafened) };
     }
-    return { unread: count(msg && msg.unread), requests: count(msg && msg.requests), voice: voice };
+    var link = msg && (msg.link === "unstable" || msg.link === "reconnecting") ? msg.link : "ok";
+    return { unread: count(msg && msg.unread), requests: count(msg && msg.requests), voice: voice, link: link };
   }
 
   function start(win) {
@@ -181,7 +184,10 @@
       var offMark = doc.createElement("span");
       offMark.className = "srv-mark off";
       offMark.hidden = true;
-      button.append(text, badge, voiceMark, offMark);
+      var linkDot = doc.createElement("span");
+      linkDot.className = "linkdot"; // amber while this PC's own link to the server is unstable or reconnecting
+      linkDot.hidden = true;
+      button.append(text, badge, voiceMark, offMark, linkDot);
       if (info.own) {
         var own = doc.createElement("span");
         own.className = "srv-mark own";
@@ -191,7 +197,8 @@
       }
       item.append(button);
       server = { key: info.key, name: name, url: "", origin: "", own: Boolean(info.own), frame: null, item: item,
-                 button: button, initials: text, badge: badge, voiceMark: voiceMark, offMark: offMark, note: null,
+                 button: button, initials: text, badge: badge, voiceMark: voiceMark, offMark: offMark, linkDot: linkDot,
+                 note: null,
                  state: cleanState(null), ready: false, timer: null, calls: 0, listed: false, rail: "", message: "",
                  icon: "", iconWanted: "" };
       servers.set(info.key, server);
@@ -202,7 +209,7 @@
         openMenu(server, event.clientX, event.clientY);
       });
       tip(button, function () {
-        return server.name + (server.own ? " (your server)" : "") + (server.frame ? "" : railWords(server) ? ": " + railWords(server) : "");
+        return server.name + (server.own ? " (your server)" : "") + (railWords(server) ? ": " + railWords(server) : "");
       });
       setName(server, name);
       return server;
@@ -347,7 +354,8 @@
 
     // What the rail says about a server whose room is not open.
     function railWords(server) {
-      if (server.frame) return "";
+      // an open room whose connection dropped says so itself; its place on the rail says it too (partylink.py)
+      if (server.frame) return { reconnecting: "reconnecting", lost: "connection lost" }[server.rail] || "";
       return { stopped: "off", starting: "starting", connecting: "connecting", offline: "out of reach" }[server.rail] || "";
     }
 
@@ -422,15 +430,20 @@
       server.badge.title = s.requests ? s.requests + (s.requests === 1 ? " person waiting" : " people waiting") + " to join" : "";
       server.item.classList.toggle("has-unread", s.unread > 0); // not "unread": that is the yellow count badge (ui.css)
       server.voiceMark.hidden = !s.voice;
+      var shaky = Boolean(server.frame) && s.link !== "ok";
+      server.linkDot.hidden = !shaky;
+      server.linkDot.title = shaky ? "Your connection to this server is " + s.link : "";
       var off = !server.frame && server.rail && server.rail !== "open";
       server.item.classList.toggle("away", Boolean(off));
       server.offMark.hidden = !off || server.rail === "connecting" || server.rail === "starting";
-      server.item.classList.toggle("connecting", !server.frame && (server.rail === "connecting" || server.rail === "starting"));
+      server.item.classList.toggle("connecting", (!server.frame && (server.rail === "connecting" || server.rail === "starting")) ||
+        (Boolean(server.frame) && server.rail === "reconnecting"));
       var label = server.name + (server.own ? ", your server" : "");
-      if (off && railWords(server)) label += ", " + railWords(server);
+      if ((off || server.frame) && railWords(server)) label += ", " + railWords(server);
       if (s.unread) label += ", " + s.unread + " unread";
       if (s.requests) label += ", " + s.requests + " waiting to join";
       if (s.voice) label += ", you are in its voice channel";
+      if (shaky && !railWords(server)) label += ", your connection to it is " + s.link;
       server.button.setAttribute("aria-label", label);
       updateDock();
     }

@@ -19,12 +19,20 @@
   // One stats report, as an array of its entries, reduced to the video slots it describes. mids is the list of
   // transceiver mids in slot order, so a stream's mid says which slot it is.
   function normalize(entries, mids, now) {
-    var sample = { at: now, rtt: null, way: way(entries), inn: {}, out: {} };
+    var sample = { at: now, rtt: null, jitter: null, way: way(entries), inn: {}, out: {}, voice: { packets: 0, lost: 0 } };
     entries.forEach(function (s) {
       if (s.type === "candidate-pair") {
         if (s.nominated && s.state === "succeeded" && typeof s.currentRoundTripTime === "number") {
           sample.rtt = s.currentRoundTripTime * 1000;
         }
+        return;
+      }
+      if (s.type === "inbound-rtp" && !s.isRemote && typeof s.jitter === "number") {
+        sample.jitter = Math.max(sample.jitter || 0, s.jitter * 1000); // the shakier of what arrives, in ms
+      }
+      if (s.type === "inbound-rtp" && s.kind === "audio" && !s.isRemote) {
+        sample.voice.packets += s.packetsReceived || 0;
+        sample.voice.lost += s.packetsLost || 0;
         return;
       }
       if (s.kind !== "video" || s.isRemote) return;
@@ -99,10 +107,11 @@
   }
 
   // Two reports a moment apart as rates. ctx: { cores, activeIn: Set of slots the other side is sharing, activeOut: Set
-  // of slots this side is sharing }. Returns { rtt, loss, down: [slot], up: [slot] }; a slot is { slot, kbps, fps, w, h,
-  // cpu } and an upload slot also has the encoder's limit.
+  // of slots this side is sharing }. Returns { rtt, jitter, loss, down: [slot], up: [slot] }; loss is the percentage of
+  // the screens' and the voice's packets lost; a slot is { slot, kbps, fps, w, h, cpu } and an upload slot also has the
+  // encoder's limit.
   function diff(prev, cur, ctx) {
-    var result = { rtt: cur.rtt, way: cur.way || null, loss: 0, down: [], up: [] };
+    var result = { rtt: cur.rtt, jitter: cur.jitter, way: cur.way || null, loss: 0, down: [], up: [] };
     if (!prev) return result;
     var secs = (cur.at - prev.at) / 1000;
     if (secs <= 0) return result;
@@ -115,6 +124,10 @@
       lost += Math.max(0, s.lost);
       received += Math.max(0, s.packets);
     });
+    if (cur.voice && prev.voice) {
+      lost += Math.max(0, cur.voice.lost - prev.voice.lost);
+      received += Math.max(0, cur.voice.packets - prev.voice.packets);
+    }
     result.loss = received + lost > 0 ? (lost / (received + lost)) * 100 : 0;
     return result;
   }
