@@ -207,6 +207,63 @@ class LoggingTests(RendezvousBase):
             self.assertNotIn(secret, text, "never the password or keys")
 
 
+class IdleHostTests(RendezvousBase):
+    """The user's real case in 3.5.0: two PCs behind ordinary home routers (one port per socket), each hosting for half an
+    hour before the other tried to join. Both found the other on the DHT, and nothing came back either way. The host
+    learned its public port once, at the start, and sent nothing from that socket after; a router forgets an idle
+    mapping (often within a few minutes, some within 30 seconds), so the port on the DHT led nowhere. The host now asks
+    STUN again every KEEPALIVE_SECONDS from the same socket, which keeps the mapping, and publishes a new port at once
+    if the router gave one anyway."""
+
+    def home_host(self, mapping_seconds, refresh=1.0):
+        v4 = self.internet.router(natsim.PORT_RESTRICTED, mapping_seconds=mapping_seconds)
+        with v4.adopting():
+            host = HostPunch(self.host_identity._sign, "feedfacecafebeef", self.certfile, self.keyfile,
+                             self.party.port, lambda: [self.secret], dht_factory=self.dht, stun_servers=self.stun,
+                             refresh=refresh, poll=0.5, ipv6=lambda: [])
+        self.addCleanup(host.close)
+        return host, v4
+
+    def home_join(self):
+        v4 = self.internet.router(natsim.PORT_RESTRICTED)
+        with v4.adopting():
+            client = join_through(self.host_identity.sign_public.hex(), "feedfacecafebeef", self.secret,
+                                  self.fingerprint, dht_factory=self.dht, stun_servers=self.stun, connect_seconds=20,
+                                  find_seconds=10, ipv6=lambda: [])
+        self.addCleanup(client.close)
+        return client
+
+    def test_a_host_idle_for_longer_than_its_router_remembers_is_still_reached(self):
+        with mock.patch.object(punch, "KEEPALIVE_SECONDS", 0.5, create=True):
+            host, _ = self.home_host(mapping_seconds=1.5)
+            first = host.mapping
+            time.sleep(4.0)  # idle well past the router's memory of the mapping
+            client = self.home_join()
+            self.assertEqual(self.through(client.port, "GET", "/ask?challenge=1")[0], 200)
+            self.assertEqual(host.mapping, first, "the mapping was kept, so its port never changed")
+
+    def test_a_host_whose_router_gave_it_a_new_port_publishes_the_new_one(self):
+        with mock.patch.object(punch, "KEEPALIVE_SECONDS", 0.5, create=True):
+            host, v4 = self.home_host(mapping_seconds=None, refresh=60.0)  # no regular republish within the test
+            first = host.mapping
+            time.sleep(1.5)  # the first record is published
+            with self.internet._lock:
+                for mapping in v4._mappings.values():
+                    mapping.dead = True  # the router dropped it (rebooted, or a timer shorter than the keepalive)
+            self.assertTrue(wait_until(lambda: host.mapping[:2] != first[:2], 5), "the host noticed its new port")
+            client = self.home_join()
+            self.assertEqual(self.through(client.port, "GET", "/ask?challenge=1")[0], 200)
+
+
+def wait_until(check, seconds):
+    ends = time.monotonic() + seconds
+    while time.monotonic() < ends:
+        if check():
+            return True
+        time.sleep(0.1)
+    return check()
+
+
 class MessageTests(unittest.TestCase):
     """The final message: what was tried, what was missing, in words. Never "(TimeoutError)"."""
 
