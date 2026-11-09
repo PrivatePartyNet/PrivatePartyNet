@@ -38,7 +38,7 @@ import time
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from privatepartynet import relayproto
-from privatepartynet.connect import STUN_SERVERS, _stun_binding
+from privatepartynet.connect import STUN_SERVERS, _stun_binding, parse_stun, stun_request
 
 log = logging.getLogger("privatepartynet.punch")
 
@@ -58,6 +58,10 @@ RELAY_PUNCH_SECONDS = 45.0  # the same when a relay is there to fall back on
 QUICK_SECONDS = 6.0  # how long to try punching from behind a hard router before taking a relay instead
 ATTEMPT_SECONDS = 10.0  # a fresh QUIC handshake this often, so its resends never back off past the host's first probe
 WATCH_SECONDS = 5.0  # how often the host reads the invites' mailboxes (all at once)
+# How often the host asks STUN again from its QUIC socket. A router forgets a mapping nothing has used for a while (RFC
+# 4787 asks for 2 minutes at least; many home routers use 30 seconds), and 3.5.0 and before learned the port once at the
+# start: after a few idle minutes the port on the DHT led nowhere, and joiners got no answer through the routers.
+KEEPALIVE_SECONDS = 20.0
 IDLE_SECONDS = 60.0
 
 
@@ -326,12 +330,26 @@ class TunnelHost:
         configuration.load_cert_chain(certfile, keyfile)
         self.peers = set()
 
+        self._stun_answers = {}  # STUN transaction id -> [threading.Event, the answer]
+
         def handler(reader, writer):
             asyncio.ensure_future(self._serve_stream(reader, writer))
 
+        answers = self._stun_answers
+
+        class Server(QuicServer):
+            def datagram_received(self, data, addr):
+                # A STUN answer starts with two zero bits, which no QUIC packet does (RFC 9000 sets the second bit)
+                waiting = answers.get(data[8:20]) if len(data) >= 20 and data[0] < 0x40 else None
+                if waiting is not None:
+                    waiting[1] = data
+                    waiting[0].set()
+                    return
+                super().datagram_received(data, addr)
+
         async def start():
             transport, protocol = await asyncio.get_running_loop().create_datagram_endpoint(
-                lambda: QuicServer(configuration=configuration, stream_handler=handler), sock=sock)
+                lambda: Server(configuration=configuration, stream_handler=handler), sock=sock)
             return transport, protocol
 
         self.transport, self.server = self._loop.run(start(), 10)
@@ -353,6 +371,19 @@ class TunnelHost:
             writer.close()
             return
         await asyncio.gather(_pipe(reader, party_writer), _pipe(party_reader, writer))
+
+    def stun(self, server, timeout=2.0):
+        """(public address, port) a STUN server at `server` (address, port) sees for the QUIC socket, or None. Sending
+        it also keeps this socket's mapping in the router."""
+        request, transaction = stun_request()
+        waiting = self._stun_answers[transaction] = [threading.Event(), None]
+        try:
+            self._loop.loop.call_soon_threadsafe(self.transport.sendto, request, server)
+            if not waiting[0].wait(timeout):
+                return None
+            return parse_stun(waiting[1], transaction)
+        finally:
+            self._stun_answers.pop(transaction, None)
 
     def probe(self, remote, seconds=3.0):
         """Send probes to a joiner's public address from the QUIC socket, opening this router for their packets."""
@@ -526,6 +557,7 @@ class HostPunch:
         self._stun = stun_servers
         self._refresh, self._poll, self._max_seconds = refresh, poll, max_seconds
         self._stop = threading.Event()
+        self._publish_now = threading.Event()  # the public port changed: publish the record without waiting
         self._relays = relays or (lambda: [])
         self.bridges = {}  # (host, port) of a relay -> RelayBridge carrying the invites' channels to the QUIC socket
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -563,6 +595,11 @@ class HostPunch:
         self._sync_relays()
         self._thread = threading.Thread(target=self._run, name="privatepartynet-punch-host", daemon=True)
         self._thread.start()
+        self._keeper = None
+        if self.mapping is not None:
+            self._keeper = threading.Thread(target=self._keep_mapping, name="privatepartynet-punch-keepalive",
+                                            daemon=True)
+            self._keeper.start()
 
     def _dht(self):
         from privatepartynet.dht import Dht
@@ -592,10 +629,39 @@ class HostPunch:
                         log.info("This party's address on the DHT: stored on %d nodes%s", stored,
                                  "" if stored else "; joiners cannot find it until it is")
                     self._published = stored
-                self._stop.wait(self._refresh)
+                self._publish_now.wait(self._refresh)
+                self._publish_now.clear()
         finally:
             dht.close()
             watcher.join(timeout=30)
+
+    def _keep_mapping(self):
+        """Ask STUN again every KEEPALIVE_SECONDS from the QUIC socket: that keeps this socket's mapping in the router,
+        and if the router gave it a new public port anyway (it rebooted, or forgot sooner), publish that one at once."""
+        servers = []
+        while not self._stop.wait(KEEPALIVE_SECONDS):
+            if not servers:
+                for host, port in self._stun:
+                    try:
+                        servers.append(socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_DGRAM)[0][4][:2])
+                    except OSError:
+                        continue
+            for server in servers:
+                if self._stop.is_set():
+                    return
+                try:
+                    found = self.tunnel.stun(server)
+                except Exception:
+                    log.debug("Asking STUN from the QUIC socket failed", exc_info=True)
+                    found = None
+                if found is None:
+                    continue
+                if tuple(found) != tuple(self.mapping[:2]):
+                    log.info("This PC's public IPv4 port changed (the router dropped the old one): now %s port %s. "
+                             "Publishing it for joiners", found[0], found[1])
+                    self.mapping = (found[0], found[1], self.mapping[2])
+                    self._publish_now.set()
+                break
 
     def _watch(self):
         """Read every live invite's mailbox at once, every `poll` seconds. One DHT lookup takes up to 20 seconds, so
@@ -680,7 +746,10 @@ class HostPunch:
 
     def close(self):
         self._stop.set()
+        self._publish_now.set()
         self._thread.join(timeout=30)
+        if self._keeper is not None:
+            self._keeper.join(timeout=10)
         for bridge in list(self.bridges.values()):
             bridge.close()
         self.bridges.clear()
