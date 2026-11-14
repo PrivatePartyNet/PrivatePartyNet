@@ -26,7 +26,7 @@
       <button class="navitem" title="Game network" aria-label="Game network" data-go="game"><svg class="ic"><use href="#i-gamepad"></use></svg><span>Game network</span><span class="navlight" id="lightGame" hidden></span></button>
       <button class="navitem" title="Direct messages" aria-label="Direct messages" data-go="messages"><svg class="ic"><use href="#i-chat"></use></svg><span>Direct messages</span><span class="navbadge" id="badgeMessages" hidden></span></button>
       <button class="navitem" title="Saved chats" aria-label="Saved chats" data-go="chats"><svg class="ic"><use href="#i-lock"></use></svg><span>Saved chats</span></button>
-      <button class="navitem" title="Settings" aria-label="Settings" data-go="settings"><svg class="ic"><use href="#i-gear"></use></svg><span>Settings</span></button>
+      <button class="navitem" title="Settings" aria-label="Settings" data-go="settings"><svg class="ic"><use href="#i-gear"></use></svg><span>Settings</span><span class="navbadge neutral" id="badgeUpdate" hidden></span></button>
     </nav>
     <p class="rail-foot muted">Nothing here goes through a company server.</p>
     <button id="railToggle" class="navitem rail-toggle" type="button" aria-pressed="false" title="Show icons only" aria-label="Show icons only"><svg class="ic"><use href="#i-panel-left"></use></svg><span>Icons only</span></button>
@@ -38,6 +38,7 @@
       <svg class="ic lg"><use href="#i-download"></use></svg>
       <div class="grow">
         <p id="updateText"></p>
+        <div id="updateBar" class="update-bar" role="progressbar" aria-label="Download" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
         <pre id="updateNotes" class="notes" hidden></pre>
       </div>
       <div id="updateButtons" class="row"></div>
@@ -373,6 +374,12 @@
         <label class="switch"><input id="autoUpdate" type="checkbox"><span>Update automatically (checks every six hours; asks before restarting)</span></label>
         <label class="switch"><input id="testVersions" type="checkbox"><span>Include test versions</span></label>
         <div class="row"><button id="checkUpdates" class="secondary"><svg class="ic"><use href="#i-download"></use></svg>Check for updates</button><span id="updateStatus" class="muted"></span></div>
+        <div id="updateLive" class="update-live" role="status" hidden>
+          <p id="updateLiveText"></p>
+          <div id="updateLiveBar" class="update-bar" role="progressbar" aria-label="Download" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
+          <div id="updateLiveButtons" class="row" hidden></div>
+          <p id="updateChecked" class="muted"></p>
+        </div>
       </div>
 
       <div class="card">

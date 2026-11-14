@@ -32,15 +32,20 @@
     var lines = window.PrivatePartyNetUpdates.about(view, Date.now());
     document.getElementById("updateStatus").textContent = lines.status;
     document.getElementById("updateChecked").textContent = lines.checked;
-    // A download goes on after the check has answered: follow it until it ends.
-    if (window.PrivatePartyNetUpdates.busy(view) && !following) {
-      following = setInterval(function () {
-        window.pywebview.api.update_state().then(fillUpdates);
-      }, 1000);
-    } else if (!window.PrivatePartyNetUpdates.busy(view) && following) {
-      clearInterval(following);
-      following = null;
+    var bar = document.getElementById("updateBar");
+    var share = window.PrivatePartyNetUpdates.progress(view).bar;
+    bar.hidden = share === null;
+    if (share !== null) {
+      bar.firstElementChild.style.width = Math.round(share * 1000) / 10 + "%";
+      bar.setAttribute("aria-valuenow", String(Math.round(share * 100)));
     }
+    // Asked again every second while a check or a download is under way, and every five seconds otherwise, so a
+    // download the six-hourly check starts while this page is open shows here too.
+    clearTimeout(following);
+    following = setTimeout(function () {
+      var api = window.pywebview && window.pywebview.api;
+      if (api && api.update_state) api.update_state().then(fillUpdates).catch(function () {});
+    }, window.PrivatePartyNetUpdates.busy(view) ? 1000 : 5000);
   }
 
   var check = document.getElementById("checkUpdates");

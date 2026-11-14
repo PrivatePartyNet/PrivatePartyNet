@@ -98,6 +98,14 @@ html.rail-compact .navbadge { min-width: 16px; padding: 0 4px; font-size: 10px; 
 .update-banner .notes { max-height: 160px; overflow: auto; margin: var(--sp-2) 0 0; white-space: pre-wrap; font: inherit; font-size: var(--fs-sm); color: var(--muted); }
 .update-banner .notes[hidden] { display: none; }
 .update-banner .row { margin: 0; flex: none; }
+.update-banner .update-bar { margin-top: var(--sp-2); max-width: 420px; }
+/* Settings > Updates: what the updater is doing now, kept up to date while the page is open */
+.update-live { display: grid; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); border: 1px solid var(--border);
+  border-radius: var(--r-md); background: var(--bg); }
+.update-live[hidden], .update-live p[hidden] { display: none; }
+.update-live p { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.update-live .muted { font-size: var(--fs-sm); }
+.update-live .row { margin: 0; }
 .row[hidden] { display: none; }
 .row.bottom { align-items: flex-end; }
 
