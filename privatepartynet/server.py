@@ -86,6 +86,10 @@ MAX_IMAGE_TEXT = f"{MAX_IMAGE // (1024 * 1024)} MB"
 MAX_MEMORY_BLOBS = 96 * 1024 * 1024  # pictures kept in memory when there is no store (tests, a throwaway party)
 IMAGES_PER_MINUTE = 10  # per member
 MAX_CONNECTIONS = 128  # requests served at once; each member holds one open event stream, so this is several per person
+# How long an answered connection waits for the page's next request. Reusing it saves a new TLS handshake each time: a
+# heartbeat answer (POST /pong) on a fresh connection took three round trips through a tunnel, and the ping shown was
+# that. Past 3/4 of MAX_CONNECTIONS, answered connections close instead (_Server.crowded).
+KEEP_ALIVE_SECONDS = 15.0
 ASK_FAILS_PER_ADDRESS = 5  # wrong passwords from one address before it is shut out for ASK_LOCKOUT_SECONDS
 ASK_LOCKOUT_SECONDS = 900
 ASK_FAILS_PER_MINUTE = 30  # wrong passwords from everywhere together before the door closes for a minute
@@ -1969,7 +1973,18 @@ class _Server(ThreadingHTTPServer):
         self.party = party
         self.secure = secure  # True for the LAN server (TLS); False for the loopback server (plain HTTP)
         self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        self._limit = MAX_CONNECTIONS
+        self._taken = 0
+        self._taken_lock = threading.Lock()
         super().__init__(address, _Handler)
+
+    def crowded(self):
+        """Most of the connection slots are taken: an answered connection closes rather than wait for another request."""
+        return self._taken * 4 >= self._limit * 3
+
+    def _take(self, step):
+        with self._taken_lock:
+            self._taken += step
 
     def process_request(self, request, client_address):
         """At most MAX_CONNECTIONS requests at once. One more is closed at once instead of taking a thread, so a flood
@@ -1978,9 +1993,11 @@ class _Server(ThreadingHTTPServer):
         if not self._slots.acquire(blocking=False):
             self.shutdown_request(request)
             return
+        self._take(1)
         try:
             super().process_request(request, client_address)
         except Exception:
+            self._take(-1)
             self._slots.release()
             raise
 
@@ -1988,6 +2005,7 @@ class _Server(ThreadingHTTPServer):
         try:
             super().process_request_thread(request, client_address)
         finally:
+            self._take(-1)
             self._slots.release()
 
     def handle_error(self, request, client_address):
@@ -2004,13 +2022,96 @@ class _Server(ThreadingHTTPServer):
                                  "are in the log (Options, Open data folder).")
 
 
+class _Counted:
+    """A connection's read side that counts the bytes taken from it, so the handler knows whether a request's body was
+    read to the end before the connection carries another request."""
+
+    def __init__(self, raw):
+        self._raw = raw
+        self.count = 0
+
+    def read(self, size=-1):
+        data = self._raw.read(size)
+        self.count += len(data)
+        return data
+
+    def readline(self, size=-1):
+        data = self._raw.readline(size)
+        self.count += len(data)
+        return data
+
+    def close(self):
+        self._raw.close()
+
+    @property
+    def closed(self):
+        return self._raw.closed
+
+
 class _Handler(HangupsLogged, BaseHTTPRequestHandler):
     server_version = "PrivatePartyNet"
     hangup_what = "party"
     timeout = 60  # a silent client gives up after this; also bounds the TLS handshake
+    # HTTP/1.1, so an answered connection carries the next request (KEEP_ALIVE_SECONDS). Every answer gives its length,
+    # or says Connection: close (the streams: /events, /net, /frames).
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, format, *args):
         pass  # pythonw has no stderr; problems show in the host window instead
+
+    def setup(self):
+        super().setup()
+        self.rfile = _Counted(self.rfile)
+        self._answered = False
+        self._body_from = 0
+
+    def handle_one_request(self):
+        waiting = self._answered
+        if waiting:
+            self.connection.settimeout(KEEP_ALIVE_SECONDS)  # the time a page has for its next request
+        self.requestline = ""
+        try:
+            super().handle_one_request()
+        except Exception as exc:
+            if waiting and not self.requestline and is_hangup(exc):
+                self.close_connection = True  # the page let go of a connection it was not using: nothing to note
+                return
+            raise
+        self._answered = True
+        if not self.close_connection and not (self._drained() and not self.server.crowded()):
+            self.close_connection = True
+
+    def end_headers(self):
+        if not self.close_connection and self.server.crowded():
+            self.send_header("Connection", "close")  # so the client sends its next request on a new connection
+        super().end_headers()
+
+    def parse_request(self):
+        self.connection.settimeout(self.timeout)  # a request has started: the usual time from here on
+        parsed = super().parse_request()
+        self._body_from = self.rfile.count
+        return parsed
+
+    def _drained(self):
+        """Read what is left of an answered request's body (a refused one, say), up to MAX_DRAIN, so the next request
+        starts where it should. False when that cannot be done: the body's length is not known, or it is longer."""
+        if self.headers.get("Transfer-Encoding"):
+            return False
+        declared = self.headers.get("Content-Length")
+        if declared is None:
+            return True
+        try:
+            left = int(declared) - (self.rfile.count - self._body_from)
+        except ValueError:
+            return False
+        if int(declared) < 0 or left > MAX_DRAIN:
+            return False
+        while left > 0:
+            piece = self.rfile.read(min(left, 65536))
+            if not piece:
+                return False
+            left -= len(piece)
+        return True
 
     def do_GET(self):
         path = urlsplit(self.path).path
@@ -2470,6 +2571,7 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")  # a stream: it ends when the connection does
         self.end_headers()
         hello = {"address": str(address), "network": str(directory.network), "host": str(directory.host_address)}
         self.wfile.write(json.dumps(hello).encode("utf-8") + b"\n")
@@ -2666,6 +2768,7 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")  # a stream: it ends when the connection does
         self.end_headers()
         frames = source.frames(fps, height, pointer=query.get("pointer", ["1"])[0] != "0")
         try:
@@ -2698,6 +2801,7 @@ class _Handler(HangupsLogged, BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")  # a stream: it ends when the connection does
         self.end_headers()
         try:
             while True:

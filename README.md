@@ -1,4 +1,4 @@
-# PrivatePartyNet 3.5.1
+# PrivatePartyNet 3.5.2
 
 A private place for a group of friends to chat, talk, share screens and play LAN games together. One person hosts a server, PCs on the same network find it by themselves, and friends elsewhere join with an invite code. There is no company server and no account to make. Traffic goes through someone else's machine only when two routers let nothing through, and then only through a relay the group chose, encrypted end to end.
 
@@ -41,11 +41,11 @@ At run time nothing is sent to a company server. The only calls outside your net
 
 | Field | Value |
 |---|---|
-| Version | 3.5.1 |
+| Version | 3.5.2 |
 | Platform | Windows 10 or 11, 64-bit |
 | License | [Apache License 2.0](LICENSE) |
-| Installer | `PrivatePartyNetSetup-3.5.1.exe`, per user, no administrator rights. It updates an existing PrivatePartyNet in place. |
-| Portable | `PrivatePartyNet-3.5.1-portable.zip`, run from any folder, including a USB stick |
+| Installer | `PrivatePartyNetSetup-3.5.2.exe`, per user, no administrator rights. It updates an existing PrivatePartyNet in place. |
+| Portable | `PrivatePartyNet-3.5.2-portable.zip`, run from any folder, including a USB stick |
 
 ## System requirements and compatibility
 
@@ -68,11 +68,11 @@ The Settings page of Home (the gear at the foot of the rail) sets the appearance
 
 ## Installation and deployment
 
-1. Run `PrivatePartyNetSetup-3.5.1.exe`. It installs for your user account only.
+1. Run `PrivatePartyNetSetup-3.5.2.exe`. It installs for your user account only.
 2. Choose a desktop shortcut and whether to start with Windows. A Start menu entry is always made.
 3. Start PrivatePartyNet.
 
-Portable: unzip `PrivatePartyNet-3.5.1-portable.zip` and run `PrivatePartyNet.exe` in the folder. Nothing is written to the registry.
+Portable: unzip `PrivatePartyNet-3.5.2-portable.zip` and run `PrivatePartyNet.exe` in the folder. Nothing is written to the registry.
 
 Uninstall from Settings, Apps, or the Start menu. Setup asks whether to delete PrivatePartyNet's data folder (settings, certificate, log). The default is to keep it. A silent uninstall always keeps it.
 
