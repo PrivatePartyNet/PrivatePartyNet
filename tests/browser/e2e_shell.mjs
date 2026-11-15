@@ -55,6 +55,7 @@ const BRIDGE = `(function () {
   window.__events = []; window.__calls = []; window.__dm = 2; window.__theme = "dark"; window.__servers = [];
   var called = function (name) { return function () { window.__calls.push(["app", name, Array.prototype.slice.call(arguments)]); return ok(); }; };
   window.__look = { accent: null, text_scale: 100, density: "default" };
+  window.__state = ${JSON.stringify(STATE)};
   window.pywebview = { api: {
     shell_state: function () { return Promise.resolve({ dm_unread: window.__dm, theme: window.__theme, appearance: window.__look,
       running: true, servers: window.__servers, picture: "", events: window.__events.splice(0) }); },
@@ -70,7 +71,8 @@ const BRIDGE = `(function () {
       if (method === "set_fullscreen") return Promise.resolve({ ok: true, fullscreen: Boolean(args[0]) });
       return Promise.resolve({ ok: true, missing: [] });
     },
-    state: function () { return Promise.resolve(${JSON.stringify(STATE)}); },
+    state: function () { return Promise.resolve(window.__state); },
+    update_state: function () { return Promise.resolve(window.__state.update); },
     joined_servers: function () { return Promise.resolve([]); },
     game_services: function () { return Promise.resolve({ ok: true, groups: [] }); },
     about_info: function () { return Promise.resolve({ name: "PrivatePartyNet", version: "3.3.0", theme: window.__theme,
@@ -183,6 +185,44 @@ async function main() {
   check("Direct messages are a page of Home, not a window", await waitFor(() => host.frame("control.html",
     "!document.getElementById('messagesFrame').hidden && document.getElementById('messagesFrame').src.includes('dm.html')")));
   await host.shot("shell-home");
+
+  // An update the six-hourly check found downloads with nobody pressing anything: Settings > Updates shows it beside
+  // its button, with a bar, how much, how fast and how long (3.5.2 showed it only in the banner at the top of Home,
+  // out of sight below the fold of Settings, so Nathan saw nothing during a 410 MB download).
+  await host.frame("control.html", "document.querySelector('[data-go=settings]').click(); true");
+  await host.top(`__state = Object.assign({}, __state, { update: { automatic: true, include_test: true, state: "downloading",
+    version: "3.5.3", notes: "", checked_at: Date.now() / 1000 - 30, progress: 0.58,
+    message: "Downloading PrivatePartyNet 3.5.3 — 227 / 391 MB · 12.4 MB/s · about 15 s left",
+    download: { done: 227400000, total: 391200000, speed: 12400000, eta: 15 } } }); true`);
+  check("a download nobody asked for shows in Settings > Updates, with its size, speed and time left", await waitFor(() =>
+    host.frame("control.html", "!document.getElementById('updateLive').hidden && document.getElementById('updateLiveText').textContent " +
+      "=== 'Downloading PrivatePartyNet 3.5.3 — 227 / 391 MB · 12.4 MB/s · about 15 s left'")));
+  check("with a bar as far along as the download", await host.frame("control.html",
+    "!document.getElementById('updateLiveBar').hidden && document.getElementById('updateLiveBar').firstElementChild.style.width === '58.1%'"));
+  check("in sight while the Updates card is", await host.frame("control.html", `(function () {
+    document.getElementById('updatesCard').scrollIntoView({ block: 'end' });
+    var box = document.getElementById('updateLive').getBoundingClientRect();
+    return box.height > 0 && box.top >= 0 && box.bottom <= innerHeight; })()`));
+  check("the Settings item in the list counts it", await host.frame("control.html",
+    "!document.getElementById('badgeUpdate').hidden && document.getElementById('badgeUpdate').textContent === '58%'"));
+  check("and the banner over every page has the bar too", await host.frame("control.html",
+    "!document.getElementById('updateCard').hidden && !document.getElementById('updateBar').hidden"));
+  await host.shot("shell-update-downloading");
+  await host.top(`__state.update = Object.assign({}, __state.update, { state: "verifying", message: "Checking the download...",
+    progress: 1, download: null }); true`);
+  check("then it says the file is being checked, with no bar", await waitFor(() => host.frame("control.html",
+    "document.getElementById('updateLiveText').textContent === 'Checking the download...' && document.getElementById('updateLiveBar').hidden && document.getElementById('badgeUpdate').hidden")));
+  await host.top(`__state.update = Object.assign({}, __state.update, { state: "ready", waiting: "",
+    message: "Ready: Restart now, or PrivatePartyNet 3.5.3 installs when you close PrivatePartyNet." }); true`);
+  check("and when it is ready, Settings says so and offers Restart now there, as the banner does", await waitFor(() => host.frame("control.html",
+    "document.getElementById('updateLiveText').textContent.startsWith('Ready: Restart now') && " +
+    "[...document.querySelectorAll('#updateLiveButtons button')].map(function (b) { return b.textContent; }).join() === 'Restart now,Later' && " +
+    "[...document.querySelectorAll('#updateButtons button')].map(function (b) { return b.textContent; }).join() === 'Restart now,Later'")));
+  await host.shot("shell-update-ready");
+  await host.frame("control.html", "document.getElementById('pages').scrollTop = 0; true");
+  await host.shot("shell-update-banner");
+  await host.top(`__state.update = { automatic: true, include_test: true, state: "idle", message: "" }; true`);
+  await host.frame("control.html", "document.querySelector('[data-go=home]').click(); true");
 
   // The rail lists your own server and every server joined, for good, whether or not their rooms are open (K, November
   // 5th). A server whose room is not open shows a card in its place with what can be done.

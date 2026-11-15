@@ -20,7 +20,8 @@ from pathlib import Path
 
 from privatepartynet import updater
 from privatepartynet.cert import ensure_certificate
-from privatepartynet.updater import Fetcher, UpdateError, Updater, Version, candidates, release_files
+from privatepartynet.updater import (DownloadMeter, Fetcher, UpdateError, Updater, Version, candidates,
+                                     downloading_message, release_files)
 
 
 def entry(version, kind, content):
@@ -104,6 +105,79 @@ class CandidateTests(unittest.TestCase):
 
     def test_a_skipped_version_is_not_offered(self):
         self.assertEqual(self.tags(include_test=False, skipped="3.2.1"), [])
+
+
+class Clock:
+    """A clock the test moves by hand."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+class DownloadMeterTests(unittest.TestCase):
+    """How a download is going: the bytes so far, its speed over the last few seconds, the time left, and not too often."""
+
+    def test_the_speed_is_what_came_in_over_the_last_few_seconds_and_the_time_left_follows_from_it(self):
+        clock = Clock()
+        meter = DownloadMeter(400_000_000, clock)
+        self.assertEqual(meter.add(65_536), {"done": 65_536, "total": 400_000_000, "speed": None, "eta": None},
+                         "the first bytes show at once, before any speed is known")
+        for second in range(1, 11):  # 10 MB a second for ten seconds
+            clock.now += 1.0
+            figures = meter.add(second * 10_000_000)
+        self.assertEqual(figures["speed"], 10_000_000)
+        self.assertEqual(figures["eta"], 30, "300 MB left at 10 MB/s")
+        for second in range(1, 6):  # then 2 MB a second: after the window, only that counts
+            clock.now += 1.0
+            figures = meter.add(100_000_000 + second * 2_000_000)
+        self.assertEqual(figures["speed"], 2_000_000)
+        self.assertEqual(figures["eta"], 145)
+
+    def test_one_slow_second_does_not_swing_the_speed(self):
+        clock = Clock()
+        meter = DownloadMeter(1_000_000_000, clock)
+        done = 0
+        for rate in (10, 10, 10, 10, 1, 10):  # MB in each second
+            clock.now += 1.0
+            done += rate * 1_000_000
+            figures = meter.add(done)
+        self.assertEqual(figures["speed"], 8_200_000, "the average over the last five seconds, not the last one")
+
+    def test_the_figures_change_at_most_twice_a_second_but_the_last_bytes_show_at_once(self):
+        clock = Clock()
+        meter = DownloadMeter(1_000_000, clock)
+        shown = []
+        for step in range(1, 16):  # a chunk every 0.1 s
+            clock.now += 0.1
+            shown.append(meter.add(step * 60_000))
+        self.assertEqual(sum(f is not None for f in shown), 3, "the first, then every half second")
+        clock.now += 0.05
+        self.assertEqual(meter.add(1_000_000)["done"], 1_000_000, "the end is never held back")
+
+    def test_a_stalled_download_has_no_time_left_to_say(self):
+        clock = Clock()
+        meter = DownloadMeter(10_000_000, clock)
+        meter.add(5_000_000)
+        for _ in range(6):
+            clock.now += 1.0
+            figures = meter.add(5_000_000)
+        self.assertEqual((figures["speed"], figures["eta"]), (0, None))
+
+    def test_the_message_says_how_much_how_fast_and_how_long_in_words(self):
+        self.assertEqual(downloading_message("3.5.3", {"done": 227_400_000, "total": 391_200_000, "speed": 12_400_000,
+                                                       "eta": 15}),
+                         "Downloading PrivatePartyNet 3.5.3 — 227 / 391 MB · 12.4 MB/s · about 15 s left")
+        self.assertEqual(downloading_message("3.5.3", {"done": 0, "total": 391_200_000, "speed": None, "eta": None}),
+                         "Downloading PrivatePartyNet 3.5.3 — 0 / 391 MB", "no speed or time before they are known")
+        self.assertEqual(downloading_message("3.5.3", {"done": 400_000, "total": 4_200_000, "speed": 800_000,
+                                                       "eta": 400}),
+                         "Downloading PrivatePartyNet 3.5.3 — 0.4 / 4.2 MB · 800 KB/s · about 7 min left")
+        self.assertEqual([updater.time_left_words(s) for s in (1, 59, 95, 5400, 7500)],
+                         ["almost done", "about 59 s left", "about 2 min left", "about 1 h 30 min left",
+                          "about 2 h 5 min left"])
 
 
 class InstallKindTests(unittest.TestCase):
@@ -530,11 +604,51 @@ class FlowTests(unittest.TestCase):
             if any("%" in m for m in seen):
                 break
             time.sleep(0.05)
-        self.assertRegex(up.view()["message"], r"^Downloading PrivatePartyNet 3\.2\.1\.\.\. \d+%$")
-        self.assertGreater(up.view()["progress"], 0)
+        view = up.view()
+        self.assertRegex(view["message"], r"^Downloading PrivatePartyNet 3\.2\.1 — \d+ / 307 KB")
+        self.assertGreater(view["progress"], 0)
+        self.assertEqual(view["download"]["total"], len(installer))
+        self.assertGreater(view["download"]["done"], 0)
         go.set()
         up.join_download()
         self.assertEqual(up.view()["state"], "ready")
+        self.assertIsNone(up.view()["download"], "the figures go with the download")
+
+    def test_the_view_counts_bytes_while_they_come_then_says_the_file_is_being_checked(self):
+        installer = os.urandom(200 * 1024)
+        self.github.publish("3.2.1", {"installer": installer})
+        up = self.updater()
+        figures, hashing = [], []
+        plain_get, plain_hash = up.fetcher.get, updater.sha256_file
+
+        def get(url, hosts, headers=None, limit=updater.MAX_MANIFEST, into=None, progress=None):
+            if into is None:
+                return plain_get(url, hosts, headers, limit)
+
+            def step(done):
+                progress(done)
+                figures.append(dict(up.view()["download"] or {}))
+
+            return plain_get(url, hosts, headers, limit, into=into, progress=step)
+
+        def sha256_file(path):
+            hashing.append((up.view()["state"], up.view()["message"], up.view()["download"]))
+            return plain_hash(path)
+
+        up.fetcher.get = get
+        with unittest.mock.patch.object(updater, "sha256_file", sha256_file):
+            view = up.check(manual=False)  # the six-hourly check: no button was pressed
+        self.assertEqual(view["state"], "ready")
+        self.assertEqual(figures[0]["total"], len(installer))
+        self.assertEqual(max(f["done"] for f in figures), len(installer), "the last bytes are shown")
+        self.assertIn(("verifying", "Checking the download...", None), hashing)
+
+    def test_a_check_while_the_file_is_being_checked_does_not_start_another(self):
+        self.github.publish("3.2.1", {"installer": b"x" * 100})
+        up = self.updater()
+        up.view_state["state"] = "verifying"
+        self.assertEqual(up.check(manual=True)["state"], "verifying")
+        self.assertEqual([path for path, _ in self.github.calls], [], "GitHub was not asked")
 
     def test_the_schedule_keeps_going_when_a_check_fails_unexpectedly(self):
         up = self.updater()

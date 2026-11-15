@@ -41,6 +41,13 @@
     updateStatus: document.getElementById("updateStatus"),
     updateCard: document.getElementById("updateCard"),
     updateText: document.getElementById("updateText"),
+    updateBar: document.getElementById("updateBar"),
+    updateLive: document.getElementById("updateLive"),
+    updateLiveText: document.getElementById("updateLiveText"),
+    updateLiveBar: document.getElementById("updateLiveBar"),
+    updateChecked: document.getElementById("updateChecked"),
+    updateLiveButtons: document.getElementById("updateLiveButtons"),
+    badgeUpdate: document.getElementById("badgeUpdate"),
     updateNotes: document.getElementById("updateNotes"),
     updateButtons: document.getElementById("updateButtons"),
     requests: document.getElementById("requests"),
@@ -447,20 +454,19 @@
 
   var lastUpdate = "";
 
-  function renderUpdate(view) {
-    if (!view) return;
-    el.autoUpdate.checked = Boolean(view.automatic);
-    el.testVersions.checked = Boolean(view.include_test);
-    var shown = window.PrivatePartyNetUpdates.card(view);
-    var key = JSON.stringify(shown);
-    if (key === lastUpdate) return;
-    lastUpdate = key;
-    el.updateCard.hidden = !shown.show;
-    el.updateText.textContent = shown.text;
-    el.updateNotes.textContent = shown.notes;
-    el.updateNotes.hidden = !shown.notes;
-    el.updateButtons.textContent = "";
-    shown.buttons.forEach(function (spec) {
+  // A download's bar: its share as the width of the inner span (null hides the bar).
+  function fillBar(bar, share) {
+    bar.hidden = share === null;
+    if (share === null) return;
+    var percent = Math.round(share * 1000) / 10;
+    bar.firstElementChild.style.width = percent + "%";
+    bar.setAttribute("aria-valuenow", String(Math.round(percent)));
+  }
+
+  // The update's buttons (Restart now, Later, ...), as updates.js lists them.
+  function fillButtons(box, buttons) {
+    box.textContent = "";
+    buttons.forEach(function (spec) {
       var button = document.createElement("button");
       button.className = spec.primary ? "primary" : "secondary";
       button.textContent = spec.label;
@@ -469,8 +475,42 @@
         var call = { restart: "update_restart", later: "update_later", skip: "update_skip" }[spec.action];
         api()[call]().then(function (result) { if (result && result.message && !result.ok) say(result.message); });
       });
-      el.updateButtons.append(button);
+      box.append(button);
     });
+    box.hidden = !buttons.length;
+  }
+
+  // Settings > Updates says what the updater is doing on every refresh, so a download the six-hourly check started
+  // shows there too, not only one started by the button (3.5.2 showed it only in the banner at the top of the page,
+  // out of sight below Updates), with the banner's buttons. The Settings item in the list counts the download's percent.
+  function renderUpdateStatus(view, buttons) {
+    var line = window.PrivatePartyNetUpdates.status(view);
+    el.updateLive.hidden = !line.text && !line.checked;
+    el.updateLiveText.textContent = line.text;
+    el.updateLiveText.hidden = !line.text;
+    el.updateChecked.textContent = line.checked;
+    fillBar(el.updateLiveBar, line.bar);
+    var counting = view.state === "downloading" && line.bar !== null;
+    el.badgeUpdate.hidden = !counting;
+    el.badgeUpdate.textContent = counting ? Math.floor(line.bar * 100) + "%" : "";
+    if (buttons) fillButtons(el.updateLiveButtons, buttons);
+  }
+
+  function renderUpdate(view) {
+    if (!view) return;
+    el.autoUpdate.checked = Boolean(view.automatic);
+    el.testVersions.checked = Boolean(view.include_test);
+    var shown = window.PrivatePartyNetUpdates.card(view);
+    var key = JSON.stringify(shown);
+    renderUpdateStatus(view, key === lastUpdate ? null : shown.buttons);
+    if (key === lastUpdate) return;
+    lastUpdate = key;
+    el.updateCard.hidden = !shown.show;
+    el.updateText.textContent = shown.text;
+    fillBar(el.updateBar, shown.bar);
+    el.updateNotes.textContent = shown.notes;
+    el.updateNotes.hidden = !shown.notes;
+    fillButtons(el.updateButtons, shown.buttons);
   }
 
   [[el.autoUpdate, "auto_update"], [el.testVersions, "update_prerelease"]].forEach(function (pair) {
@@ -484,8 +524,8 @@
     el.updateStatus.textContent = "Checking...";
     el.checkUpdates.disabled = true;
     api().check_updates().then(function (view) {
+      el.updateStatus.textContent = "";  // what it found is in the card's status below, as on every refresh
       renderUpdate(view);
-      put(el.updateStatus, window.PrivatePartyNetUpdates.card(view).show ? "" : view.message, "update status");
     }).catch(function () {
       el.updateStatus.textContent = "The check did not finish.";
     }).then(function () {

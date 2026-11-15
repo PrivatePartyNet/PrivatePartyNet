@@ -21,6 +21,7 @@ the app has closed (the user's data is in %LOCALAPPDATA%, not in the app's folde
 installed during a party, a call or while the game network is on; the control panel says it is waiting.
 """
 
+import collections
 import contextlib
 import email.message
 import hashlib
@@ -62,6 +63,9 @@ MAX_NOTES = 4000
 KINDS = ("installer", "portable")
 STAGING_MARK = ".privatepartynet-update"  # in each <app>.update-<version> folder the updater makes, so it cleans only those
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+PROGRESS_SECONDS = 0.5  # a download's figures in the view change at most this often, so the pages are not flooded
+SPEED_SECONDS = 5.0  # the speed shown is what came in over this long: one slow moment does not swing it
+BUSY = ("checking", "downloading", "verifying")  # states in which another check or download waits for this one
 DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 
@@ -135,6 +139,86 @@ def ready_message(version, waiting=""):
         return (f"{APP} {version} is ready. Restart now works once {waiting} ends, or it installs when you close "
                 f"{APP}.")
     return f"Ready: Restart now, or {APP} {version} installs when you close {APP}."
+
+
+# --- how a download is going -----------------------------------------------------------------------------------------
+
+
+class DownloadMeter:
+    """How a download is going, from the bytes so far: the share done, the speed over the last SPEED_SECONDS, and the
+    time left at that speed. `clock` is time.monotonic, or a test's."""
+
+    def __init__(self, total, clock=time.monotonic, window=SPEED_SECONDS, every=PROGRESS_SECONDS):
+        self.total = max(1, int(total))
+        self.done = 0
+        self._clock, self._window, self._every = clock, window, every
+        self._samples = collections.deque([(clock(), 0)])  # (when, bytes so far), oldest first
+        self._shown = None
+
+    def add(self, done):
+        """The bytes so far. Returns the figures when it is time to show them (the first bytes, then at most every
+        PROGRESS_SECONDS, and the last bytes at once), else None."""
+        now = self._clock()
+        self.done = done
+        self._samples.append((now, done))
+        while len(self._samples) > 2 and now - self._samples[1][0] >= self._window:
+            self._samples.popleft()  # one sample older than the window stays, so the window is always full
+        if self._shown is not None and now - self._shown < self._every and done < self.total:
+            return None
+        self._shown = now
+        return self.figures()
+
+    def speed(self):
+        """Bytes a second over the last SPEED_SECONDS, or None before half a second has passed."""
+        (start, before), (end, now) = self._samples[0], self._samples[-1]
+        if end - start < 0.5:
+            return None
+        return (now - before) / (end - start)
+
+    def figures(self):
+        """{"done", "total", "speed" (bytes a second, or None while not known), "eta" (seconds, or None)}."""
+        speed = self.speed()
+        left = max(0, self.total - self.done)
+        eta = left / speed if speed else None
+        return {"done": self.done, "total": self.total, "speed": round(speed) if speed is not None else None,
+                "eta": round(eta) if eta is not None else None}
+
+
+def size_words(count, unit_of=None):
+    """`count` bytes in MB (or KB below one MB), as Windows Explorer's columns are read: decimal units, whole numbers
+    from 10 MB up. `unit_of` picks the unit of another size, so "227 / 391 MB" share one."""
+    scale = unit_of if unit_of is not None else count
+    if scale >= 1_000_000:
+        value = count / 1_000_000
+        return (f"{value:.0f}" if scale >= 10_000_000 else f"{value:.1f}") + " MB"
+    return f"{max(0, round(count / 1000))} KB"
+
+
+def speed_words(rate):
+    return f"{rate / 1_000_000:.1f} MB/s" if rate >= 1_000_000 else f"{round(rate / 1000)} KB/s"
+
+
+def time_left_words(seconds):
+    if seconds < 2:
+        return "almost done"
+    if seconds < 90:
+        return f"about {round(seconds)} s left"
+    if seconds < 90 * 60:
+        return f"about {round(seconds / 60)} min left"
+    hours, minutes = divmod(round(seconds / 60), 60)
+    return f"about {hours} h {minutes} min left" if minutes else f"about {hours} h left"
+
+
+def downloading_message(version, figures):
+    """"Downloading PrivatePartyNet 3.5.3 — 227 / 391 MB · 12.4 MB/s · about 15 s left": each part only once it is
+    known (the speed after half a second, the time left while bytes come in)."""
+    done = size_words(figures["done"], figures["total"]).rsplit(" ", 1)[0]  # the number alone: the unit is the total's
+    parts = [f"{done} / {size_words(figures['total'])}"]
+    if figures.get("speed") is not None:
+        parts.append(speed_words(figures["speed"]))
+        if figures.get("eta") is not None:
+            parts.append(time_left_words(figures["eta"]))
+    return f"Downloading {APP} {version} — " + " · ".join(parts)
 
 
 def file_names(version):
@@ -385,7 +469,7 @@ class Updater:
 
     def __init__(self, settings, save, data_dir, busy, current=__version__, kind=None, api_url=RELEASES_URL,
                  api_hosts=API_HOSTS, asset_hosts=ASSET_HOSTS, fetcher=None, launcher=None,
-                 app_dir=None, quit=None, clock=time.time):
+                 app_dir=None, quit=None, clock=time.time, monotonic=time.monotonic):
         self._settings, self._save, self._busy = settings, save, busy
         self.current = str(current)
         self.kind = kind or install_kind()
@@ -395,6 +479,7 @@ class Updater:
         self._quit = quit or (lambda: None)
         self.app_dir = Path(app_dir) if app_dir else Path(sys.executable).parent
         self._clock = clock
+        self._monotonic = monotonic  # for a download's speed: never jumps when the PC's clock is set
         self.folder = Path(data_dir) / "updates"
         self._state_file = self.folder / "state.json"
         self._lock = threading.RLock()
@@ -407,7 +492,8 @@ class Updater:
         self._unpacked = {}  # the unpacked folder's files (path inside it -> SHA-256), from the checked zip itself
         self.dismissed = None  # a version the person said Later to, with automatic updates off
         self.install_on_exit = False
-        self.view_state = {"state": "idle", "message": "", "version": "", "notes": "", "checked_at": None}
+        self.view_state = {"state": "idle", "message": "", "version": "", "notes": "", "checked_at": None,
+                           "download": None}
         self._memory = self._load_state()
 
     # --- settings ---------------------------------------------------------------------------------------------
@@ -472,6 +558,8 @@ class Updater:
     # --- checking ----------------------------------------------------------------------------------------------
 
     def _set(self, state, message="", **more):
+        if state != "downloading":
+            more.setdefault("download", None)  # the figures belong to a download under way, never to what follows
         with self._lock:
             self.view_state.update(state=state, message=message, **more)
 
@@ -479,7 +567,7 @@ class Updater:
         """Ask GitHub for releases, and take the newest genuine one further: download it at once when automatic
         updates are on, else offer it. Returns the view. A manual check is the "Check for updates" button."""
         with self._lock:  # one check at a time: the schedule, the control panel and the About page can all ask
-            if self.view_state["state"] in ("checking", "downloading"):
+            if self.view_state["state"] in BUSY:
                 return self.view()
             before = dict(self.view_state)
             self._set("checking", "Checking for updates...")
@@ -596,10 +684,11 @@ class Updater:
             return self.view()
         version, entry = found["version"], found["file"]
         with self._lock:  # Update pressed while a download is already under way: that one carries on
-            if self.view_state["state"] == "downloading":
+            if self.view_state["state"] in ("downloading", "verifying"):
                 return self.view()
-            self._set("downloading", f"Downloading {APP} {version}...", version=str(version), notes=found["notes"],
-                      progress=0.0)
+            figures = DownloadMeter(entry["size"], self._monotonic).figures()
+            self._set("downloading", downloading_message(version, figures), version=str(version),
+                      notes=found["notes"], progress=0.0, download=figures)
         if background:
             self._downloading = threading.Thread(target=self._fetch, args=(found,), name="privatepartynet-update-download",
                                                  daemon=True)
@@ -614,14 +703,15 @@ class Updater:
             thread.join(timeout)
 
     def _progress(self, version, size):
-        """A callback for the fetcher: the share downloaded, in the view's progress (0 to 1) and message."""
-        shown = [-1]
+        """A callback for the fetcher: the bytes so far, the size, the speed and the time left in the view's "download",
+        its share in "progress" (0 to 1), and all of it in words in the message; at most every PROGRESS_SECONDS."""
+        meter = DownloadMeter(size, self._monotonic)
 
         def step(done):
-            percent = min(100, done * 100 // max(1, size))
-            if percent != shown[0]:
-                shown[0] = percent
-                self._set("downloading", f"Downloading {APP} {version}... {percent}%", progress=percent / 100)
+            figures = meter.add(done)
+            if figures is not None:
+                self._set("downloading", downloading_message(version, figures), progress=min(1.0, done / meter.total),
+                          download=figures)
         return step
 
     def _fetch(self, found):
@@ -630,15 +720,22 @@ class Updater:
         partial = target.with_name(target.name + ".part")
         try:
             self.folder.mkdir(parents=True, exist_ok=True)
-            if not (target.is_file() and target.stat().st_size == entry["size"] and sha256_file(target) == entry["sha256"]):
+            here = target.is_file() and target.stat().st_size == entry["size"]
+            if here:
+                self._set("verifying", "Checking the download...", progress=1.0, download=None)
+            if not (here and sha256_file(target) == entry["sha256"]):
                 with open(partial, "wb") as file:
                     status, _, size = self.fetcher.get(found["url"], self.asset_hosts, limit=entry["size"], into=file,
                                                        progress=self._progress(version, entry["size"]))
                 if status != 200 or size != entry["size"]:
                     raise UpdateError(f"the download stopped short ({status}, {size} of {entry['size']} bytes)")
+                # A few seconds for a large file, during which the page says what is going on.
+                self._set("verifying", "Checking the download...", progress=1.0, download=None)
                 if sha256_file(partial) != entry["sha256"]:
                     raise UpdateError("the download is not the file GitHub published (its SHA-256 differs)")
                 os.replace(partial, target)
+            if found["kind"] == "portable":
+                self._set("verifying", "Unpacking the download...", progress=1.0, download=None)
             ready = self._unpack(target, version) if found["kind"] == "portable" else target
         except (UpdateError, OSError, zipfile.BadZipFile) as error:
             partial.unlink(missing_ok=True)

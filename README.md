@@ -1,4 +1,4 @@
-# PrivatePartyNet 3.5.2
+# PrivatePartyNet 3.5.3
 
 A private place for a group of friends to chat, talk, share screens and play LAN games together. One person hosts a server, PCs on the same network find it by themselves, and friends elsewhere join with an invite code. There is no company server and no account to make. Traffic goes through someone else's machine only when two routers let nothing through, and then only through a relay the group chose, encrypted end to end.
 
@@ -30,7 +30,7 @@ A private place for a group of friends to chat, talk, share screens and play LAN
 - Capture at the size that is needed: the screen is captured at the smallest standard size that covers what the viewers asked for (their tile sizes, or a percentage), and at full size again as soon as someone needs it. On the development PC this halved the processor time of sharing an ultrawide screen to a small tile (10.8% to 5.5% of the PC).
 - Fast capture: screens are captured through the graphics card (Windows Desktop Duplication) with the older GDI capture as a fallback, and encoded with OpenCV when it is available. An ultrawide screen reaches about 57 frames a second at a 60 target on the development PC.
 - Bad internet does not throw anyone out: the host checks on every member every 2 s, and a connection counts as unstable after 4 s without an answer and reconnecting after 10 s. A member whose connection drops keeps their place, role, voice channel and screens for two minutes (the reconnect_grace_s setting), and nobody sees them leave and come back. Their room says "Reconnecting... (n s)" and its place on the rail says reconnecting; the room reconnects by itself: it reaches the host through its own address on this PC, which finds the host again by the best way that works (the host's addresses, IPv6, through both routers, a relay), even after a new address or another Wi-Fi. After 10 s away the app signs the way back in with this PC's identity, so nobody has to approve the member again, and the chat missed meanwhile arrives. Voice and screens find a new way through (an ICE restart) without starting over, and screens are sent smaller while a connection is struggling. The game network keeps its adapter up, falls over to a relay while the direct way is down and goes back afterwards. Past the grace the room says so and offers Rejoin. This needs 3.5 or later on both PCs: with an older version on either side (3.4.0 included) a dropout works as it did before.
-- Updates: with Automatic updates on (the default), a newer version is downloaded in the background, checked, and offered in a banner at the top of Home with Restart now or Later (which installs it when the app next closes). Nothing restarts while your server runs, during a call or while the game network is on. It takes the newest release on GitHub, checks each file against the size and SHA-256 GitHub publishes for it, and never installs an older version. Settings turns automatic updates and test versions on or off and has Check for updates; with automatic updates off, a newer version offers Update, Later or Skip this version.
+- Updates: with Automatic updates on (the default), a newer version is downloaded in the background, checked, and offered in a banner at the top of Home with Restart now or Later (which installs it when the app next closes). While it downloads, Settings, Updates shows a bar with how much has come of how much, how fast and about how long is left, whether the download started by itself or from Check for updates, then "Checking the download..." while its SHA-256 is checked, then Restart now and Later there too. Nothing restarts while your server runs, during a call or while the game network is on. It takes the newest release on GitHub, checks each file against the size and SHA-256 GitHub publishes for it, and never installs an older version. Settings turns automatic updates and test versions on or off and has Check for updates; with automatic updates off, a newer version offers Update, Later or Skip this version.
 - Fullscreen, Dark (the default), Light or Match Windows, and each person's own accent color, text size and spacing.
 - Home: a list of pages (Home, Join a server, Nearby PCs, Game network, Direct messages, Saved chats, Settings), with a count of people waiting to join and a light when a game network is in use. Settings has the appearance, sounds, updates, the data folder, the About page (versions and folders) and the How PrivatePartyNet works page, which is updated with every version.
 - Colors were chosen for contrast in both themes (measured; body text is kept below the near-white-on-black that is hard on some eyes), every light also has words, and Windows' reduce-motion setting is respected.
@@ -41,11 +41,11 @@ At run time nothing is sent to a company server. The only calls outside your net
 
 | Field | Value |
 |---|---|
-| Version | 3.5.2 |
+| Version | 3.5.3 |
 | Platform | Windows 10 or 11, 64-bit |
 | License | [Apache License 2.0](LICENSE) |
-| Installer | `PrivatePartyNetSetup-3.5.2.exe`, per user, no administrator rights. It updates an existing PrivatePartyNet in place. |
-| Portable | `PrivatePartyNet-3.5.2-portable.zip`, run from any folder, including a USB stick |
+| Installer | `PrivatePartyNetSetup-3.5.3.exe`, per user, no administrator rights. It updates an existing PrivatePartyNet in place. |
+| Portable | `PrivatePartyNet-3.5.3-portable.zip`, run from any folder, including a USB stick |
 
 ## System requirements and compatibility
 
@@ -68,11 +68,11 @@ The Settings page of Home (the gear at the foot of the rail) sets the appearance
 
 ## Installation and deployment
 
-1. Run `PrivatePartyNetSetup-3.5.2.exe`. It installs for your user account only.
+1. Run `PrivatePartyNetSetup-3.5.3.exe`. It installs for your user account only.
 2. Choose a desktop shortcut and whether to start with Windows. A Start menu entry is always made.
 3. Start PrivatePartyNet.
 
-Portable: unzip `PrivatePartyNet-3.5.2-portable.zip` and run `PrivatePartyNet.exe` in the folder. Nothing is written to the registry.
+Portable: unzip `PrivatePartyNet-3.5.3-portable.zip` and run `PrivatePartyNet.exe` in the folder. Nothing is written to the registry.
 
 Uninstall from Settings, Apps, or the Start menu. Setup asks whether to delete PrivatePartyNet's data folder (settings, certificate, log). The default is to keep it. A silent uninstall always keeps it.
 

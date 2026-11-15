@@ -213,3 +213,8 @@ body.viewer .drop-hint { display: none; }
 .brand .mark .ic { width: 20px; height: 20px; stroke-width: 1.7; }
 .brand .mark .ic path[d^="M8.7"], .brand .mark .ic path[d^="M12 5"] { stroke: #ffb3d6; }
 .brand strong { font-family: var(--font-display); font-size: var(--fs-lg); letter-spacing: -0.01em; }
+
+/* an update's download (updates.js): the share that has come in, as the storage meter in a room draws its own */
+.update-bar { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.update-bar[hidden] { display: none; }
+.update-bar span { display: block; height: 100%; width: 0; background: var(--accent); border-radius: inherit; transition: width 0.4s; }

@@ -1,7 +1,7 @@
 /*
- * What the update prompt in the control panel and the Updates part of the About page say, from the app's update view
- * (updater.py, Updater.view). Pure functions, so the tests run them in Node; the pages write the result with
- * textContent, never as HTML (release notes come from GitHub).
+ * What the update prompt in the control panel, the Updates card in Settings and the Updates part of the About page say,
+ * from the app's update view (updater.py, Updater.view). Pure functions, so the tests run them in Node; the pages write
+ * the result with textContent, never as HTML (release notes come from GitHub).
  */
 (function (root, factory) {
   var api = factory();
@@ -13,9 +13,10 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  // The prompt card: { show, text, notes, buttons: [{ action, label, primary, disabled }] }.
+  // The prompt card: { show, text, notes, buttons: [{ action, label, primary, disabled }], bar }. `bar` is the
+  // download's share (0 to 1) while it comes in, else null (progress).
   function card(view) {
-    var none = { show: false, text: "", notes: "", buttons: [] };
+    var none = { show: false, text: "", notes: "", buttons: [], bar: null };
     if (!view || typeof view !== "object") return none;
     var version = String(view.version || "");
     var name = "PrivatePartyNet " + version;
@@ -33,6 +34,7 @@
           { action: "restart", label: "Restart now", primary: true, disabled: !!waiting },
           { action: "later", label: "Later", primary: false, disabled: false },
         ],
+        bar: null,
       };
     }
     if (view.state === "available") {
@@ -46,17 +48,45 @@
           { action: "later", label: "Later", primary: false, disabled: false },
           { action: "skip", label: "Skip this version", primary: false, disabled: false },
         ],
+        bar: null,
       };
     }
-    if (view.state === "downloading" || view.state === "installing" || view.state === "manual") {
-      return { show: true, text: String(view.message || ""), notes: "", buttons: [] };
+    if (view.state === "downloading" || view.state === "verifying" || view.state === "installing" ||
+        view.state === "manual") {
+      return { show: true, text: String(view.message || ""), notes: "", buttons: [], bar: progress(view).bar };
     }
     return none;
   }
 
-  // True while a check or a download is under way: the About page keeps asking until it ends.
+  // A download under way: { show, text, bar }. While bytes come in, `bar` is their share (0 to 1) of the file and the
+  // text says how much, how fast and how long is left (updater.py, downloading_message); while the file is checked
+  // against GitHub's SHA-256, or unpacked, there is no bar.
+  function progress(view) {
+    if (!view || typeof view !== "object") return { show: false, text: "", bar: null };
+    if (view.state === "downloading") {
+      var figures = view.download && typeof view.download === "object" ? view.download : {};
+      var share = Number(figures.total) > 0 ? Number(figures.done) / Number(figures.total) : Number(view.progress);
+      return { show: true, text: String(view.message || ""), bar: isFinite(share) ? Math.min(1, Math.max(0, share)) : 0 };
+    }
+    if (view.state === "verifying") {
+      return { show: true, text: String(view.message || "Checking the download..."), bar: null };
+    }
+    return { show: false, text: "", bar: null };
+  }
+
+  // The Updates card in Settings, on every refresh, whether or not Check for updates was pressed: { text, bar,
+  // checked }. Empty text before any check, and when the version offered was set aside (Later, Skip).
+  function status(view) {
+    if (!view || typeof view !== "object") return { text: "", bar: null, checked: "" };
+    var shown = progress(view);
+    var quiet = view.state === "idle" || view.state === "dismissed";
+    return { text: shown.show ? shown.text : quiet ? "" : String(view.message || ""), bar: shown.bar,
+             checked: about(view).checked };
+  }
+
+  // True while a check or a download (and its check against GitHub's SHA-256) is under way: the pages ask more often.
   function busy(view) {
-    return !!view && (view.state === "checking" || view.state === "downloading");
+    return !!view && (view.state === "checking" || view.state === "downloading" || view.state === "verifying");
   }
 
   // The About page's lines: { status, checked }.
@@ -80,5 +110,5 @@
     return new Date(seconds * 1000).toLocaleDateString();
   }
 
-  return { card: card, about: about, busy: busy };
+  return { card: card, about: about, busy: busy, progress: progress, status: status };
 });
